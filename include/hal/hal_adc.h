@@ -60,7 +60,12 @@ bool hal_adc_samples_valid(void);
  * CubeMX 的 HAL_ADCEx_InjectedConvCpltCallback() 中调用该函数，
  * seq 只在这里递增，hal_adc_get_snapshot() 只复制快照。
  */
-void hal_adc_stm32f405_on_injected_complete(void);
+/*
+ * 真实 STM32 后端请从 HAL_ADCEx_InjectedConvCpltCallback(hadc) 调用本函数。
+ * 参数使用 void *，避免公共 HAL 头文件依赖 stm32f4xx_hal.h。
+ * STM32F405 后端只有在 hadc1/hadc2 本周期数据都有效后才会递增 snapshot.seq。
+ */
+void hal_adc_stm32f405_on_injected_complete(void *hadc);
 
 #ifdef __cplusplus
 }

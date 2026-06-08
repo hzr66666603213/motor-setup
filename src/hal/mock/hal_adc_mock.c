@@ -68,8 +68,9 @@ bool hal_adc_samples_valid(void)
     return s_mock_snapshot.valid;
 }
 
-void hal_adc_stm32f405_on_injected_complete(void)
+void hal_adc_stm32f405_on_injected_complete(void *hadc)
 {
+    (void)hadc;
     /*
      * 模拟一次 ADC injected conversion complete。
      * 功率级是否使能不影响 ADC seq；只要 TIM1/ADC trigger 在运行，真实后端也应由

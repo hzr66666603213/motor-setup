@@ -96,8 +96,7 @@ VBUS 比例、电流采样比例、ADC rank、采样触发点必须按你的 ODr
 ```c
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-    (void)hadc;
-    hal_adc_stm32f405_on_injected_complete();
+    hal_adc_stm32f405_on_injected_complete((void *)hadc);
 }
 ```
 
@@ -237,3 +236,25 @@ make test
 - 温度降额。
 - 弱磁控制。
 - MTPA。
+
+## 上板补充：ADC Trigger-Only 和 Injected ADC 回调
+
+当前 STM32F405 真实后端使用 `HAL_ADCEx_InjectedStart_IT()` 启动 injected ADC。CubeMX 工程必须：
+
+- 使能 ADC injected conversion complete interrupt 和对应 NVIC。
+- 确认 ADC injected external trigger 来自实际 TIM1 采样点，默认建议 `TIM1_CC4`。
+- 在 `HAL_ADCEx_InjectedConvCpltCallback()` 中传入真实的 `hadc`，不要忽略它。
+- 后端会分别接收 `hadc1` 和 `hadc2`，只有两路 ADC 本周期数据都有效后才更新 snapshot 并递增 `seq`。
+
+推荐回调写法：
+
+```c
+void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    hal_adc_stm32f405_on_injected_complete((void *)hadc);
+}
+```
+
+上电 BOOT 阶段会保持 `EN_GATE=0`、`TIM1 MOE=0`，同时启动 `board_start_adc_sampling_without_power_stage()` 等价的 ADC trigger-only 路径，让 ADC 先开始同步采样。第一帧 ADC/VBUS 还没有 valid 时不会卡在 BOOT；进入功率级 enable、校准小电压注入或闭环前，才会严格检查 ADC valid 和 VBUS 范围。
+
+如果只收到 `hadc1` 或只收到 `hadc2`，`seq` 不会递增，`board_axis0_read_phase_current_raw()` 会返回 false。这能防止电流环使用半帧 ADC 数据。上板时请先在 `EN_GATE=0`、`TIM1 MOE=0` 的状态下确认 `seq` 会持续更新。

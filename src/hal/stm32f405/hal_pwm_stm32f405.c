@@ -8,14 +8,13 @@
  * 资源假设：
  * - TIM1_CH1/2/3：PA8/PA9/PA10，高边 PWM；
  * - TIM1_CH1N/2N/3N：PB13/PB14/PB15，低边互补 PWM；
+ * - TIM1_CH4：建议作为 injected ADC 采样触发点；
  * - CubeMX/LL 负责配置中心对齐、死区、break/off-state、PWM 频率 20 kHz。
  *
  * 安全语义：
- * - hal_pwm_disable() 不用 duty=0 表示安全，而是关闭 TIM1 主输出 MOE 并停止
- *   CH1/2/3 和 CH1N/2N/3N；
- * - fault/idle 时还应由 board/DRV 层拉低 EN_GATE；
- * - hal_pwm_set_all_low() 在真实后端中等价于“清 CCR 并关闭主输出”，不依赖
- *   低边全开这种高风险状态。
+ * - hal_pwm_disable() 关闭 MOE，并停止三相 CH/CHN；
+ * - fault/idle 还必须由 board/DRV 层拉低 EN_GATE；
+ * - hal_pwm_start_adc_trigger_only() 只运行 TIM1/CC4 触发 ADC，不启动三相功率通道。
  */
 
 #include "stm32f4xx_hal.h"
@@ -51,8 +50,8 @@ bool hal_pwm_init(void)
 void hal_pwm_enable(void)
 {
     /*
-     * 先启动普通通道和互补通道，再打开 MOE。
-     * 如果 CubeMX 已经配置 Break/Deadtime，这里会使用对应 BDTR 配置。
+     * 真正使能功率级 PWM。
+     * 调用前 board 层必须已经确认 fault、VBUS、ADC、编码器、DRV 状态满足准入条件。
      */
     hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
@@ -68,10 +67,8 @@ void hal_pwm_enable(void)
 void hal_pwm_disable(void)
 {
     /*
-     * 这是故障路径可重复调用的安全关断：
-     * 1. 关闭 TIM1 主输出 MOE；
-     * 2. 停止 3 路主 PWM 和 3 路互补 PWM；
-     * 3. 清 CCR，避免下次启动前残留旧 duty。
+     * 故障/IDLE 的全关断：停止三相功率 PWM 和 ADC 触发。
+     * current_offset_calibration 不应调用这个函数，因为它需要 TIM1 继续触发 ADC。
      */
     __HAL_TIM_MOE_DISABLE(&htim1);
     (void)HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
@@ -80,6 +77,8 @@ void hal_pwm_disable(void)
     (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
     (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
     (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    (void)HAL_TIM_OC_Stop(&htim1, TIM_CHANNEL_4);
+    (void)HAL_TIM_Base_Stop(&htim1);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0u);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0u);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0u);
@@ -89,20 +88,21 @@ void hal_pwm_disable(void)
 void hal_pwm_start_adc_trigger_only(void)
 {
     /*
-     * 只运行 TIM1/compare 事件给 ADC injected conversion 提供同步触发。
-     * 功率安全条件：
-     * - board 层保持 EN_GATE=0；
-     * - 本函数最后强制 MOE=0；
-     * - s_pwm_enabled=false，表示功率 PWM 输出没有使能。
+     * ADC trigger-only 模式：
+     * - 入口先关闭 MOE；
+     * - 不启动 CH1/2/3 和 CH1N/2N/3N；
+     * - 默认只启动 TIM1 base + OC4，让 TIM1_CC4 触发 ADC injected conversion；
+     * - 如果你的 CubeMX 使用 TIM1 TRGO/update 触发 ADC，可以保留 Base_Start 并按实物配置调整。
      */
-    hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
+    __HAL_TIM_MOE_DISABLE(&htim1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0u);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0u);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0u);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, duty_to_ccr(0.5f));
+
     (void)HAL_TIM_Base_Start(&htim1);
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+    (void)HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_4);
+
     __HAL_TIM_MOE_DISABLE(&htim1);
     s_pwm_enabled = false;
 }
@@ -111,7 +111,7 @@ void hal_pwm_set_duty(float duty_u, float duty_v, float duty_w)
 {
     /*
      * 20 kHz ISR 内调用，必须只写寄存器，不阻塞。
-     * TIM1 互补输出由定时器硬件和死区单元生成，软件只更新 CCR1/2/3。
+     * TIM1 互补输出由硬件和死区单元生成，软件只更新 CCR1/2/3。
      */
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_to_ccr(duty_u));
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_to_ccr(duty_v));
@@ -121,8 +121,7 @@ void hal_pwm_set_duty(float duty_u, float duty_v, float duty_w)
 void hal_pwm_set_all_low(void)
 {
     /*
-     * 对第一次 bring-up，安全态采用“PWM 主输出关闭 + EN_GATE 关闭”，
-     * 不把“低边全开”当作默认安全态。
+     * 第一阶段 bring-up 默认安全态是“MOE=0 + EN_GATE=0”，不把低边全开当作安全态。
      */
     hal_pwm_disable();
 }
