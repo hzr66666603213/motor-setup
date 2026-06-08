@@ -1,690 +1,115 @@
-# ODrive v3.6 Axis0 学习用 FOC 固件框架
+# ODrive v3.6 Axis0 FOC 学习固件框架
 
-本项目是在 **ODrive v3.6** 硬件上搭建的一套学习和二次开发用 FOC 电机控制代码框架。第一阶段只启用 **Axis0**，用于安全地驱动一颗 **2804 外转子无刷电机**，编码器使用 **MT6701 的 ABZ 增量输出** 接入 ODrive Encoder0。
+本项目面向你的真实硬件：
 
-本框架不复制 ODrive 官方固件代码，只参考 ODrive v3.x 的硬件架构和模块划分。所有硬件访问都通过 `board/hal/drivers` 抽象层完成，FOC 数学模块不直接调用 STM32 HAL。
+- ODrive v3.6 双轴三相 FOC 控制板。
+- STM32F405RG。
+- TI DRV8301 类三相栅极驱动。
+- Axis0 接 2804 外转子无刷电机。
+- MT6701 磁编码器第一阶段使用 ABZ 增量输出，接 ODrive Encoder0 A/B/Z。
+- STLINK-V3MINIE、USB 数据线、直流限流电源。
 
-## 硬件清单
+第一阶段只启用 Axis0，Axis1 资源保留但默认不参与控制。2804 的 `pole_pairs` 默认先填 7，但不同厂家可能不同，必须实测确认。
 
-- ODrive v3.6
-- STM32F405RG，板载于 ODrive v3.6
-- DRV8301 类三相栅极驱动
-- 2804 外转子无刷电机
-- MT6701 磁编码器，第一阶段使用 ABZ
-- STLINK-V3MINIE
-- USB 数据线
-- 直流限流电源，建议先用 12 V 或 24 V，不要直接上 48 V
+## 项目目标
 
-## 为什么第一版使用 ABZ 而不是 SSI
+这是一套学习和二次开发用的 FOC 固件框架，不直接复制 ODrive 官方固件代码。目标是让 2804 小电机在低压、低电流、可观察、可逐步排故的条件下跑通：
 
-- ODrive v3.6 原生硬件接口支持 quadrature encoder。
-- MT6701 的 ABZ 输出更容易先接入 Encoder0 A/B/Z。
-- ABZ 计数可以直接用 STM32 定时器 Encoder Mode 读取，适合第一阶段学习。
-- SSI/绝对角读取后续再做，第一版先把 PWM、电流采样、ABZ、开环和闭环链路跑通。
-
-注意：ABZ 是增量反馈，上电后绝对角度未知。如果不使用 Z/index，每次上电都必须重新做电角度零位校准。
-
-## 目录结构
-
-```text
-include/
-  app/
-    axis0_types.h              Axis0 公共配置、实时状态、命令和状态枚举。
-    axis0_current_loop_isr.h   Axis0 20kHz FOC 电流环 ISR 入口。
-    axis_state_machine.h       Axis0 状态机，1kHz/后台调用。
-    calibration.h              Axis0 非阻塞校准流程。
-    console.h                  USB CDC/UART 文本命令接口。
-    parameter_table.h          Axis0 调试参数读写表。
-  board/
-    board_odrive_v36.h         ODrive v3.6 板级资源、pin map 和安全接口。
-  config/
-    axis0_default_config.h     2804 + MT6701 ABZ 的低风险默认参数。
-  drivers/
-    current_sensor.h           ODrive Axis0 电流/母线电压采样转换。
-    drv8301.h                  DRV8301 gate driver 抽象。
-    encoder_mt6701_abz.h       MT6701 ABZ 增量编码器模块。
-  foc/
-    foc_math.h                 Clarke/Park/反 Park/角度归一化/限幅/滤波。
-    svpwm.h                    独立 SVPWM 模块。
-  sim/
-    foc_sim.h                  Simulink/PC 侧纯算法 FOC 仿真入口，不依赖 STM32 HAL。
-  control/
-    current_controller.h       d/q 电流 PI。
-    velocity_controller.h      速度 PI。
-    position_controller.h      位置 P。
-  protection/
-    fault.h                    故障 bitmask 和安全关断。
-    protection.h               快速/慢速保护。
-  hal/
-    hal_*.h                    可替换为 STM32 HAL/LL 的硬件抽象接口。
-src/
-  app/
-    axis0_current_loop_isr.c
-    axis_state_machine.c
-    calibration.c
-    console.c
-    parameter_table.c
-    axis0_default_config.c
-  board/
-    board_odrive_v36.c
-  drivers/
-    current_sensor.c
-    drv8301.c
-    encoder_mt6701_abz.c
-  foc/
-    foc_math.c
-    svpwm.c
-  sim/
-    foc_sim.c                  调用 foc_math/current_controller/svpwm 的仿真步进实现。
-  control/
-    current_controller.c
-    velocity_controller.c
-    position_controller.c
-  protection/
-    fault.c
-    protection.c
-  hal/
-    hal_*.c                    当前是 mock/stub，后续替换为 STM32 实现。
-tests/
-  foc_math_test.c
-  foc_sim_test.c               PC 侧仿真入口 smoke test。
-```
-
-## Simulink 仿真入口
-
-本工程提供了一个不依赖 STM32 HAL 的 FOC 仿真入口，文件为：
-
-- `include/sim/foc_sim.h`
-- `src/sim/foc_sim.c`
-
-该入口不包含 `stm32f4xx_hal.h`，也不调用 `hal_pwm`、`hal_adc`、`hal_spi`、`hal_gpio`。它只调用纯算法模块：
-
-- `src/foc/foc_math.c`
-- `src/foc/svpwm.c`
-- `src/control/current_controller.c`
-- `src/control/velocity_controller.c`
-
-Simulink C Caller 推荐调用 `foc_sim_step_wrapper()`，不要直接调用 `foc_sim_step()`。
-
-`foc_sim_step_wrapper()` 的特点：
-
-- wrapper 内部会自动初始化静态 context，不需要在 Simulink `InitFcn` 里用 `coder.ceval('foc_sim_init')`。
-- 输入/输出使用 `double`，匹配 Simulink 默认信号类型。
-- `pole_pairs` 先用 `double` 输入，例如 `7.0`，wrapper 内部会检查并四舍五入成整数极对数。
-
-```c
-status = foc_sim_step_wrapper(ia,
-                              ib,
-                              ic,
-                              mechanical_angle_rad,
-                              mechanical_velocity_rad_s,
-                              vbus,
-                              id_target,
-                              iq_target,
-                              dt,
-                              pole_pairs,
-                              encoder_offset,
-                              &id,
-                              &iq,
-                              &vd,
-                              &vq,
-                              &v_alpha,
-                              &v_beta,
-                              &duty_u,
-                              &duty_v,
-                              &duty_w);
-```
-
-`foc_sim_step_wrapper()` 的输入和输出全部是标量或标量指针，便于 Simulink C Caller 绑定。返回值为 `0` 表示正常；输入无效时返回 `-2`，输出会置为零电压和 `50%` duty。
-
-PC 侧可用普通 gcc 做 smoke test：
-
-```bash
-make sim_test
-```
-
-如果没有 `make`，可以直接编译这些文件：
-
-```bash
-gcc -std=c11 -Wall -Wextra -Werror -Iinclude \
-  tests/foc_sim_test.c \
-  src/sim/foc_sim.c \
-  src/control/current_controller.c \
-  src/control/velocity_controller.c \
-  src/foc/foc_math.c \
-  src/foc/svpwm.c \
-  -lm -o build/foc_sim_test
-```
-
-## 第三阶段验证清单
-
-在继续写 STM32 HAL 真机驱动前，建议先完成以下仿真验证：
-
-1. Simulink 跑电流环：`iq_ref` 从 `0 A` 阶跃到 `0.5 A`，确认 `iq` 收敛，`vq` 不超过 `voltage_limit`。
-2. Simulink 跑速度环：`velocity_ref` 从 `0 rad/s` 阶跃到 `10 rad/s`，确认速度环输出的 `iq_ref` 合理且受 `current_limit` 约束。
-3. 加负载突变 `Tload`，确认速度短暂跌落后能恢复，且电流目标不出现不可控尖峰。
-4. 加电压限幅和电流限幅，确认系统进入饱和后不会发散，退出饱和后积分器不会留下明显冲击。
-5. 再开始 STM32 HAL bring-up，顺序为：GPIO -> VBUS ADC -> ABZ -> PWM -> DRV8301 -> 电流 ADC。
-
-## 控制频率
-
-| 任务 | 频率 | 主要文件 |
-| --- | --- | --- |
-| PWM/电流环 | 20 kHz | `axis0_current_loop_isr.c`、`current_controller.c`、`foc_math.c`、`svpwm.c` |
-| 速度环 | 1 kHz | `axis_state_machine.c`、`velocity_controller.c` |
-| 位置环 | 500 Hz 或 1 kHz | `position_controller.c` |
-| 状态机/保护慢速检查 | 1 kHz / 100 Hz | `axis_state_machine.c`、`protection.c` |
-| USB CDC/UART 命令 | 后台 | `console.c`、`parameter_table.c` |
-
-20 kHz ISR 中禁止 `malloc`、`printf`、`delay` 和阻塞式 SPI/I2C/CAN/USB 通信。
-
-## ODrive v3.6 Pin Map 说明
-
-已按公开 ODrive v3.6 pinout 填入的资源：
-
-- Axis0 PWM：TIM1
-  - AH `PA8`
-  - BH `PA9`
-  - CH `PA10`
-  - AL `PB13`
-  - BL `PB14`
-  - CL `PB15`
-- Axis0 电流采样：
-  - `M0_SO1 = PC0 / ADC2_IN10`
-  - `M0_SO2 = PC1 / ADC2_IN11`
-  - 第三相第一版按两相采样由 `ic = -ia - ib` 推算
-- VBUS：`PA6 / ADC1_IN6`
-- Axis0 温度：`PC5 / ADC1_IN15`
-- DRV8301 SPI3：
-  - SCK `PC10`
-  - MISO `PC11`
-  - MOSI `PC12`
-  - Axis0 CS `PC13`
-  - Axis1 CS `PC14`
-  - EN_GATE `PB12`
-  - nFAULT `PD2`
-- Encoder0：
-  - A `PB4 / TIM3_CH1`
-  - B `PB5 / TIM3_CH2`
-  - Z `PC9`
-- USB：
-  - DM `PA11`
-  - DP `PA12`
-- UART2 可选：
-  - TX `PA2`
-  - RX `PA3`
-- CAN 可选：
-  - RX `PB8`
-  - TX `PB9`
-
-仍需人工确认：
-
-- `ODRV36_BRAKE_RES_PORT_PIN`：制动电阻控制引脚和驱动逻辑。
-- 电流采样比例：采样电阻、运放增益、ADC 参考电压。
-- VBUS 分压比例。
-- Axis0 两路电流采样与实际相名的对应关系。
-
-参考资料：[Apache NuttX ODrive v3.6 board 文档](https://nuttx.apache.org/docs/12.11.0/platforms/arm/stm32f4/boards/odrive36/index.html)。
-
-## 默认低风险参数
-
-见 `include/config/axis0_default_config.h`：
-
-- 默认测试电压：12 V 或 24 V
-- `current_limit = 1.0 A`
-- `calibration_current = 0.5 A`
-- `voltage_limit = 3.0 V`
-- `velocity_limit = 20 rad/s`
-- `pwm_frequency = 20000 Hz`
-- `current_loop = 20000 Hz`
-- `velocity_loop = 1000 Hz`
-- `position_loop = 500 Hz`
-- MT6701 ABZ 默认 `ppr = 1024`，`cpr = 4096`
-- `pole_pairs = 7`
-
-重要：2804 不同厂家极对数可能不同，默认 7 只是起点，必须实测确认。
-
-## 接线说明
-
-- 2804 三相线接 ODrive 的 M0 三相输出。
-- MT6701：
-  - A 接 Encoder0 A
-  - B 接 Encoder0 B
-  - Z 可选接 Encoder0 Z
-  - VCC/GND 接 ODrive 编码器供电和地
-- 直流限流电源接 ODrive DC input。
-- STLINK-V3MINIE 接 ODrive SWD。
-- USB 数据线接 ODrive USB。
-
-## STLINK-V3MINIE 烧录说明
-
-STLINK-V3MINIE 到 ODrive SWD 至少连接：
-
-- SWDIO
-- SWCLK
-- GND
-- NRST
-- VTref / 3.3 V reference
-
-ODrive 板必须由自己的直流电源供电，STLINK 的 VTref 只用于电平参考，不建议用 STLINK 给功率板供电。
-
-## 当前代码到电机转起来的前提
-
-当前仓库已经给出了 FOC、状态机、校准、保护、DRV8301、MT6701 ABZ、控制台和 ODrive v3.6 板级抽象的代码框架，但 `src/hal/hal_*.c` 仍然是 mock/stub。也就是说：
-
-- 现在的代码结构是可以移植的固件骨架。
-- 只有把 HAL 层真正绑定到 STM32F405RG 外设后，ODrive v3.6 板上的电机才会实际转动。
-- 在 HAL 未替换前，`get vbus`、PWM、ADC、TIM3 编码器、DRV8301 SPI 都只是占位行为。
-
-详细实现步骤见 [ODrive v3.6 真实硬件移植实现指南](docs/ODRIVE_V36_REAL_PORTING.md)。
-
-让电机真正转起来前，必须完成以下硬件绑定：
-
-1. `hal_pwm.c`：绑定 TIM1 CH1/2/3 和 CH1N/2N/3N，中心对齐 20 kHz，互补 6PWM，配置死区。
-2. `hal_adc.c`：绑定 Axis0 电流采样 ADC、VBUS ADC、温度 ADC，并由 TIM1 在正确采样窗口触发。
-3. `hal_gpio.c`：绑定 `PB12 EN_GATE`、`PD2 nFAULT`、调试 LED 或测试点。
-4. `hal_spi.c`：绑定 SPI3，用于 DRV8301 寄存器读写，Axis0 CS 为 `PC13`。
-5. `encoder_mt6701_abz.c`：把 `encoder_mt6701_abz_read_raw_count()` 改为读取 TIM3 Encoder Mode 的展开计数。
-6. `hal_uart.c` 或 USB CDC 后端：把 `console_poll()` 接到 USB CDC 或 UART 接收环形缓冲。
-7. 在 ADC 转换完成中断或 PWM 周期中断中调用 `axis0_current_loop_isr()`。
-8. 在 1 kHz 定时任务中调用 `axis_update_1khz()`。
-9. 在后台循环中调用 `axis_update_background()` 和 `console_poll()`。
-
-## STM32CubeIDE 工程接入步骤
-
-推荐先用 STM32CubeIDE 建一个最小工程，再把本仓库模块逐步加入。
-
-1. 新建 MCU 工程，芯片选择 `STM32F405RGT6` 或与 ODrive v3.6 实物一致的 STM32F405RG 封装配置。
-2. 时钟建议配置到 168 MHz，打开 SWD 调试接口。
-3. 配置 USB FS Device，启用 CDC，或先使用 UART2 做文本控制台。
-4. 配置 TIM1：
-   - center-aligned PWM；
-   - 20 kHz；
-   - CH1/2/3 + CH1N/2N/3N；
-   - dead time 必须按 ODrive v3.6 MOS/DRV8301 实际需求设置；
-   - 上电默认不启动 PWM 输出。
-5. 配置 ADC：
-   - Axis0 电流采样：`PC0 ADC2_IN10`、`PC1 ADC2_IN11`；
-   - VBUS：`PA6 ADC1_IN6`；
-   - 温度：`PC5 ADC1_IN15`；
-   - ADC 触发应与 TIM1 PWM 同步，采样点应落在低边电流有效窗口。
-6. 配置 TIM3 Encoder Mode：
-   - Encoder0 A：`PB4 TIM3_CH1`；
-   - Encoder0 B：`PB5 TIM3_CH2`；
-   - Z/index：`PC9` 可先不启用。
-7. 配置 SPI3：
-   - SCK `PC10`；
-   - MISO `PC11`；
-   - MOSI `PC12`；
-   - Axis0 DRV8301 CS `PC13`。
-8. 配置 GPIO：
-   - EN_GATE `PB12` 输出，默认低；
-   - nFAULT `PD2` 输入；
-   - 可选调试 LED/测试点。
-9. 把 `include/` 加入编译器 include path。
-10. 把 `src/app`、`src/board`、`src/control`、`src/drivers`、`src/foc`、`src/protection` 加入工程。
-11. 用真实 STM32 HAL/LL 代码替换 `src/hal/hal_*.c` 的 stub。
-12. 在 `main.c` 中静态创建 Axis0 对象、控制器对象、DRV8301 对象、编码器对象和状态机对象。
-
-最小主循环结构示意：
-
-```c
-static Axis0Context axis0;
-static Drv8301 drv0;
-static Drv8301 drv1;
-static EncoderMt6701AbzState enc0;
-static CurrentSensorConfig current_sensor0;
-static CurrentController current_ctrl0;
-static VelocityController velocity_ctrl0;
-static PositionController position_ctrl0;
-static Axis0StateMachineContext sm0;
-static Axis0Console console0;
-
-int main(void)
-{
-    hal_init_all_stm32_peripherals();
-
-    axis0.config = axis0_default_config_make();
-    axis0.state = AXIS0_STATE_BOOT;
-    axis0.requested_state = AXIS0_STATE_IDLE;
-
-    current_sensor_set_default_config(&current_sensor0);
-    drv8301_init_axis(&drv0, 0);
-    drv8301_init_axis(&drv1, 1);
-    current_sensor_bind_drv8301_gain(&current_sensor0, drv0.shunt_amp_gain_v_v);
-    encoder_mt6701_abz_init(&enc0, &encoder_config);
-    current_controller_init(&current_ctrl0,
-                            axis0.config.control.current_kp,
-                            axis0.config.control.current_ki,
-                            axis0.config.motor.voltage_limit_v);
-    velocity_controller_init(&velocity_ctrl0,
-                             axis0.config.control.velocity_kp,
-                             axis0.config.control.velocity_ki,
-                             axis0.config.motor.current_limit_a,
-                             axis0.config.motor.velocity_limit_rad_s);
-    position_controller_init(&position_ctrl0,
-                             axis0.config.control.position_kp,
-                             axis0.config.motor.velocity_limit_rad_s,
-                             -3.14159f,
-                             3.14159f);
-
-    sm0.current_sensor = &current_sensor0;
-    sm0.encoder = &enc0;
-    sm0.drv0 = &drv0;
-    sm0.drv1 = &drv1;
-    sm0.velocity_controller = &velocity_ctrl0;
-    sm0.position_controller = &position_ctrl0;
-
-    console_init(&console0, &axis0, &enc0);
-
-    while (1) {
-        console_poll(&console0);
-        axis_update_background(&axis0, &sm0);
-    }
-}
-```
-
-20 kHz 中断中只做高速电流环：
-
-```c
-void adc_or_pwm_20khz_callback(void)
-{
-    static Axis0IsrContext isr_ctx = {
-        .axis = &axis0,
-        .current_controller = &current_ctrl0,
-        .current_sensor = &current_sensor0,
-        .encoder = &enc0,
-        .drv0 = &drv0,
-        .drv1 = &drv1,
-    };
-
-    axis0_current_loop_isr(&isr_ctx, 1.0f / 20000.0f);
-}
-```
-
-1 kHz 定时器任务中跑状态机和外环：
-
-```c
-void timer_1khz_callback(void)
-{
-    axis_update_1khz(&axis0, &sm0, 0.001f);
-}
-```
-
-## 编译与烧录流程
-
-使用 STM32CubeIDE：
-
-1. `Project -> Build Project`，确认无编译错误。
-2. 接好 STLINK-V3MINIE：SWDIO、SWCLK、GND、NRST、VTref。
-3. ODrive 用直流限流电源单独供电，先不要接电机三相线。
-4. `Run -> Debug Configurations`，选择 ST-LINK。
-5. 第一次建议勾选下载后停在 `main()`，不要让程序直接跑起来。
-6. 点击 Debug，确认能连接 STM32F405 并成功下载。
-7. 单步或运行到 `board_init_power_safe()`，确认 EN_GATE 仍为低、PWM 未输出。
-8. 退出 Debug 后复位板子，打开 USB CDC 或 UART 串口，确认控制台有响应。
-
-使用命令行工具时，流程等价：
-
-```text
-arm-none-eabi-gcc / CubeIDE build
-STM32_Programmer_CLI -c port=SWD -w build/firmware.elf -v -rst
-```
-
-具体命令取决于你最终选择 CubeIDE、Makefile 还是 CMake。
-
-## 第一次上电顺序
-
-1. 不接电机。
-2. 只接 USB，确认设备能被电脑识别。
-3. 接 STLINK，确认 SWD 能连接 STM32F405。
-4. 接低压限流电源，建议 12 V，电流限制先设很小。
-5. 读取 `vbus`，确认母线电压合理。
-6. 确认 PWM 默认关闭。
-7. 确认 DRV8301 默认关闭，EN_GATE 不使能。
-8. 接 MT6701 ABZ，手动旋转电机，检查 Encoder0 count 是否变化。
-9. 断电后接电机三相线。
-10. 上电后做电流零偏校准、电机校准、编码器校准。
-11. 低电流、低电压进入闭环。
-
-## 调试阶段建议顺序
-
-1. LED/USB 通信测试。
-2. PWM 空载测试，gate 仍保持关闭。
-3. ADC 零偏测试。
-4. MT6701 ABZ 计数测试。
-5. 开环 SVPWM，低压低占空比。
-6. 电流采样方向确认。
+1. TIM1 互补 PWM。
+2. DRV8301 初始化和 nFAULT 保护。
+3. 两相电流采样，第三相用 `ic=-ia-ib` 推算。
+4. VBUS ADC 采样。
+5. MT6701 ABZ / TIM3 Encoder Mode 计数。
+6. 开环 SVPWM。
 7. 编码器方向判断。
 8. 电角度零位校准。
 9. Id/Iq 电流环。
 10. 速度环。
 11. 位置环。
 
-2804 第一次测试必须低压、低电流、空载，转子必须能自由旋转。
+## 目录结构
 
-## 从烧录到电机转动的实操流程
+- `include/`：公共头文件。
+- `src/app/`：Axis0 应用层、状态机、校准、console。
+- `src/board/`：ODrive v3.6 板级安全抽象。
+- `src/control/`：电流环、速度环、位置环。
+- `src/drivers/`：DRV8301、MT6701 ABZ、电流采样转换。
+- `src/foc/`：Clarke、Park、反 Park、SVPWM、限幅、滤波。
+- `src/hal/mock/`：PC/Simulink/mock 后端。
+- `src/hal/stm32f405/`：STM32F405 真实 HAL 后端。
+- `src/sim/`：Simulink / PC 仿真入口。
+- `tests/`：PC 单元测试。
 
-下面流程按风险从低到高排列。不要跳步。
+## HAL 后端选择
 
-### 0. 上电前检查
+不要把 mock 和真实 STM32 后端同时编译。
 
-1. 电机三相线先不要接。
-2. MT6701 可以先接，也可以等 USB 通信确认后再接。
-3. 直流电源设为 12 V，限流建议先设 `0.5 A` 到 `1.0 A`。
-4. STLINK 和 USB 都接好。
-5. 确认电机轴能自由转动，后续校准时不能带负载。
+PC 测试和 Simulink 使用：
 
-### 1. 烧录后确认固件活着
+- `src/hal/mock/*.c`
 
-打开 USB CDC 或 UART 串口，发送：
+ODrive v3.6 上板使用：
 
-```text
-get state
-get fault
-get vbus
-```
+- `src/hal/stm32f405/hal_pwm_stm32f405.c`
+- `src/hal/stm32f405/hal_adc_stm32f405.c`
+- `src/hal/stm32f405/hal_gpio_stm32f405.c`
+- `src/hal/stm32f405/hal_spi_stm32f405.c`
+- `src/hal/stm32f405/hal_encoder_stm32f405.c`
 
-期望：
+早期兼容文件 `src/hal/hal_pwm.c`、`hal_adc.c`、`hal_gpio.c`、`hal_spi.c` 仍是 mock。真实固件工程不要编译这些文件，否则会和 `src/hal/stm32f405/*.c` 重复定义。
 
-- `state idle` 或 `state boot` 后很快进入 `idle`；
-- `fault 0`；
-- `vbus` 接近你的电源电压，例如 12 V 附近。
+## STM32CubeMX / CubeIDE 外设要求
 
-如果 `vbus` 明显不对，先不要继续。需要修正 VBUS ADC 分压比例。
+CubeMX 工程需要提供这些句柄：
 
-### 2. 确认默认安全输出
+- `TIM_HandleTypeDef htim1`：Axis0 三相互补 PWM。
+- `TIM_HandleTypeDef htim3`：Encoder0 ABZ 的 A/B 计数。
+- `ADC_HandleTypeDef hadc1`：VBUS、温度等采样。
+- `ADC_HandleTypeDef hadc2`：Axis0 两相电流采样。
+- `SPI_HandleTypeDef hspi3`：DRV8301 SPI。
 
-用万用表或示波器确认：
+当前真实后端默认资源：
 
-- `PB12 EN_GATE` 默认低；
-- TIM1 PWM 输出默认不驱动功率级；
-- DRV8301 `nFAULT` 未报错；
-- 直流电源电流接近空载电流。
+- TIM1 PWM：PA8/PA9/PA10 + PB13/PB14/PB15。
+- TIM3 Encoder0 AB：PB4/PB5。
+- EN_GATE：PB12，M0/M1 共用。
+- nFAULT：PD2，M0/M1 共用，低有效。
+- SPI3：PC10/PC11/PC12。
+- DRV0 CS：PC13。
+- DRV1 CS：PC14。
 
-如果 EN_GATE 上电就是高，立即断电并检查 `hal_gpio_set_gate_enable(false)` 后端。
+VBUS 比例、电流采样比例、ADC rank、采样触发点必须按你的 ODrive v3.6 实物和 CubeMX 配置核对。24V/56V 版本、分压电阻批次、DRV8301 gain、shunt 阻值都会影响实际比例。
 
-### 3. 验证 MT6701 ABZ 计数
+## 控制频率
 
-接好 MT6701 ABZ 到 Encoder0，手动慢慢转动电机，反复发送：
+- PWM / 电流环：20 kHz。
+- 速度环：1 kHz。
+- 位置环：500 Hz 或 1 kHz。
+- 状态机、保护、通信：100 Hz 到 1 kHz，或后台轮询。
 
-```text
-get angle
-get velocity
-```
+PWM ISR 中禁止 `malloc`、`printf`、`delay`、阻塞式 SPI/CAN/USB/UART。
 
-期望：
+## 状态机
 
-- 手动旋转时 `angle` 变化；
-- 停止时 `velocity` 接近 0；
-- 如果角度不变，检查 MT6701 供电、A/B 线、TIM3 Encoder Mode、CPR。
+主要运行状态：
 
-### 4. 电流零偏校准
+- `boot`：板级安全初始化，PWM off，EN_GATE off。
+- `idle`：等待命令，功率级关闭。
+- `current_offset_calibration`：电流采样零偏校准。
+- `motor_calibration`：低压相电阻/相电感估算。
+- `encoder_calibration`：编码器方向和电角度 offset 校准。
+- `ready`：三类校准都完成，允许进入闭环。
+- `closed_loop`：运行 FOC。
+- `fault`：立即关闭 PWM 和 EN_GATE。
 
-保持电机三相线未接，或者确认功率级关闭，发送：
+Bring-up 测试状态：
 
-```text
-request_state current_offset_calibration
-get state
-get fault
-```
+- `pwm_test`：EN_GATE 保持低，只输出 TIM1 PWM 波形。
+- `encoder_test`：功率级关闭，只观察 TIM3 ABZ count。
+- `adc_offset_test`：功率级关闭，观察电流 ADC 零偏。
+- `open_loop_voltage_test`：功率级打开，但电压限制在 0.5V 以下。
 
-期望：
-
-- 校准过程中 PWM 和 EN_GATE 仍关闭；
-- 完成后进入 `ready` 或回到安全状态；
-- `fault 0`。
-
-如果失败，优先检查 ADC 原始值是否稳定、零偏是否接近 ADC 中点。
-
-### 5. 接电机，做低风险电机校准
-
-断电，接 2804 三相线到 M0。重新上电，保持 12 V 限流。发送：
-
-```text
-set current_limit 1.0
-set voltage_limit 3.0
-set pole_pairs 7
-request_state motor_calibration
-get fault
-```
-
-期望：
-
-- 电机可能轻微动作，但不应剧烈抖动；
-- 电源不应进入持续限流；
-- 无 nFAULT、无过流。
-
-注意：当前 `calibration.c` 的电阻/电感注入仍是 skeleton。如果你还没有实现真实注入函数，这一步只会走状态流程，不会得到真实 R/L。要让电流环可靠工作，必须补上低电压注入和电流采样计算。
-
-### 6. 编码器方向和电角度零位校准
-
-电机必须空载自由旋转，发送：
-
-```text
-request_state encoder_calibration
-get angle
-get fault
-```
-
-期望：
-
-- 电机低速、低电流缓慢转动或锁定；
-- 方向判断成功；
-- offset 写入 `axis0.config.encoder.encoder_offset_rad`；
-- 无故障。
-
-注意：当前 `calibration.c` 已预留方向判断和 offset 计算，但“开环旋转电角度”和“小 d 轴锁定电流”的实际输出函数仍需要接入。未接入前，编码器校准不能真正完成实际物理校准。
-
-### 7. 第一次闭环前检查
-
-发送：
-
-```text
-get fault
-get state
-get vbus
-get angle
-get velocity
-set current_limit 0.5
-set voltage_limit 2.0
-set control_mode torque
-set input_torque 0.0
-```
-
-确认：
-
-- `fault 0`；
-- 已完成电流零偏、电机校准、编码器校准；
-- 电机空载；
-- 电源限流仍较小；
-- 手放在电源开关附近，准备随时断电。
-
-### 8. 进入闭环但不给力矩
-
-```text
-request_state closed_loop
-get state
-get fault
-get id
-get iq
-```
-
-期望：
-
-- 进入 `closed_loop`；
-- `id/iq` 接近 0；
-- 电机不明显抖动；
-- 电源电流没有突然升高。
-
-如果一进闭环就抖动或限流，立即断电。重点检查：
-
-- `pole_pairs`；
-- 编码器方向；
-- encoder offset；
-- 电流采样符号；
-- 三相线相序；
-- current PI 参数过大。
-
-### 9. 低力矩让电机轻微转动
-
-```text
-set input_torque 0.005
-get iq
-get velocity
-set input_torque 0.0
-```
-
-如果方向正常、无过流，可以稍微增大到：
-
-```text
-set input_torque 0.01
-```
-
-不要一开始超过 `0.02 Nm`。如果 torque_constant 不准，实际电流会偏差，以 `get iq` 和电源电流为准。
-
-### 10. 速度环低速测试
-
-```text
-set input_torque 0.0
-set control_mode velocity
-set input_velocity 2.0
-get velocity
-set input_velocity 0.0
-```
-
-确认速度能平滑跟随，再尝试：
-
-```text
-set input_velocity 5.0
-```
-
-如果振荡，降低 `velocity.kp/ki` 默认值，或先只开很小的 `velocity_kp`。
-
-### 11. 位置环小角度测试
-
-```text
-set control_mode position
-set input_position 0.2
-get angle
-set input_position 0.0
-```
-
-位置环第一次测试只做小角度，不要直接给大阶跃。
-
-## 当前代码还需要补齐的“真转电机”关键点
-
-为了让 2804 真正稳定转起来，下面这些不是文档项，而是必须完成的代码项：
-
-- `hal_pwm.c` 必须真实写 TIM1 互补 PWM。
-- `hal_adc.c` 必须真实读取同步 ADC 样本。
-- `hal_spi.c` 必须真实读写 DRV8301。
-- `hal_gpio.c` 必须真实控制 EN_GATE 和读取 nFAULT。
-- `encoder_mt6701_abz_read_raw_count()` 必须真实读取 TIM3 Encoder Mode 计数。
-- `calibration.c` 需要补上开环电压矢量/小 d 轴电流注入函数，否则电阻、电感、方向、offset 只是流程占位。
-- DRV8301 寄存器配置和状态解析需要按 datasheet 补齐。
-- 电流采样比例、VBUS 比例必须按 ODrive v3.6 实物校准。
-- ODrive v3.6 24V/56V 版本可能使用不同 VBUS 分压比例，不同版本不要共用同一个 `vbus_scale_v_per_count`。
+没有完成 `current_offset_valid`、`motor_calibrated`、`encoder_calibrated` 三个条件时，不允许进入 `closed_loop`。
 
 ## 文本命令示例
 
@@ -710,6 +135,10 @@ set input_torque 0.02
 set input_velocity 5.0
 set input_position 1.57
 request_state idle
+request_state pwm_test
+request_state encoder_test
+request_state adc_offset_test
+request_state open_loop_voltage_test
 request_state current_offset_calibration
 request_state motor_calibration
 request_state encoder_calibration
@@ -719,32 +148,67 @@ save_config
 reboot
 ```
 
+## 编译、烧录、连接
+
+1. 安装 STM32CubeIDE、STM32CubeProgrammer、ST-LINK Driver。
+2. 用 CubeMX 建 STM32F405RG 工程，配置 TIM1、TIM3、ADC1、ADC2、SPI3、GPIO、USB CDC 或 UART。
+3. 把本工程 `include/` 加入 include path。
+4. 把 `src/foc`、`src/control`、`src/drivers`、`src/board`、`src/app` 和 `src/hal/stm32f405` 加入工程。
+5. 不要加入 `src/hal/mock` 和早期兼容 mock 文件。
+6. 用 STLINK-V3MINIE 连接 SWDIO、SWCLK、GND、NRST、VTref。ODrive 由直流限流电源单独供电，VTref 只作为电平参考。
+7. CubeIDE 编译后用 Debug 或 STM32CubeProgrammer 烧录。
+8. 用 USB CDC 或 UART 打开串口调试终端。
+
+## 第一次上电顺序
+
+1. 不接电机，不接主电源，只接 USB，确认设备能枚举。
+2. 接 STLINK，确认能识别 STM32F405。
+3. 接低压限流电源，建议 12V，电流限制 0.3A 到 0.5A。
+4. 上电后确认默认状态为 `idle`，PWM 关闭，EN_GATE 关闭。
+5. `get vbus`，确认母线电压读数接近电源电压。
+6. `request_state pwm_test`，EN_GATE 仍为低，用示波器看 TIM1 六路 PWM。
+7. 接 MT6701 ABZ，`request_state encoder_test`，手转电机确认 angle/count/velocity 变化。
+8. `request_state adc_offset_test`，确认 ia/ib/ic 接近 0A 且稳定。
+9. 初始化/读取 DRV8301，确认 nFAULT 未触发。
+10. 接 2804 三相线到 M0，电机空载、能自由转动。
+11. `request_state current_offset_calibration`。
+12. `request_state open_loop_voltage_test`，只用 0.5V 以下，确认电机有轻微响应且不过流。
+13. `request_state motor_calibration`，从 0.05V 到 0.10V 小电压估算 R/L。
+14. `request_state encoder_calibration`，判断方向并计算电角度 offset。
+15. `set control_mode torque`，`set input_torque 0.01`，`request_state closed_loop`，先用很小力矩测试。
+16. torque 模式稳定后，再测速度环和位置环。
+
 ## 安全警告
 
-- 不要一上来用 48 V。
-- 不要一上来设置大电流。
+- 不要一上来用 48V。
+- 不要一上来大电流。
 - 不要带负载校准。
-- 校准时电机必须能自由转动。
-- 出现抖动、尖叫、过流、nFAULT，立即断电。
-- 没有完成电流零偏、电机参数和编码器零位校准，不允许进入闭环。
+- 电机必须能自由转动。
+- 出现抖动、尖叫、过流、nFAULT 或电源限流，立即断电。
+- 没有确认 pole_pairs、相序、电流采样方向、编码器方向和 offset 前，不要提高电流/电压限制。
 
-## 常见问题排查
+## PC 测试
 
-- STLINK 连接失败：检查 SWDIO/SWCLK/GND/NRST/VTref，确认 ODrive 已单独供电。
-- USB 不识别：检查 USB 线是否为数据线，确认固件未卡死在早期 hard fault。
-- nFAULT 报错：确认 EN_GATE 默认关闭，检查 DRV8301 电源、SPI 配置和功率级短路。
-- 编码器计数不变：检查 MT6701 供电、A/B 接线、TIM3 Encoder Mode 和 cpr 配置。
-- 方向反：运行 encoder direction calibration，或临时设置 `encoder_direction = -1`。
-- 电机抖动：检查相序、电流采样符号、编码器方向和电角度 offset。
-- 电流环发散：降低 `current_kp/current_ki`，确认 R/L 校准和电流采样比例。
+```bash
+make test
+```
+
+当前 PC 测试覆盖：
+
+- Clarke/Park/反 Park/SVPWM。
+- 电流 PI 和电压限幅。
+- `foc_sim_step_wrapper()` 边界条件。
+- 速度环 Simulink wrapper。
+- 一阶电流对象闭环响应。
 
 ## 后续 TODO
 
-- Axis1 支持
-- MT6701 I2C 配置
-- MT6701 SSI 读取
-- CAN 控制
-- 参数 Flash 保存
-- 制动电阻保护
-- 温度降额
-- 力矩模式优化
+- Axis1 支持。
+- MT6701 I2C 配置。
+- MT6701 SSI 读取。
+- CAN 控制。
+- 参数 Flash 保存。
+- 制动电阻保护。
+- 温度降额。
+- 弱磁控制。
+- MTPA。

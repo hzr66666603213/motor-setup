@@ -2,6 +2,8 @@
 
 #include "board/board_odrive_v36.h"
 #include "foc/foc_math.h"
+#include "hal/hal_gpio.h"
+#include "hal/hal_pwm.h"
 #include "protection/fault.h"
 #include "protection/protection.h"
 
@@ -70,6 +72,29 @@ static void axis_enter_state(Axis0Context *axis, Axis0StateMachineContext *sm, A
         if (!board_enable_axis0_power_stage(axis)) {
             set_fault(axis, AXIS0_FAULT_PWM_NOT_ENABLED);
         }
+    } else if (next == AXIS0_STATE_PWM_TEST) {
+        /*
+         * PWM_TEST：只验证 TIM1 互补 PWM 管脚和频率。
+         * EN_GATE 必须保持低，DRV8301 不驱动 MOS，示波器只看 MCU PWM 输出。
+         */
+        hal_gpio_set_gate_enable(false);
+        hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
+        hal_pwm_enable();
+    } else if (next == AXIS0_STATE_ENCODER_TEST ||
+               next == AXIS0_STATE_ADC_OFFSET_TEST) {
+        /*
+         * 编码器/ADC 零偏测试都不需要功率级。
+         * 保持 PWM 和 EN_GATE 关闭，后台通过 console 读取 count/current raw。
+         */
+        board_disable_axis0_power_stage(axis);
+    } else if (next == AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST) {
+        /*
+         * 开环低压测试需要功率级，但不要求 encoder_calibrated。
+         * 实际电压在 update 中限制到极低值。
+         */
+        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+            set_fault(axis, AXIS0_FAULT_PWM_NOT_ENABLED);
+        }
     } else if (next == AXIS0_STATE_FAULT) {
         axis0_fault_enter_safe_state(axis);
     }
@@ -104,6 +129,11 @@ void axis_update_1khz(Axis0Context *axis, Axis0StateMachineContext *sm, float dt
             axis_enter_state(axis, sm, AXIS0_STATE_MOTOR_CALIBRATION);
         } else if (axis->requested_state == AXIS0_STATE_ENCODER_CALIBRATION && axis->motor_calibrated) {
             axis_enter_state(axis, sm, AXIS0_STATE_ENCODER_CALIBRATION);
+        } else if (axis->requested_state == AXIS0_STATE_PWM_TEST ||
+                   axis->requested_state == AXIS0_STATE_ENCODER_TEST ||
+                   axis->requested_state == AXIS0_STATE_ADC_OFFSET_TEST ||
+                   axis->requested_state == AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST) {
+            axis_enter_state(axis, sm, axis->requested_state);
         }
     } else if (axis->state == AXIS0_STATE_CURRENT_OFFSET_CALIBRATION ||
                axis->state == AXIS0_STATE_MOTOR_CALIBRATION ||
@@ -132,6 +162,37 @@ void axis_update_1khz(Axis0Context *axis, Axis0StateMachineContext *sm, float dt
         if (axis->requested_state == AXIS0_STATE_CLOSED_LOOP_CONTROL &&
             axis_is_ready_for_closed_loop(axis)) {
             axis_enter_state(axis, sm, AXIS0_STATE_CLOSED_LOOP_CONTROL);
+        }
+    } else if (axis->state == AXIS0_STATE_PWM_TEST ||
+               axis->state == AXIS0_STATE_ENCODER_TEST ||
+               axis->state == AXIS0_STATE_ADC_OFFSET_TEST) {
+        if (axis->requested_state == AXIS0_STATE_IDLE) {
+            axis_enter_state(axis, sm, AXIS0_STATE_IDLE);
+        }
+    } else if (axis->state == AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST) {
+        /*
+         * 低压开环测试：只输出固定 alpha 轴小电压。
+         * 第一次建议 voltage_limit <= 0.5V，current_limit <= 0.5A。
+         */
+        if (axis->requested_state == AXIS0_STATE_IDLE) {
+            axis_enter_state(axis, sm, AXIS0_STATE_IDLE);
+        } else if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+            set_fault(axis, AXIS0_FAULT_PWM_NOT_ENABLED);
+        } else {
+            float duty_a = 0.5f;
+            float duty_b = 0.5f;
+            float duty_c = 0.5f;
+            float test_voltage_v = axis->config.motor.voltage_limit_v;
+            if (test_voltage_v > 0.5f) {
+                test_voltage_v = 0.5f;
+            }
+            foc_svpwm(test_voltage_v, 0.0f, axis->rt.vbus_v, &duty_a, &duty_b, &duty_c);
+            board_axis0_set_pwm_duty(duty_a, duty_b, duty_c);
+            axis->rt.v_alpha_v = test_voltage_v;
+            axis->rt.v_beta_v = 0.0f;
+            axis->rt.duty_a = duty_a;
+            axis->rt.duty_b = duty_b;
+            axis->rt.duty_c = duty_c;
         }
     } else if (axis->state == AXIS0_STATE_CLOSED_LOOP_CONTROL) {
         /*

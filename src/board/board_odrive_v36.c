@@ -23,6 +23,7 @@
 static BoardOdriveV36Status s_board_status;
 static bool s_debug_led_on = false;
 static float s_vbus_scale_v_per_count = 60.0f / 4095.0f;
+static uint32_t s_last_phase_adc_seq = 0u;
 
 static bool board_vbus_in_safe_range(const Axis0Context *axis, float vbus_v)
 {
@@ -105,6 +106,34 @@ bool board_enable_axis0_power_stage(Axis0Context *axis)
     return true;
 }
 
+bool board_enable_axis0_power_stage_for_calibration(Axis0Context *axis)
+{
+    /*
+     * 校准期间需要开环小电压注入，此时 encoder_calibrated 可能尚未完成。
+     * 这里故意不检查 encoder_valid，但仍检查 fault、nFAULT、ADC 和 VBUS。
+     * 该接口只能用于 CURRENT/MOTOR/ENCODER 校准流程，不能作为闭环准入。
+     */
+    s_board_status.drv_nfault_active = hal_gpio_read_fault_pin();
+    s_board_status.adc_valid = hal_adc_samples_valid();
+    s_board_status.vbus_v = board_read_vbus_v();
+
+    if (axis->fault_flags != 0u ||
+        s_board_status.drv_nfault_active ||
+        !s_board_status.adc_valid ||
+        !board_vbus_in_safe_range(axis, s_board_status.vbus_v)) {
+        board_disable_axis0_power_stage(axis);
+        return false;
+    }
+
+    hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
+    hal_gpio_set_gate_enable(true);
+    hal_pwm_enable();
+
+    s_board_status.pwm_disabled = false;
+    s_board_status.drv_gate_enabled = true;
+    return true;
+}
+
 void board_disable_axis0_power_stage(Axis0Context *axis)
 {
     (void)axis;
@@ -140,12 +169,22 @@ bool board_axis0_read_phase_current_raw(uint16_t *raw_a, uint16_t *raw_b, uint16
      * 不伪造 raw_c=2048；第三相原始值在 two-shunt mode 下无效，由 current_sensor
      * 明确使用 ic=-ia-ib 推算。
      */
-    HalAdcPhaseRaw raw;
-    if (!hal_adc_get_phase_current_raw(&raw)) {
+    HalAdcSnapshot snapshot;
+    if (!hal_adc_get_snapshot(&snapshot) || !snapshot.valid) {
         return false;
     }
-    *raw_a = raw.u;
-    *raw_b = raw.v;
+
+    /*
+     * seq 必须更新，否则说明 ISR 可能拿到了上一个 PWM 周期的旧样本。
+     * 真实功率级闭环不能在这种情况下继续计算 FOC。
+     */
+    if (snapshot.seq == s_last_phase_adc_seq) {
+        return false;
+    }
+    s_last_phase_adc_seq = snapshot.seq;
+
+    *raw_a = snapshot.raw_u;
+    *raw_b = snapshot.raw_v;
     *raw_c = 0u;
     return true;
 }

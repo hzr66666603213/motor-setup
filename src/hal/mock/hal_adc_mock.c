@@ -1,11 +1,11 @@
 #include "hal/hal_adc.h"
 
 /*
- * hal_adc.c
+ * hal_adc_mock.c
  *
- * ADC mock/stub 实现。
- * 当前返回固定中点值，用于框架搭建和单元测试。
- * 移植时应替换为 STM32 ADC 注入通道或 DMA 缓冲读取。
+ * PC/Simulink/早期框架测试使用的 ADC mock 后端。
+ * 该文件不访问任何真实 ADC 外设，只返回接近 12-bit ADC 中点的安全样本。
+ * 真实上板工程不要编译本文件，应改用 src/hal/stm32f405/hal_adc_stm32f405.c。
  */
 
 bool hal_adc_init(void)
@@ -15,11 +15,13 @@ bool hal_adc_init(void)
 
 bool hal_adc_get_phase_current_raw(HalAdcPhaseRaw *raw)
 {
-    /* 12-bit ADC 中点，模拟零电流附近的采样结果。 */
+    if (raw == 0) {
+        return false;
+    }
+
     raw->u = 2048u;
     raw->v = 2048u;
-    /* ODrive v3.6 Axis0 two-shunt mode 下第三相 raw 无效，不伪造 ADC 中点。 */
-    raw->w = 0u;
+    raw->w = 0u; /* two-shunt 模式下第三相原始采样无效，不伪造为中点。 */
     return true;
 }
 
@@ -42,7 +44,6 @@ bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot)
 
 uint16_t hal_adc_get_vbus_raw(void)
 {
-    /* mock 值不代表真实硬件比例，换算在 current_sensor.c 中完成。 */
     return 2048u;
 }
 

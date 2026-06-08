@@ -129,6 +129,10 @@ const char *axis0_state_to_string(Axis0StateId state)
     case AXIS0_STATE_MOTOR_CALIBRATION: return "motor_calibration";
     case AXIS0_STATE_ENCODER_CALIBRATION: return "encoder_calibration";
     case AXIS0_STATE_READY: return "ready";
+    case AXIS0_STATE_PWM_TEST: return "pwm_test";
+    case AXIS0_STATE_ENCODER_TEST: return "encoder_test";
+    case AXIS0_STATE_ADC_OFFSET_TEST: return "adc_offset_test";
+    case AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST: return "open_loop_voltage_test";
     case AXIS0_STATE_CLOSED_LOOP_CONTROL: return "closed_loop";
     case AXIS0_STATE_FAULT: return "fault";
     default: return "unknown";
@@ -145,6 +149,10 @@ bool axis0_parse_state(const char *text, Axis0StateId *state)
     if (strcmp(text, "current_offset_calibration") == 0) { *state = AXIS0_STATE_CURRENT_OFFSET_CALIBRATION; return true; }
     if (strcmp(text, "motor_calibration") == 0) { *state = AXIS0_STATE_MOTOR_CALIBRATION; return true; }
     if (strcmp(text, "encoder_calibration") == 0) { *state = AXIS0_STATE_ENCODER_CALIBRATION; return true; }
+    if (strcmp(text, "pwm_test") == 0) { *state = AXIS0_STATE_PWM_TEST; return true; }
+    if (strcmp(text, "encoder_test") == 0) { *state = AXIS0_STATE_ENCODER_TEST; return true; }
+    if (strcmp(text, "adc_offset_test") == 0) { *state = AXIS0_STATE_ADC_OFFSET_TEST; return true; }
+    if (strcmp(text, "open_loop_voltage_test") == 0) { *state = AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST; return true; }
     if (strcmp(text, "closed_loop") == 0) { *state = AXIS0_STATE_CLOSED_LOOP_CONTROL; return true; }
     return false;
 }

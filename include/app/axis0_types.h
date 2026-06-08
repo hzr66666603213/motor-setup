@@ -51,6 +51,10 @@ typedef enum {
     AXIS0_STATE_MOTOR_CALIBRATION,           /* 相电阻和相电感校准 */
     AXIS0_STATE_ENCODER_CALIBRATION,         /* MT6701 ABZ 方向和电角度零位校准 */
     AXIS0_STATE_READY,                       /* 校准完成，允许用户请求闭环 */
+    AXIS0_STATE_PWM_TEST,                    /* PWM 波形测试：EN_GATE 保持关闭，只验证 TIM1 输出配置 */
+    AXIS0_STATE_ENCODER_TEST,                /* 编码器测试：功率级关闭，只读取 TIM3 ABZ 计数 */
+    AXIS0_STATE_ADC_OFFSET_TEST,             /* ADC 零偏观察：功率级关闭，连续读取电流 ADC */
+    AXIS0_STATE_OPEN_LOOP_VOLTAGE_TEST,      /* 开环低压测试：EN_GATE 打开，电压限制在很低范围 */
     AXIS0_STATE_CLOSED_LOOP_CONTROL,         /* 闭环控制运行 */
     AXIS0_STATE_FAULT                        /* 故障状态，功率级强制关闭 */
 } Axis0StateId;

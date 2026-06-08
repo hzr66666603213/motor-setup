@@ -2,25 +2,29 @@
 
 #include "board/board_odrive_v36.h"
 #include "foc/foc_math.h"
-#include "protection/fault.h"
 
 /*
  * calibration.c
  *
- * 非阻塞校准 skeleton。
- * 真实工程中，电阻/电感/编码器校准需要专用开环电压矢量或小电流注入函数。
- * 当前保留状态、超时、限流和结果写入位置，便于学习和二次开发。
+ * ODrive v3.6 Axis0 + 2804 + MT6701 ABZ 非阻塞校准流程。
  *
- * 为什么必须非阻塞：
- * - 校准期间仍要周期检查 nFAULT、母线电压和过流。
- * - 如果用 delay 卡住主循环，故障响应会变慢。
- * - 状态机每次 update 只推进一点点，适合 1kHz 调度。
+ * 职责：
+ * - 电流采样零偏校准；
+ * - 低压相电阻估算；
+ * - 低压短脉冲相电感估算；
+ * - ABZ 编码器方向判断；
+ * - 电角度零位 offset 校准。
  *
- * 对 2804 第一次调试的建议：
- * - 12V 或更低电压；
- * - 电流限制 0.5A~1A；
- * - 电机空载，转子可自由转动；
- * - 发现抖动、尖叫、过流立即断电。
+ * 调用频率：
+ * - 由 axis_update_1khz() 或后台状态机以 1 kHz 调用；
+ * - 不使用 delay，不做阻塞通信；
+ * - 真正的 PWM 输出由 board/hal 层完成。
+ *
+ * 安全策略：
+ * - 第一次上 2804 小电机，只从 0.05V~0.10V 开始；
+ * - 校准电流超过 calibration_current_a 立即失败并关闭功率级；
+ * - 每一步有超时；
+ * - 校准完成后保持功率级关闭，必须由用户显式请求闭环。
  */
 
 #define CALIB_OFFSET_SAMPLES          2000u
@@ -29,24 +33,91 @@
 #define CALIB_RESISTANCE_START_V      0.05f
 #define CALIB_INDUCTANCE_START_V      0.05f
 #define CALIB_INJECTION_MAX_V         0.10f
+#define CALIB_MIN_MEASURE_CURRENT_A   0.02f
+#define CALIB_RESISTANCE_SETTLE_S     0.25f
+#define CALIB_INDUCTANCE_PULSE_S      0.002f
+#define CALIB_ENCODER_ROTATE_HZ       0.25f
+#define CALIB_ENCODER_LOCK_S          0.50f
+
+static float calib_abs(float x)
+{
+    return (x >= 0.0f) ? x : -x;
+}
+
+static float calib_limit_injection_voltage(const Axis0Context *axis, float requested_v)
+{
+    float limit_v = axis->config.motor.voltage_limit_v;
+    if (limit_v > CALIB_INJECTION_MAX_V) {
+        limit_v = CALIB_INJECTION_MAX_V;
+    }
+    if (requested_v > limit_v) {
+        return limit_v;
+    }
+    if (requested_v < -limit_v) {
+        return -limit_v;
+    }
+    return requested_v;
+}
 
 static void calib_fail(Axis0Context *axis, Axis0CalibrationContext *calib, Axis0CalibrationError error)
 {
-    /*
-     * 校准失败必须立刻关闭功率级。
-     * 不在这里清 fault_flags，因为调用者会根据当前步骤设置更具体的故障码。
-     */
     calib->step = CALIB_FAILED;
     calib->error = error;
     board_disable_axis0_power_stage(axis);
 }
 
-void axis0_calibration_start(Axis0CalibrationContext *calib, Axis0CalibrationStep first_step)
+static bool calib_current_within_limit(const Axis0Context *axis)
+{
+    const float limit = axis->config.motor.calibration_current_a;
+    return calib_abs(axis->rt.ia_a) <= limit &&
+           calib_abs(axis->rt.ib_a) <= limit &&
+           calib_abs(axis->rt.ic_a) <= limit;
+}
+
+static void axis0_apply_open_loop_voltage(Axis0Context *axis, float v_alpha_v, float v_beta_v)
 {
     /*
-     * 每次进入校准状态都重置上下文。
-     * 如果用户中途退出再重新请求，旧的累计值不能继续沿用。
+     * alpha/beta 是静止坐标系电压矢量。
+     * 本函数只负责把低压矢量转成 SVPWM duty，不做闭环电流控制。
      */
+    float duty_a = 0.5f;
+    float duty_b = 0.5f;
+    float duty_c = 0.5f;
+
+    foc_svpwm(v_alpha_v, v_beta_v, axis->rt.vbus_v, &duty_a, &duty_b, &duty_c);
+    axis->rt.v_alpha_v = v_alpha_v;
+    axis->rt.v_beta_v = v_beta_v;
+    axis->rt.duty_a = duty_a;
+    axis->rt.duty_b = duty_b;
+    axis->rt.duty_c = duty_c;
+    board_axis0_set_pwm_duty(duty_a, duty_b, duty_c);
+}
+
+static void axis0_apply_voltage_in_electrical_frame(Axis0Context *axis,
+                                                    float vd_v,
+                                                    float vq_v,
+                                                    float electrical_angle_rad)
+{
+    /*
+     * d/q 是随转子电角度旋转的坐标系：
+     * - d 轴对齐转子磁链，常用于锁定转子或施加校准磁场；
+     * - q 轴产生转矩，校准阶段默认不用大 q 轴指令。
+     */
+    float v_alpha_v = 0.0f;
+    float v_beta_v = 0.0f;
+
+    vd_v = calib_limit_injection_voltage(axis, vd_v);
+    vq_v = calib_limit_injection_voltage(axis, vq_v);
+    foc_limit_voltage(&vd_v, &vq_v, CALIB_INJECTION_MAX_V);
+    foc_inv_park(vd_v, vq_v, electrical_angle_rad, &v_alpha_v, &v_beta_v);
+
+    axis->rt.vd_v = vd_v;
+    axis->rt.vq_v = vq_v;
+    axis0_apply_open_loop_voltage(axis, v_alpha_v, v_beta_v);
+}
+
+void axis0_calibration_start(Axis0CalibrationContext *calib, Axis0CalibrationStep first_step)
+{
     calib->step = first_step;
     calib->error = CALIB_ERROR_NONE;
     calib->step_elapsed_s = 0.0f;
@@ -62,10 +133,6 @@ void axis0_calibration_start(Axis0CalibrationContext *calib, Axis0CalibrationSte
 
 static void calib_next(Axis0CalibrationContext *calib, Axis0CalibrationStep next)
 {
-    /*
-     * 切换校准步骤时清掉当前步骤累计值和计时。
-     * 这样每一步的超时和采样统计彼此独立。
-     */
     calib->step = next;
     calib->step_elapsed_s = 0.0f;
     calib->sample_count = 0u;
@@ -81,18 +148,21 @@ void axis0_calibration_update(Axis0Context *axis,
                               float dt_s)
 {
     calib->step_elapsed_s += dt_s;
+    axis->rt.vbus_v = board_read_vbus_v();
+
     if (calib->step_elapsed_s > CALIB_STEP_TIMEOUT_S) {
-        /* 任一步骤超时都视为校准失败，避免电机长时间受激。 */
         calib_fail(axis, calib, CALIB_ERROR_TIMEOUT);
         return;
     }
 
     if (calib->step == CALIB_CURRENT_OFFSET) {
-        uint16_t raw_a = 0u, raw_b = 0u, raw_c = 0u;
+        uint16_t raw_a = 0u;
+        uint16_t raw_b = 0u;
+        uint16_t raw_c = 0u;
+
         /*
-         * A. 电流采样零偏校准
-         * 目的：得到“0A 时 ADC 的 count 值”。
-         * 条件：PWM 关闭，DRV8301 关闭或处于安全状态，确保相电流真实接近 0A。
+         * 电流零偏：功率级关闭，采集“真实 0A”下 ADC offset。
+         * 这一步完成后只进入 CALIB_DONE，不自动继续测电阻。
          */
         board_disable_axis0_power_stage(axis);
         if (board_axis0_read_phase_current_raw(&raw_a, &raw_b, &raw_c)) {
@@ -101,12 +171,8 @@ void axis0_calibration_update(Axis0Context *axis,
             calib->accum_c += (float)raw_c;
             calib->sample_count++;
         }
+
         if (calib->sample_count >= CALIB_OFFSET_SAMPLES) {
-            /*
-             * 这里先做简单平均。
-             * 后续可加入 max/min span 检查：如果零偏波动过大，说明 ADC 噪声、
-             * 运放饱和或电源异常，应返回 CALIB_ERROR_OFFSET_NOISE。
-             */
             current_sensor->offset_a_count = calib->accum_a / (float)calib->sample_count;
             current_sensor->offset_b_count = calib->accum_b / (float)calib->sample_count;
             current_sensor->offset_c_count = calib->accum_c / (float)calib->sample_count;
@@ -115,61 +181,99 @@ void axis0_calibration_update(Axis0Context *axis,
         }
     } else if (calib->step == CALIB_RESISTANCE) {
         /*
-         * B. 相电阻测量
-         * 低电压/低电流注入，等待稳态电流后估算 R=V/I。
-         * 起步电压必须非常低：0.05V，最多逐步到 0.1V。
-         * 当前 skeleton 不直接输出电压，避免未接硬件时误操作。
-         *
-         * 真实实现建议：
-         * - 施加 0.05V 起步的小 d 轴电压或相间电压；
-         * - 等待电流到稳态；
-         * - 用已知电压 / 稳态电流估算相电阻；
-         * - 全程检查 calibration_current_a。
+         * 相电阻估算：施加很小的 d 轴电压，等待电流接近稳态后用 R=V/I。
+         * 这不是高精度实验室测量，只用于生成保守电流环初值。
          */
-        if (axis->rt.ia_a > axis->config.motor.calibration_current_a ||
-            axis->rt.ia_a < -axis->config.motor.calibration_current_a) {
+        if (!axis->current_offset_valid ||
+            !board_enable_axis0_power_stage_for_calibration(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+            return;
+        }
+        if (!calib_current_within_limit(axis)) {
             calib_fail(axis, calib, CALIB_ERROR_OVERCURRENT);
             return;
         }
-        if (calib->step_elapsed_s > 0.5f) {
-            /*
-             * 当前保留为 0，表示还没有真实测量结果。
-             * 状态机仍保留步骤位置，后续接入注入函数时不需要改外部接口。
-             */
-            axis->config.motor.phase_resistance_ohm = 0.0f;
+
+        axis0_apply_voltage_in_electrical_frame(axis,
+                                                calib->resistance_test_voltage_v,
+                                                0.0f,
+                                                0.0f);
+
+        if (calib->step_elapsed_s > CALIB_RESISTANCE_SETTLE_S) {
+            const float id_abs = calib_abs(axis->rt.id_a);
+            if (id_abs < CALIB_MIN_MEASURE_CURRENT_A) {
+                calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+                return;
+            }
+            axis->config.motor.phase_resistance_ohm =
+                calib_abs(calib->resistance_test_voltage_v) / id_abs;
             calib_next(calib, CALIB_INDUCTANCE);
         }
     } else if (calib->step == CALIB_INDUCTANCE) {
         /*
-         * C. 相电感测量
-         * 施加短脉冲并测量 di/dt，估算 L=V/(di/dt)。
-         * 起步脉冲电压也按 0.05V，最多 0.1V，不从 0.5V/1V 开始。
-         * 当前只保留步骤位置，真实实现必须加过流保护。
-         *
-         * 注意：电感测量脉冲很短，但仍可能在低电阻小电机上造成电流快速上升。
-         * 第一次调试必须把脉冲电压和脉冲时间设得非常保守。
+         * 相电感估算：记录脉冲前 id，施加短小 d 轴电压，根据 di/dt 估算 L。
+         * 脉冲很短，所以必须每次 update 都检查过流。
          */
-        if (calib->step_elapsed_s > 0.2f) {
-            axis->config.motor.phase_inductance_h = 0.0f;
+        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+            return;
+        }
+        if (!calib_current_within_limit(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_OVERCURRENT);
+            return;
+        }
+
+        if (calib->sample_count == 0u) {
+            calib->accum_a = axis->rt.id_a; /* 脉冲开始电流，A */
+            calib->sample_count = 1u;
+        }
+
+        axis0_apply_voltage_in_electrical_frame(axis,
+                                                calib->inductance_pulse_voltage_v,
+                                                0.0f,
+                                                0.0f);
+
+        if (calib->step_elapsed_s >= CALIB_INDUCTANCE_PULSE_S) {
+            const float di_a = axis->rt.id_a - calib->accum_a;
+            const float di_dt = di_a / calib->step_elapsed_s;
+            if (calib_abs(di_dt) < 1.0f) {
+                calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+                return;
+            }
+            axis->config.motor.phase_inductance_h =
+                calib_abs(calib->inductance_pulse_voltage_v / di_dt);
             axis->motor_calibrated = true;
             calib_next(calib, CALIB_DONE);
         }
     } else if (calib->step == CALIB_ENCODER_DIRECTION) {
+        /*
+         * 编码器方向：开环电角度缓慢正转，观察 ABZ 计数变化方向。
+         * 完成后进入 CALIB_ENCODER_OFFSET。
+         */
+        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+            return;
+        }
+        if (!calib_current_within_limit(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_OVERCURRENT);
+            return;
+        }
+
         if (calib->sample_count == 0u) {
-            /* 记录开始时的 ABZ 计数，之后比较开环正转后的变化方向。 */
             calib->start_encoder_count = encoder->raw_count;
+            calib->accum_a = 0.0f; /* 开环电角度，rad */
             calib->sample_count = 1u;
         }
-        /*
-         * D. 编码器方向判断
-         * 开环电角度缓慢正向旋转后检查 ABZ count 变化。
-         * 当前 skeleton 不主动旋转，只评估计数变化位置。
-         *
-         * 真实实现需要在 1kHz update 中逐步推进开环电角度，而不是 delay。
-         * 如果 delta 太小，说明电机没动、编码器没接好或转子被卡住。
-         */
+
+        calib->accum_a = foc_wrap_0_2pi(calib->accum_a +
+                                        FOC_TWO_PI_F * CALIB_ENCODER_ROTATE_HZ * dt_s);
+        axis0_apply_voltage_in_electrical_frame(axis,
+                                                calib->resistance_test_voltage_v,
+                                                0.0f,
+                                                calib->accum_a);
+
         if (calib->step_elapsed_s > 1.0f) {
-            int32_t delta = encoder->raw_count - calib->start_encoder_count;
+            const int32_t delta = encoder->raw_count - calib->start_encoder_count;
             if (delta > CALIB_ENCODER_MIN_DELTA_COUNT) {
                 axis->config.encoder.encoder_direction = 1;
                 encoder->direction = 1;
@@ -184,20 +288,24 @@ void axis0_calibration_update(Axis0Context *axis,
         }
     } else if (calib->step == CALIB_ENCODER_OFFSET) {
         /*
-         * E. 电角度零位校准
-         * 用小 d 轴电流/固定电压矢量锁定转子到已知电角度。
-         * 读机械角后计算 encoder_offset_rad。
-         *
-         * 这个 offset 是闭环成败的关键：
-         * - offset 错误会导致 d/q 轴错位；
-         * - 轻则抖动和效率低；
-         * - 重则电流环发散、过流。
+         * 电角度零位：用小 d 轴电压把转子锁到 electrical_angle=0。
+         * 读取机械角后计算 encoder_offset，使后续 electrical_angle 能对齐。
          */
-        if (calib->step_elapsed_s > 0.5f) {
-            /*
-             * 假设锁定目标电角度为 0 rad，则需要 offset 抵消当前机械角*极对数*方向。
-             * 如果实际锁定目标不是 0，应把目标电角度加到该公式中。
-             */
+        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
+            return;
+        }
+        if (!calib_current_within_limit(axis)) {
+            calib_fail(axis, calib, CALIB_ERROR_OVERCURRENT);
+            return;
+        }
+
+        axis0_apply_voltage_in_electrical_frame(axis,
+                                                calib->resistance_test_voltage_v,
+                                                0.0f,
+                                                0.0f);
+
+        if (calib->step_elapsed_s > CALIB_ENCODER_LOCK_S) {
             axis->config.encoder.encoder_offset_rad =
                 foc_wrap_0_2pi(-encoder->mechanical_angle_rad *
                                (float)axis->config.motor.pole_pairs *
@@ -207,7 +315,6 @@ void axis0_calibration_update(Axis0Context *axis,
             calib_next(calib, CALIB_DONE);
         }
     } else if (calib->step == CALIB_DONE) {
-        /* 校准完成后仍保持功率级关闭，由用户显式请求 closed_loop。 */
         board_disable_axis0_power_stage(axis);
     } else {
         calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
@@ -216,5 +323,5 @@ void axis0_calibration_update(Axis0Context *axis,
 
 bool axis0_calibration_finished(const Axis0CalibrationContext *calib)
 {
-    return calib->step == CALIB_DONE || calib->step == CALIB_FAILED;
+    return calib != 0 && (calib->step == CALIB_DONE || calib->step == CALIB_FAILED);
 }

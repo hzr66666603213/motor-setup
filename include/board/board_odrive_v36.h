@@ -83,6 +83,9 @@ bool board_init_power_safe(Axis0Context *axis);
 /* 安全使能 Axis0 功率级；必须满足无故障、VBUS 正常、ADC/编码器有效。 */
 bool board_enable_axis0_power_stage(Axis0Context *axis);
 
+/* 校准专用低风险功率级使能；不要求编码器已校准，只允许校准状态机调用。 */
+bool board_enable_axis0_power_stage_for_calibration(Axis0Context *axis);
+
 /* 立即关闭 Axis0 功率级；可从故障路径调用。 */
 void board_disable_axis0_power_stage(Axis0Context *axis);
 

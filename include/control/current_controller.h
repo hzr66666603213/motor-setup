@@ -4,11 +4,18 @@
 /*
  * current_controller.h
  *
- * d/q 轴电流 PI 控制器接口。
- * 运行上下文：20 kHz PWM ISR。
- * 输入：id/iq 目标电流、id/iq 实测电流、母线电压、dt。
- * 输出：vd/vq 电压指令。
- * 注意：ISR 中不得调用阻塞函数，也不得使用动态内存。
+ * d/q 轴电流 PI 控制器。
+ *
+ * 调用频率：
+ * - current_controller_update()：20 kHz PWM ISR；
+ * - tune/set/reset：后台、状态切换或校准完成后调用。
+ *
+ * 单位：
+ * - 电流 A；
+ * - 电压 V；
+ * - 时间 s；
+ * - 电阻 ohm；
+ * - 电感 H。
  */
 
 #ifdef __cplusplus
@@ -24,16 +31,10 @@ typedef struct {
     float max_voltage_v;      /* 电压矢量最大幅值，V */
 } CurrentController;
 
-/* 初始化控制器参数，并清零积分器。 */
 void current_controller_init(CurrentController *controller, float kp, float ki, float max_voltage_v);
-
-/* 清零积分器；退出闭环、故障恢复或切换模式时应调用。 */
 void current_controller_reset(CurrentController *controller);
-
-/* 在线更新 PI 参数；建议在慢速任务中写入，然后安全同步到 ISR。 */
 void current_controller_set_gains(CurrentController *controller, float kp, float ki);
 
-/* 执行一次 d/q 电流 PI 更新，适合 20 kHz ISR 调用。 */
 void current_controller_update(CurrentController *controller,
                                float id_target_a,
                                float iq_target_a,
@@ -43,6 +44,23 @@ void current_controller_update(CurrentController *controller,
                                float dt_s,
                                float *vd_v,
                                float *vq_v);
+
+/*
+ * 根据电机 R/L 和目标电流环带宽估算 PI 参数。
+ *
+ * 经验公式：
+ * - Kp ≈ L * wc
+ * - Ki ≈ R * wc
+ * - wc = 2*pi*bandwidth_hz
+ *
+ * 第一次上真实 2804 小电机建议 bandwidth_hz 先取 300~800 Hz，
+ * 并配合很低的 current_limit / voltage_limit。
+ */
+void current_controller_tune_from_rl(CurrentController *controller,
+                                     float phase_resistance_ohm,
+                                     float phase_inductance_h,
+                                     float bandwidth_hz,
+                                     float voltage_limit_v);
 
 #ifdef __cplusplus
 }

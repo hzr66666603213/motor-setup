@@ -5,8 +5,16 @@
  * hal_adc.h
  *
  * ADC 硬件抽象接口。
- * 三电阻低边采样要求 ADC 与 PWM 同步，在合适的低边导通窗口取样。
- * 本接口只提供原始 count，不在 HAL 层做物理量换算。
+ *
+ * 职责：
+ * - 向 FOC/board 层提供 PWM 同步采样后的 ADC 原始 count；
+ * - 不在 HAL 层做电流、电压、温度物理量换算；
+ * - 真实 STM32F405 后端可以使用 injected ADC、regular DMA 或混合方式实现。
+ *
+ * 调用频率：
+ * - phase current / snapshot：20 kHz PWM ISR 内读取，必须非阻塞；
+ * - temperature：1 kHz 或后台读取；
+ * - init：启动阶段调用。
  */
 
 #include <stdbool.h>
@@ -17,22 +25,34 @@ extern "C" {
 #endif
 
 typedef struct {
-    uint16_t u; /* U 相电流 ADC 原始值，count */
-    uint16_t v; /* V 相电流 ADC 原始值，count */
-    uint16_t w; /* W 相电流 ADC 原始值，count */
+    uint16_t u; /* U/A 相电流 ADC 原始值，count */
+    uint16_t v; /* V/B 相电流 ADC 原始值，count */
+    uint16_t w; /* W/C 相电流 ADC 原始值，count；two-shunt 模式下可为 0 */
 } HalAdcPhaseRaw;
 
-/* 初始化 ADC、触发源和 DMA/注入通道；stub 中直接返回 true。 */
+/*
+ * PWM 同步 ADC 快照。
+ *
+ * seq 每完成一次同步采样递增一次。电流环 ISR 可以保存上一周期 seq，
+ * 如果本周期 seq 没有变化或 valid=false，应触发 ADC invalid fault，
+ * 禁止继续使用旧电流样本计算 FOC。
+ */
+typedef struct {
+    uint16_t raw_u;        /* U/A 相电流 ADC 原始值，count */
+    uint16_t raw_v;        /* V/B 相电流 ADC 原始值，count */
+    uint16_t raw_w;        /* W/C 相电流 ADC 原始值，count；two-shunt 模式下可为 0 */
+    uint16_t raw_vbus;     /* 母线电压 ADC 原始值，count */
+    uint16_t raw_mos_temp; /* MOS/板温 ADC 原始值，count */
+    uint32_t seq;          /* 同步采样序号 */
+    bool valid;            /* 当前快照是否有效 */
+} HalAdcSnapshot;
+
 bool hal_adc_init(void);
-/* 读取最近一次 PWM 同步采样得到的三相电流原始值。 */
 bool hal_adc_get_phase_current_raw(HalAdcPhaseRaw *raw);
-/* 读取母线电压 ADC 原始值。 */
+bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot);
 uint16_t hal_adc_get_vbus_raw(void);
-/* 读取 MOS/板温 ADC 原始值。 */
 uint16_t hal_adc_get_mos_temperature_raw(void);
-/* 读取电机温度 ADC 原始值。 */
 uint16_t hal_adc_get_motor_temperature_raw(void);
-/* 判断当前 ADC 样本是否有效，例如 DMA 完成、未过载、采样窗口正确。 */
 bool hal_adc_samples_valid(void);
 
 #ifdef __cplusplus
