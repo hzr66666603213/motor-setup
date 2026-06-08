@@ -61,3 +61,8 @@ bool hal_adc_samples_valid(void)
 {
     return true;
 }
+
+void hal_adc_stm32f405_on_injected_complete(void)
+{
+    /* mock 后端不依赖真实 ADC conversion complete 回调。 */
+}

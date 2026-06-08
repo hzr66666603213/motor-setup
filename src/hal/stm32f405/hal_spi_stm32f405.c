@@ -30,6 +30,7 @@ extern SPI_HandleTypeDef hspi3;
 #define HAL_SPI_BUS_DRV8301      3u
 #define HAL_SPI_DEVICE_DRV0      0u
 #define HAL_SPI_DEVICE_DRV1      1u
+#define HAL_SPI_TIMEOUT_MS       10u
 
 static bool select_device(uint8_t device_id, GPIO_TypeDef **port, uint16_t *pin)
 {
@@ -48,7 +49,7 @@ static bool select_device(uint8_t device_id, GPIO_TypeDef **port, uint16_t *pin)
 
 bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
-    if (bus_id != HAL_SPI_BUS_DRV8301 || length == 0u) {
+    if (bus_id != HAL_SPI_BUS_DRV8301 || tx == 0 || rx == 0 || length == 0u) {
         return false;
     }
 
@@ -56,7 +57,7 @@ bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t len
                                    (uint8_t *)tx,
                                    rx,
                                    (uint16_t)length,
-                                   HAL_MAX_DELAY) == HAL_OK;
+                                   HAL_SPI_TIMEOUT_MS) == HAL_OK;
 }
 
 bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *tx, uint8_t *rx, size_t length)
@@ -77,7 +78,7 @@ bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *t
 
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
-    if (bus_id != HAL_SPI_BUS_DRV8301 || length == 0u) {
+    if (bus_id != HAL_SPI_BUS_DRV8301 || tx == 0 || rx == 0 || length == 0u) {
         return false;
     }
 

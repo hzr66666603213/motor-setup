@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "app/axis_state_machine.h"
 #include "hal/hal_uart.h"
 #include "protection/fault.h"
 
@@ -104,7 +105,7 @@ bool console_handle_line(Axis0Console *console, const char *line, char *response
             snprintf(response, response_len, "err bad_state\r\n");
             return false;
         }
-        console->axis->requested_state = state;
+        axis_request_state(console->axis, state);
         snprintf(response, response_len, "ok\r\n");
         return true;
     }

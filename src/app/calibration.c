@@ -74,6 +74,12 @@ static bool calib_current_within_limit(const Axis0Context *axis)
            calib_abs(axis->rt.ic_a) <= limit;
 }
 
+static bool calib_power_stage_active(void)
+{
+    const BoardOdriveV36Status status = board_get_status();
+    return status.drv_gate_enabled && !status.pwm_disabled && !status.drv_nfault_active;
+}
+
 static void axis0_apply_open_loop_voltage(Axis0Context *axis, float v_alpha_v, float v_beta_v)
 {
     /*
@@ -184,8 +190,7 @@ void axis0_calibration_update(Axis0Context *axis,
          * 相电阻估算：施加很小的 d 轴电压，等待电流接近稳态后用 R=V/I。
          * 这不是高精度实验室测量，只用于生成保守电流环初值。
          */
-        if (!axis->current_offset_valid ||
-            !board_enable_axis0_power_stage_for_calibration(axis)) {
+        if (!axis->current_offset_valid || !calib_power_stage_active()) {
             calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
             return;
         }
@@ -214,7 +219,7 @@ void axis0_calibration_update(Axis0Context *axis,
          * 相电感估算：记录脉冲前 id，施加短小 d 轴电压，根据 di/dt 估算 L。
          * 脉冲很短，所以必须每次 update 都检查过流。
          */
-        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+        if (!calib_power_stage_active()) {
             calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
             return;
         }
@@ -250,7 +255,7 @@ void axis0_calibration_update(Axis0Context *axis,
          * 编码器方向：开环电角度缓慢正转，观察 ABZ 计数变化方向。
          * 完成后进入 CALIB_ENCODER_OFFSET。
          */
-        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+        if (!calib_power_stage_active()) {
             calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
             return;
         }
@@ -291,7 +296,7 @@ void axis0_calibration_update(Axis0Context *axis,
          * 电角度零位：用小 d 轴电压把转子锁到 electrical_angle=0。
          * 读取机械角后计算 encoder_offset，使后续 electrical_angle 能对齐。
          */
-        if (!board_enable_axis0_power_stage_for_calibration(axis)) {
+        if (!calib_power_stage_active()) {
             calib_fail(axis, calib, CALIB_ERROR_INVALID_RESULT);
             return;
         }

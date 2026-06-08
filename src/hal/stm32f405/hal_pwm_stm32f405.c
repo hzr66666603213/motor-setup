@@ -54,6 +54,7 @@ void hal_pwm_enable(void)
      * 先启动普通通道和互补通道，再打开 MOE。
      * 如果 CubeMX 已经配置 Break/Deadtime，这里会使用对应 BDTR 配置。
      */
+    hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);

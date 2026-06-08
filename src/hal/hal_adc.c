@@ -60,3 +60,8 @@ bool hal_adc_samples_valid(void)
 {
     return true;
 }
+
+void hal_adc_stm32f405_on_injected_complete(void)
+{
+    /* 兼容 mock：真实 STM32F405 后端才在 ADC injected complete 中递增 seq。 */
+}

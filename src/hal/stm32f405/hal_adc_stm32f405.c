@@ -44,11 +44,7 @@ bool hal_adc_init(void)
     return s_adc_started;
 }
 
-/*
- * 可由 HAL_ADCEx_InjectedConvCpltCallback() 调用，也可在 PWM ADC 完成中断中调用。
- * 为避免把 CubeMX 回调函数强塞进框架，这里只提供一个后端内部可见的更新函数。
- */
-static void update_snapshot_from_injected_adc(void)
+void hal_adc_stm32f405_on_injected_complete(void)
 {
     HalAdcSnapshot next;
     next.raw_u = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
@@ -81,11 +77,10 @@ bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot)
     }
 
     /*
-     * 简化接入方式：读取时刷新 injected ADC 结果并递增 seq。
-     * 更严格的量产写法是在 ADC injected complete ISR 中调用更新函数，
-     * 电流环 ISR 只读取已完成快照并检查 seq 是否变化。
+     * 只复制最新快照，不主动读取 ADC，也不递增 seq。
+     * seq 必须只在 ADC conversion complete 回调中递增，避免 ISR 读取时
+     * 把旧样本伪装成新样本。
      */
-    update_snapshot_from_injected_adc();
     snapshot->raw_u = s_snapshot.raw_u;
     snapshot->raw_v = s_snapshot.raw_v;
     snapshot->raw_w = s_snapshot.raw_w;
@@ -116,5 +111,5 @@ uint16_t hal_adc_get_motor_temperature_raw(void)
 
 bool hal_adc_samples_valid(void)
 {
-    return s_adc_started;
+    return s_adc_started && s_snapshot.valid;
 }

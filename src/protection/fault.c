@@ -55,6 +55,7 @@ void clear_faults(Axis0Context *axis)
     axis->fault_flags = AXIS0_FAULT_NONE;
     axis->state = AXIS0_STATE_IDLE;
     axis->requested_state = AXIS0_STATE_IDLE;
+    axis->request_pending = false;
 }
 
 bool has_fault(const Axis0Context *axis, Axis0FaultFlags fault)

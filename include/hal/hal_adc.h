@@ -55,6 +55,13 @@ uint16_t hal_adc_get_mos_temperature_raw(void);
 uint16_t hal_adc_get_motor_temperature_raw(void);
 bool hal_adc_samples_valid(void);
 
+/*
+ * STM32F405 真实后端的 ADC injected conversion 完成通知。
+ * CubeMX 的 HAL_ADCEx_InjectedConvCpltCallback() 中调用该函数，
+ * seq 只在这里递增，hal_adc_get_snapshot() 只复制快照。
+ */
+void hal_adc_stm32f405_on_injected_complete(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -185,6 +185,7 @@ typedef struct {
     Axis0Command cmd;                /* 命令双缓冲的简化骨架 */
     Axis0StateId state;              /* 当前状态 */
     Axis0StateId requested_state;    /* 请求状态 */
+    bool request_pending;            /* true 表示 requested_state 尚未被状态机消费 */
     uint32_t fault_flags;            /* fault.h 中定义的 bitmask */
     bool current_offset_valid;       /* 电流零偏校准完成 */
     bool motor_calibrated;           /* 电阻/电感校准完成 */
