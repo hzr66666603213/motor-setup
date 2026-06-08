@@ -80,6 +80,31 @@ CubeMX 工程需要提供这些句柄：
 
 VBUS 比例、电流采样比例、ADC rank、采样触发点必须按你的 ODrive v3.6 实物和 CubeMX 配置核对。24V/56V 版本、分压电阻批次、DRV8301 gain、shunt 阻值都会影响实际比例。
 
+### ADC 采样但不使能功率级
+
+电流零偏校准需要 ADC 采样按 PWM 时序持续更新，但此时不应该驱动任何 MOSFET。本工程为这个阶段提供
+`board_start_adc_sampling_without_power_stage()`：
+
+- `EN_GATE = 0`：DRV8301 保持关闭。
+- `TIM1 MOE = 0`：互补 PWM 输出级关闭。
+- `TIM1 counter / compare event` 继续运行：只用于触发 ADC injected conversion。
+- `hal_adc_get_snapshot()` 只复制最近一次 ADC 快照，不主动制造新样本。
+- ADC 样本序号 `seq` 只能在 ADC 转换完成回调中递增。
+
+移植到 STM32CubeIDE 时，必须在用户工程的 ADC injected conversion 完成回调里调用：
+
+```c
+void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    (void)hadc;
+    hal_adc_stm32f405_on_injected_complete();
+}
+```
+
+如果这个回调没有接上，`current_offset_calibration` 会认为 ADC 样本没有更新，并报
+`FAULT_CURRENT_SENSOR_INVALID`。PC 测试 `board_adc_sampling_test` 会验证：功率级关闭时，
+mock ADC 的 `seq` 仍会更新；真实 STM32 后端必须由上面的回调实现同等语义。
+
 ## 控制频率
 
 - PWM / 电流环：20 kHz。

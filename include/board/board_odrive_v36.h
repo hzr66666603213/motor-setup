@@ -86,6 +86,17 @@ bool board_enable_axis0_power_stage(Axis0Context *axis);
 /* 校准专用低风险功率级使能；不要求编码器已校准，只允许校准状态机调用。 */
 bool board_enable_axis0_power_stage_for_calibration(Axis0Context *axis);
 
+/*
+ * 无功率级 ADC 同步采样模式。
+ *
+ * 用于 current_offset_calibration：
+ * - EN_GATE = 0；
+ * - TIM1 MOE = 0；
+ * - TIM1 counter/compare 事件继续运行，用于触发 ADC injected conversion；
+ * - 不驱动 MOS，不进入真实功率输出。
+ */
+bool board_start_adc_sampling_without_power_stage(Axis0Context *axis);
+
 /* 立即关闭 Axis0 功率级；可从故障路径调用。 */
 void board_disable_axis0_power_stage(Axis0Context *axis);
 

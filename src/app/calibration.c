@@ -170,7 +170,6 @@ void axis0_calibration_update(Axis0Context *axis,
          * 电流零偏：功率级关闭，采集“真实 0A”下 ADC offset。
          * 这一步完成后只进入 CALIB_DONE，不自动继续测电阻。
          */
-        board_disable_axis0_power_stage(axis);
         if (board_axis0_read_phase_current_raw(&raw_a, &raw_b, &raw_c)) {
             calib->accum_a += (float)raw_a;
             calib->accum_b += (float)raw_b;

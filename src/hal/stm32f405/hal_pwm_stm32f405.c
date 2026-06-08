@@ -86,6 +86,27 @@ void hal_pwm_disable(void)
     s_pwm_enabled = false;
 }
 
+void hal_pwm_start_adc_trigger_only(void)
+{
+    /*
+     * 只运行 TIM1/compare 事件给 ADC injected conversion 提供同步触发。
+     * 功率安全条件：
+     * - board 层保持 EN_GATE=0；
+     * - 本函数最后强制 MOE=0；
+     * - s_pwm_enabled=false，表示功率 PWM 输出没有使能。
+     */
+    hal_pwm_set_duty(0.5f, 0.5f, 0.5f);
+    (void)HAL_TIM_Base_Start(&htim1);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+    __HAL_TIM_MOE_DISABLE(&htim1);
+    s_pwm_enabled = false;
+}
+
 void hal_pwm_set_duty(float duty_u, float duty_v, float duty_w)
 {
     /*

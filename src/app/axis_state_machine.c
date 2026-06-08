@@ -54,7 +54,10 @@ static void axis_enter_state(Axis0Context *axis, Axis0StateMachineContext *sm, A
     if (next == AXIS0_STATE_IDLE) {
         board_disable_axis0_power_stage(axis);
     } else if (next == AXIS0_STATE_CURRENT_OFFSET_CALIBRATION) {
-        board_disable_axis0_power_stage(axis);
+        if (!board_start_adc_sampling_without_power_stage(axis)) {
+            set_fault(axis, AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+            return;
+        }
         axis0_calibration_start(&sm->calibration, CALIB_CURRENT_OFFSET);
     } else if (next == AXIS0_STATE_MOTOR_CALIBRATION) {
         if (!board_enable_axis0_power_stage_for_calibration(axis)) {

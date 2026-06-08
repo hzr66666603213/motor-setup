@@ -134,6 +134,49 @@ bool board_enable_axis0_power_stage_for_calibration(Axis0Context *axis)
     return true;
 }
 
+bool board_start_adc_sampling_without_power_stage(Axis0Context *axis)
+{
+    /*
+     * 电流零偏校准需要“ADC 同步采样仍在跑”，但绝不能驱动 MOS：
+     * - EN_GATE 拉低，DRV8301 不驱动外部功率管；
+     * - TIM1 继续运行，用于产生 ADC injected trigger；
+     * - TIM1 MOE 保持 0，PWM 输出级关闭。
+     *
+     * 这样 board_axis0_read_phase_current_raw() 仍能看到 ADC seq 持续更新。
+     */
+    s_board_status.drv_nfault_active = hal_gpio_read_fault_pin();
+
+    if (axis->fault_flags != 0u || s_board_status.drv_nfault_active) {
+        board_disable_axis0_power_stage(axis);
+        return false;
+    }
+
+    hal_gpio_set_gate_enable(false);
+    hal_pwm_start_adc_trigger_only();
+
+    s_board_status.pwm_disabled = true;
+    s_board_status.drv_gate_enabled = false;
+    s_board_status.adc_valid = hal_adc_samples_valid();
+
+    /*
+     * 刚启动 TIM1 ADC trigger-only 后，真实 ADC 可能还没有完成第一轮 injected
+     * conversion，因此这里不能要求 adc_valid 已经为 true。current_offset_calibration
+     * 会在 update 阶段等待 board_axis0_read_phase_current_raw() 看到新的 seq。
+     *
+     * 如果已经有有效快照，则顺便更新 VBUS 并做一次范围检查；没有快照时保持触发运行，
+     * 等后续 ADC 回调产生样本。
+     */
+    if (s_board_status.adc_valid) {
+        s_board_status.vbus_v = board_read_vbus_v();
+        if (!board_vbus_in_safe_range(axis, s_board_status.vbus_v)) {
+            board_disable_axis0_power_stage(axis);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void board_disable_axis0_power_stage(Axis0Context *axis)
 {
     (void)axis;

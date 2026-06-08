@@ -31,6 +31,14 @@ void hal_pwm_disable(void)
     s_pwm_enabled = false;
 }
 
+void hal_pwm_start_adc_trigger_only(void)
+{
+    s_pwm_enabled = false;
+    s_duty_u = 0.5f;
+    s_duty_v = 0.5f;
+    s_duty_w = 0.5f;
+}
+
 void hal_pwm_set_duty(float duty_u, float duty_v, float duty_w)
 {
     s_duty_u = duty_u;
