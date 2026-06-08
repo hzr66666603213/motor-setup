@@ -328,6 +328,111 @@ static void test_current_step_response(void)
     }
 }
 
+static void test_invalid_pole_pairs_resets_current_integrator(void)
+{
+    double id = 0.0;
+    double iq = 0.0;
+    double vd = 0.0;
+    double vq = 0.0;
+    double v_alpha = 0.0;
+    double v_beta = 0.0;
+    double duty_u = 0.0;
+    double duty_v = 0.0;
+    double duty_w = 0.0;
+
+    printf("\n== invalid pole_pairs resets current integrator ==\n");
+
+    foc_sim_init();
+
+    /*
+     * 先给一个持续 iq 目标，让电流 PI 积分器累积非零状态。
+     */
+    for (int i = 0; i < 20; ++i) {
+        (void)foc_sim_step_wrapper(0.0,
+                                   0.0,
+                                   0.0,
+                                   0.0,
+                                   0.0,
+                                   12.0,
+                                   0.0,
+                                   1.0,
+                                   0.00005,
+                                   7.0,
+                                   0.0,
+                                   &id,
+                                   &iq,
+                                   &vd,
+                                   &vq,
+                                   &v_alpha,
+                                   &v_beta,
+                                   &duty_u,
+                                   &duty_v,
+                                   &duty_w);
+    }
+    check_true(fabs(vq) > TEST_EPSILON_F, "current integrator accumulated before invalid input");
+
+    /*
+     * pole_pairs 无效时 wrapper 会提前返回；这里必须清积分器。
+     */
+    const int invalid_status = foc_sim_step_wrapper(0.0,
+                                                    0.0,
+                                                    0.0,
+                                                    0.0,
+                                                    0.0,
+                                                    12.0,
+                                                    0.0,
+                                                    0.0,
+                                                    0.00005,
+                                                    0.0,
+                                                    0.0,
+                                                    &id,
+                                                    &iq,
+                                                    &vd,
+                                                    &vq,
+                                                    &v_alpha,
+                                                    &v_beta,
+                                                    &duty_u,
+                                                    &duty_v,
+                                                    &duty_w);
+    check_true(invalid_status == -2, "invalid pole_pairs status");
+    check_true((duty_u == 0.5) && (duty_v == 0.5) && (duty_w == 0.5),
+               "invalid pole_pairs safe duty");
+
+    /*
+     * 如果积分器已经被 reset，下一次零目标/零电流应该输出近似零电压。
+     */
+    const int valid_status = foc_sim_step_wrapper(0.0,
+                                                  0.0,
+                                                  0.0,
+                                                  0.0,
+                                                  0.0,
+                                                  12.0,
+                                                  0.0,
+                                                  0.0,
+                                                  0.00005,
+                                                  7.0,
+                                                  0.0,
+                                                  &id,
+                                                  &iq,
+                                                  &vd,
+                                                  &vq,
+                                                  &v_alpha,
+                                                  &v_beta,
+                                                  &duty_u,
+                                                  &duty_v,
+                                                  &duty_w);
+    printf("after_invalid_pole_pairs: status=%d vd=% .6f V vq=% .6f V duty=(%.6f, %.6f, %.6f)\n",
+           valid_status,
+           vd,
+           vq,
+           duty_u,
+           duty_v,
+           duty_w);
+    check_true(valid_status == 0, "valid step after invalid pole_pairs status");
+    check_true(fabs(vd) <= TEST_EPSILON_F && fabs(vq) <= TEST_EPSILON_F,
+               "current integrator reset after invalid pole_pairs");
+}
+
 static void test_velocity_wrapper(void)
 {
     double iq_target = 0.0;
@@ -441,6 +546,7 @@ int main(void)
     test_math_blocks();
     test_foc_sim_nominal_and_edges();
     test_current_step_response();
+    test_invalid_pole_pairs_resets_current_integrator();
     test_velocity_wrapper();
     test_closed_loop_first_order_iq();
 

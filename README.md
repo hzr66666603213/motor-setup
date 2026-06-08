@@ -156,6 +156,16 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude \
   -lm -o build/foc_sim_test
 ```
 
+## 第三阶段验证清单
+
+在继续写 STM32 HAL 真机驱动前，建议先完成以下仿真验证：
+
+1. Simulink 跑电流环：`iq_ref` 从 `0 A` 阶跃到 `0.5 A`，确认 `iq` 收敛，`vq` 不超过 `voltage_limit`。
+2. Simulink 跑速度环：`velocity_ref` 从 `0 rad/s` 阶跃到 `10 rad/s`，确认速度环输出的 `iq_ref` 合理且受 `current_limit` 约束。
+3. 加负载突变 `Tload`，确认速度短暂跌落后能恢复，且电流目标不出现不可控尖峰。
+4. 加电压限幅和电流限幅，确认系统进入饱和后不会发散，退出饱和后积分器不会留下明显冲击。
+5. 再开始 STM32 HAL bring-up，顺序为：GPIO -> VBUS ADC -> ABZ -> PWM -> DRV8301 -> 电流 ADC。
+
 ## 控制频率
 
 | 任务 | 频率 | 主要文件 |

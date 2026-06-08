@@ -429,6 +429,7 @@ int foc_sim_step_wrapper(double ia_a,
     }
 
     if (!foc_sim_pole_pairs_from_double(pole_pairs_double, &pole_pairs)) {
+        current_controller_reset(&s_foc_sim_ctx.current_controller);
         foc_sim_fill_safe_output(&output);
         foc_sim_write_double_output(&output,
                                     id_a,
