@@ -111,7 +111,7 @@ void axis0_calibration_update(Axis0Context *axis,
             current_sensor->offset_b_count = calib->accum_b / (float)calib->sample_count;
             current_sensor->offset_c_count = calib->accum_c / (float)calib->sample_count;
             axis->current_offset_valid = true;
-            calib_next(calib, CALIB_RESISTANCE);
+            calib_next(calib, CALIB_DONE);
         }
     } else if (calib->step == CALIB_RESISTANCE) {
         /*
@@ -152,7 +152,7 @@ void axis0_calibration_update(Axis0Context *axis,
         if (calib->step_elapsed_s > 0.2f) {
             axis->config.motor.phase_inductance_h = 0.0f;
             axis->motor_calibrated = true;
-            calib_next(calib, CALIB_ENCODER_DIRECTION);
+            calib_next(calib, CALIB_DONE);
         }
     } else if (calib->step == CALIB_ENCODER_DIRECTION) {
         if (calib->sample_count == 0u) {

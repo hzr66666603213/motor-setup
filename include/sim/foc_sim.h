@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "control/current_controller.h"
+#include "control/velocity_controller.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,18 @@ typedef struct {
      */
     CurrentController current_controller;
 } FocSimContext;
+
+/*
+ * 速度环仿真 context。
+ *
+ * 该 context 与电流环 FOC context 分开保存，便于 Simulink 单独验证速度 PI。
+ */
+typedef struct {
+    VelocityController velocity_controller;
+    float last_velocity_target_rad_s;   /* 最近一次速度目标，rad/s */
+    float last_velocity_measured_rad_s; /* 最近一次实测速度，rad/s */
+    uint8_t initialized;                /* 1 表示速度环 context 已初始化 */
+} FocSimVelocityContext;
 
 /*
  * 初始化外部 context。
@@ -182,6 +195,22 @@ int foc_sim_step_wrapper(double ia_a,
                          double *duty_u,
                          double *duty_v,
                          double *duty_w);
+
+/*
+ * Simulink C Caller 速度环仿真入口。
+ *
+ * 输入/输出全部使用 double，内部调用 velocity_controller_update()。
+ * reset_integrator 非 0 时会重置速度环积分器，适合仿真开始或切换工况时使用。
+ */
+int foc_sim_velocity_step_wrapper(double velocity_target_rad_s,
+                                  double velocity_measured_rad_s,
+                                  double dt_s,
+                                  double velocity_kp,
+                                  double velocity_ki,
+                                  double current_limit_a,
+                                  double velocity_limit_rad_s,
+                                  double reset_integrator,
+                                  double *iq_target_a);
 
 #ifdef __cplusplus
 }

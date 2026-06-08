@@ -28,6 +28,7 @@
 #define FOC_SIM_MAX_POLE_PAIRS_DOUBLE    255.0
 
 static FocSimContext s_foc_sim_ctx;
+static FocSimVelocityContext s_foc_sim_velocity_ctx;
 
 static void foc_sim_fill_safe_output(FocSimOutput *output)
 {
@@ -239,6 +240,7 @@ int foc_sim_context_step(FocSimContext *ctx,
                                 dt_s,
                                 pole_pairs,
                                 encoder_offset_rad)) {
+        current_controller_reset(&ctx->current_controller);
         foc_sim_fill_safe_output(output);
         return -2;
     }
@@ -467,4 +469,71 @@ int foc_sim_step_wrapper(double ia_a,
                                 duty_w);
 
     return status;
+}
+
+int foc_sim_velocity_step_wrapper(double velocity_target_rad_s,
+                                  double velocity_measured_rad_s,
+                                  double dt_s,
+                                  double velocity_kp,
+                                  double velocity_ki,
+                                  double current_limit_a,
+                                  double velocity_limit_rad_s,
+                                  double reset_integrator,
+                                  double *iq_target_a)
+{
+    float iq_target = 0.0f;
+
+    if (iq_target_a == NULL) {
+        return -1;
+    }
+
+    if (!isfinite(velocity_target_rad_s) ||
+        !isfinite(velocity_measured_rad_s) ||
+        !isfinite(dt_s) ||
+        !isfinite(velocity_kp) ||
+        !isfinite(velocity_ki) ||
+        !isfinite(current_limit_a) ||
+        !isfinite(velocity_limit_rad_s) ||
+        (dt_s <= 0.0) ||
+        (current_limit_a <= 0.0) ||
+        (velocity_limit_rad_s <= 0.0)) {
+        if (s_foc_sim_velocity_ctx.initialized != 0u) {
+            velocity_controller_reset(&s_foc_sim_velocity_ctx.velocity_controller);
+        }
+        *iq_target_a = 0.0;
+        return -2;
+    }
+
+    /*
+     * Simulink 常用 Constant 块在线修改 kp/ki/limit。
+     * 为了让 wrapper 独立可用，这里每步同步参数；当用户给 reset_integrator 非 0 时清积分。
+     */
+    if (s_foc_sim_velocity_ctx.initialized == 0u) {
+        velocity_controller_init(&s_foc_sim_velocity_ctx.velocity_controller,
+                                 (float)velocity_kp,
+                                 (float)velocity_ki,
+                                 (float)current_limit_a,
+                                 (float)velocity_limit_rad_s);
+        s_foc_sim_velocity_ctx.initialized = 1u;
+    } else {
+        s_foc_sim_velocity_ctx.velocity_controller.current_limit_a = (float)current_limit_a;
+        s_foc_sim_velocity_ctx.velocity_controller.integrator_limit_a = (float)current_limit_a;
+        s_foc_sim_velocity_ctx.velocity_controller.velocity_limit_rad_s = (float)velocity_limit_rad_s;
+        velocity_controller_set_gains(&s_foc_sim_velocity_ctx.velocity_controller,
+                                      (float)velocity_kp,
+                                      (float)velocity_ki);
+    }
+
+    if (reset_integrator != 0.0) {
+        velocity_controller_reset(&s_foc_sim_velocity_ctx.velocity_controller);
+    }
+
+    iq_target = velocity_controller_update(&s_foc_sim_velocity_ctx.velocity_controller,
+                                           (float)velocity_target_rad_s,
+                                           (float)velocity_measured_rad_s,
+                                           (float)dt_s);
+    s_foc_sim_velocity_ctx.last_velocity_target_rad_s = (float)velocity_target_rad_s;
+    s_foc_sim_velocity_ctx.last_velocity_measured_rad_s = (float)velocity_measured_rad_s;
+    *iq_target_a = (double)iq_target;
+    return 0;
 }

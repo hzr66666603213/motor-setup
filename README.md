@@ -102,6 +102,7 @@ tests/
 - `src/foc/foc_math.c`
 - `src/foc/svpwm.c`
 - `src/control/current_controller.c`
+- `src/control/velocity_controller.c`
 
 Simulink C Caller 推荐调用 `foc_sim_step_wrapper()`，不要直接调用 `foc_sim_step()`。
 
@@ -149,6 +150,7 @@ gcc -std=c11 -Wall -Wextra -Werror -Iinclude \
   tests/foc_sim_test.c \
   src/sim/foc_sim.c \
   src/control/current_controller.c \
+  src/control/velocity_controller.c \
   src/foc/foc_math.c \
   src/foc/svpwm.c \
   -lm -o build/foc_sim_test

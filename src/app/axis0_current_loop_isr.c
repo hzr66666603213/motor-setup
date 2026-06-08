@@ -61,6 +61,8 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
      */
     if (!board_axis0_read_phase_current_raw(&raw_a, &raw_b, &raw_c)) {
         set_fault(axis, AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+        axis0_fault_enter_safe_state(axis);
+        return;
     }
 
     /*

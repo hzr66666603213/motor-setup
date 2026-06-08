@@ -328,11 +328,121 @@ static void test_current_step_response(void)
     }
 }
 
+static void test_velocity_wrapper(void)
+{
+    double iq_target = 0.0;
+
+    printf("\n== velocity controller wrapper ==\n");
+
+    const int status = foc_sim_velocity_step_wrapper(5.0,
+                                                     1.0,
+                                                     0.001,
+                                                     0.02,
+                                                     0.2,
+                                                     1.0,
+                                                     20.0,
+                                                     1.0,
+                                                     &iq_target);
+    printf("velocity_wrapper: status=%d iq_target=% .6f A\n", status, iq_target);
+    check_true(status == 0, "velocity wrapper status");
+    check_true(isfinite(iq_target), "velocity wrapper finite output");
+    check_true((iq_target >= -1.0) && (iq_target <= 1.0), "velocity wrapper current limit");
+}
+
+static void test_closed_loop_first_order_iq(void)
+{
+    const double dt = 5.0e-5;
+    const double stop_time_s = 0.05;
+    const int steps = (int)(stop_time_s / dt);
+    const double r_ohm = 0.5;
+    const double l_h = 1.0e-3;
+    const double iq_ref_a = 0.5;
+    const double voltage_limit_v = 3.0;
+    double iq_a = 0.0;
+    double id = 0.0;
+    double iq_measured = 0.0;
+    double vd = 0.0;
+    double vq = 0.0;
+    double v_alpha = 0.0;
+    double v_beta = 0.0;
+    double duty_u = 0.0;
+    double duty_v = 0.0;
+    double duty_w = 0.0;
+    int status_ok = 1;
+    int duty_ok = 1;
+    int voltage_ok = 1;
+
+    printf("\n== closed-loop first-order iq plant ==\n");
+
+    /*
+     * 重新初始化电流 PI，避免前面边界测试留下积分状态。
+     * 该测试使用 theta_e=0，因此 Park 后 id=i_alpha、iq=i_beta。
+     */
+    foc_sim_init();
+
+    for (int i = 0; i < steps; ++i) {
+        const double ia = 0.0;
+        const double ib = iq_a * 0.8660254037844386;
+        const double ic = -ib;
+        const int status = foc_sim_step_wrapper(ia,
+                                                ib,
+                                                ic,
+                                                0.0,
+                                                0.0,
+                                                12.0,
+                                                0.0,
+                                                iq_ref_a,
+                                                dt,
+                                                7.0,
+                                                0.0,
+                                                &id,
+                                                &iq_measured,
+                                                &vd,
+                                                &vq,
+                                                &v_alpha,
+                                                &v_beta,
+                                                &duty_u,
+                                                &duty_v,
+                                                &duty_w);
+        const double voltage_mag = sqrt(vd * vd + vq * vq);
+
+        if (status != 0) {
+            status_ok = 0;
+        }
+        if (!(is_duty_valid(duty_u) &&
+              is_duty_valid(duty_v) &&
+              is_duty_valid(duty_w))) {
+            duty_ok = 0;
+        }
+        if (voltage_mag > (voltage_limit_v + 1.0e-6)) {
+            voltage_ok = 0;
+        }
+
+        iq_a += ((vq - r_ohm * iq_a) / l_h) * dt;
+    }
+
+    printf("closed_loop_iq: iq_final=% .6f A iq_ref=% .6f A vd=% .6f V vq=% .6f V duty=(%.6f, %.6f, %.6f)\n",
+           iq_a,
+           iq_ref_a,
+           vd,
+           vq,
+           duty_u,
+           duty_v,
+           duty_w);
+
+    check_true(status_ok, "closed-loop plant status");
+    check_true(duty_ok, "closed-loop plant duty range");
+    check_true(voltage_ok, "closed-loop plant voltage limit");
+    check_true(fabs(iq_a - iq_ref_a) <= 0.05, "closed-loop plant final iq near reference");
+}
+
 int main(void)
 {
     test_math_blocks();
     test_foc_sim_nominal_and_edges();
     test_current_step_response();
+    test_velocity_wrapper();
+    test_closed_loop_first_order_iq();
 
     if (g_failures != 0) {
         printf("\nFOC PC unit test failed: %d failure(s)\n", g_failures);

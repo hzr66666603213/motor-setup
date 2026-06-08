@@ -112,10 +112,16 @@ void axis_update_1khz(Axis0Context *axis, Axis0StateMachineContext *sm, float dt
         axis0_calibration_update(axis, &sm->calibration, sm->current_sensor, sm->encoder, dt_s);
         if (sm->calibration.step == CALIB_DONE) {
             /*
-             * 当前 skeleton 中每个校准请求完成后都进入 READY。
-             * 后续可细分为“只完成电流零偏后回 IDLE”等更严格流程。
+             * 单项校准完成后先检查总体准入：
+             * 只有电流零偏、电机参数和编码器校准都有效，才允许进入 READY。
              */
-            axis_enter_state(axis, sm, AXIS0_STATE_READY);
+            if (axis->current_offset_valid &&
+                axis->motor_calibrated &&
+                axis->encoder_calibrated) {
+                axis_enter_state(axis, sm, AXIS0_STATE_READY);
+            } else {
+                axis_enter_state(axis, sm, AXIS0_STATE_IDLE);
+            }
         } else if (sm->calibration.step == CALIB_FAILED) {
             set_fault(axis, axis->state == AXIS0_STATE_ENCODER_CALIBRATION ?
                             AXIS0_FAULT_ENCODER_CALIBRATION_FAILED :
