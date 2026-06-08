@@ -22,6 +22,7 @@
 
 static BoardOdriveV36Status s_board_status;
 static bool s_debug_led_on = false;
+static float s_vbus_scale_v_per_count = 60.0f / 4095.0f;
 
 static bool board_vbus_in_safe_range(const Axis0Context *axis, float vbus_v)
 {
@@ -49,6 +50,8 @@ bool board_init_power_safe(Axis0Context *axis)
     s_board_status.pwm_disabled = true;
     s_board_status.drv_gate_enabled = false;
     s_board_status.drv_nfault_active = hal_gpio_read_fault_pin();
+    s_board_status.drv0_status_valid = false;
+    s_board_status.drv1_status_valid = false;
     s_board_status.adc_valid = hal_adc_samples_valid();
     s_board_status.encoder_valid = false;
     s_board_status.vbus_v = board_read_vbus_v();
@@ -65,7 +68,8 @@ bool board_enable_axis0_power_stage(Axis0Context *axis)
     /*
      * 使能功率级前重新采样关键条件，不能只依赖旧状态：
      * - fault_flags 必须为 0；
-     * - DRV nFAULT 不得有效；
+     * - 共享 DRV nFAULT 不得有效。ODrive v3.6 EN_GATE/nFAULT 是 M0/M1 共用，
+     *   Axis0-only 也要确保 M1 DRV8301 已初始化、无故障、保持安全；
      * - ADC 样本有效；
      * - 编码器已校准；
      * - VBUS 在安全范围。
@@ -132,8 +136,9 @@ bool board_axis0_read_phase_current_raw(uint16_t *raw_a, uint16_t *raw_b, uint16
 {
     /*
      * 读取 ADC 原始值。
-     * ODrive v3.6 Axis0 公开资料明确两路电流采样；第三相在上层可由 -ia-ib 推算。
-     * 当前 HAL mock 给出三路字段，便于保持接口通用。
+     * ODrive v3.6 Axis0 公开资料明确两路电流采样。
+     * 不伪造 raw_c=2048；第三相原始值在 two-shunt mode 下无效，由 current_sensor
+     * 明确使用 ic=-ia-ib 推算。
      */
     HalAdcPhaseRaw raw;
     if (!hal_adc_get_phase_current_raw(&raw)) {
@@ -141,8 +146,13 @@ bool board_axis0_read_phase_current_raw(uint16_t *raw_a, uint16_t *raw_b, uint16
     }
     *raw_a = raw.u;
     *raw_b = raw.v;
-    *raw_c = raw.w;
+    *raw_c = 0u;
     return true;
+}
+
+bool board_axis0_has_third_current_sample(void)
+{
+    return false;
 }
 
 float board_read_vbus_v(void)
@@ -151,7 +161,14 @@ float board_read_vbus_v(void)
      * mock 换算：真实项目必须按 ODrive v3.6 母线分压比例修正。
      * 这个比例会直接影响欠压/过压保护，不能凭感觉填写。
      */
-    return (float)hal_adc_get_vbus_raw() * (60.0f / 4095.0f);
+    return (float)hal_adc_get_vbus_raw() * s_vbus_scale_v_per_count;
+}
+
+void board_set_vbus_scale_v_per_count(float scale_v_per_count)
+{
+    if (scale_v_per_count > 0.0f) {
+        s_vbus_scale_v_per_count = scale_v_per_count;
+    }
 }
 
 bool board_read_drv_nfault(void)

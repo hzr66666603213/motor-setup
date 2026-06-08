@@ -32,7 +32,7 @@ extern "C" {
 
 /* 保守电流环参数。实际应根据电机 R/L、采样增益和 PWM 频率重新整定。 */
 #define AXIS0_DEFAULT_CURRENT_KP              0.05f
-#define AXIS0_DEFAULT_CURRENT_KI              10.0f
+#define AXIS0_DEFAULT_CURRENT_KI              100.0f
 #define AXIS0_DEFAULT_VELOCITY_KP             0.02f
 #define AXIS0_DEFAULT_VELOCITY_KI             0.2f
 #define AXIS0_DEFAULT_POSITION_KP             2.0f

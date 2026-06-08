@@ -100,7 +100,8 @@ void protection_note_output_saturation(Axis *axis, const ProtectionConfig *confi
 
 void axis0_protection_check_fast(Axis0Context *axis,
                                  const EncoderMt6701AbzState *encoder,
-                                 const Drv8301 *drv)
+                                 const Drv8301 *drv0,
+                                 const Drv8301 *drv1)
 {
     if (axis->rt.vbus_v < axis->config.protection.vbus_min_v) {
         set_fault(axis, AXIS0_FAULT_VBUS_UNDERVOLTAGE);
@@ -122,7 +123,9 @@ void axis0_protection_check_fast(Axis0Context *axis,
     if (axis->config.protection.encoder_error_enable && !encoder->valid) {
         set_fault(axis, AXIS0_FAULT_ENCODER_INVALID);
     }
-    if (axis->config.protection.drv_fault_enable && drv8301_has_fault(drv)) {
+    if (axis->config.protection.drv_fault_enable &&
+        ((drv0 && drv8301_has_fault(drv0)) ||
+         (drv1 && drv8301_has_fault(drv1)))) {
         set_fault(axis, AXIS0_FAULT_DRV8301_FAULT);
     }
     if (board_read_drv_nfault()) {
@@ -132,12 +135,31 @@ void axis0_protection_check_fast(Axis0Context *axis,
 
 void axis0_protection_check_slow(Axis0Context *axis,
                                  const EncoderMt6701AbzState *encoder,
-                                 const Drv8301 *drv)
+                                 Drv8301 *drv0,
+                                 Drv8301 *drv1)
 {
     if (axis->config.protection.encoder_error_enable && !encoder->valid) {
         set_fault(axis, AXIS0_FAULT_ENCODER_INVALID);
     }
-    if (drv->status.spi_error) {
+    /*
+     * ODrive v3.6 的 EN_GATE/nFAULT 是 M0/M1 共用。
+     * 即使第一阶段只控制 Axis0，也要周期读取/处理 M1 DRV8301 状态：
+     * - M1 必须初始化；
+     * - M1 gate 保持关闭；
+     * - M1 SPI 或状态故障同样会让共享 nFAULT 触发。
+     */
+    if (drv0 && !drv8301_read_status(drv0)) {
         set_fault(axis, AXIS0_FAULT_DRV8301_SPI_ERROR);
+    }
+    if (drv1 && !drv8301_read_status(drv1)) {
+        set_fault(axis, AXIS0_FAULT_DRV8301_SPI_ERROR);
+    }
+    if ((drv0 && drv0->status.spi_error) ||
+        (drv1 && drv1->status.spi_error)) {
+        set_fault(axis, AXIS0_FAULT_DRV8301_SPI_ERROR);
+    }
+    if ((drv0 && drv8301_has_fault(drv0)) ||
+        (drv1 && drv8301_has_fault(drv1))) {
+        set_fault(axis, AXIS0_FAULT_DRV8301_FAULT);
     }
 }

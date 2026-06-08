@@ -22,6 +22,14 @@
 extern "C" {
 #endif
 
+/*
+ * 控制模式说明：
+ * - 该枚举描述“命令如何被解释”，不等于状态机是否已经允许输出。
+ * - 即使 control_mode 是 TORQUE/VELOCITY/POSITION，只要 state 不是
+ *   AXIS0_STATE_CLOSED_LOOP_CONTROL，20 kHz ISR 仍应输出安全 duty。
+ * - 后台通信任务修改该字段时，真实固件中应和 input_* 一起做双缓冲提交，
+ *   避免 ISR 读到模式和目标值不匹配的中间状态。
+ */
 typedef enum {
     AXIS0_CONTROL_MODE_IDLE = 0,     /* 空闲模式：电流目标为 0，PWM 不应输出有效力矩 */
     AXIS0_CONTROL_MODE_TORQUE,       /* 力矩模式：input_torque_nm / torque_constant 得到 iq 目标 */
@@ -29,6 +37,13 @@ typedef enum {
     AXIS0_CONTROL_MODE_POSITION      /* 位置模式：位置 P 输出速度目标，再由速度 PI 输出 iq */
 } Axis0ControlMode;
 
+/*
+ * Axis0 主状态机说明：
+ * - 状态机负责“什么时候允许功率级上电”，ISR 负责“闭环状态下每周期怎么算”。
+ * - 校准状态保持非阻塞：由 1 kHz/后台周期性调用 update，而不是 delay 等待。
+ * - FAULT 是锁存状态；清故障前必须先确认 PWM/EN_GATE 已关闭，
+ *   再由用户显式命令恢复到 IDLE 或重新校准。
+ */
 typedef enum {
     AXIS0_STATE_BOOT = 0,                    /* 上电初始化，功率级保持关闭 */
     AXIS0_STATE_IDLE,                        /* 空闲等待命令，PWM 和 DRV8301 默认关闭 */
@@ -40,6 +55,13 @@ typedef enum {
     AXIS0_STATE_FAULT                        /* 故障状态，功率级强制关闭 */
 } Axis0StateId;
 
+/*
+ * 电机参数和与电机直接相关的安全限幅。
+ *
+ * 调参建议：第一次接真实 2804 电机时，先只改 current_limit_a、
+ * calibration_current_a 和 voltage_limit_v，保持它们非常保守；极对数、
+ * 相电流比例和编码器方向确认后，再逐步提高速度/电流限制。
+ */
 typedef struct {
     uint8_t pole_pairs;              /* 极对数，无单位；2804 默认 7，但必须实测确认 */
     float phase_resistance_ohm;      /* 相电阻，ohm；初始为 0，校准后填入 */
@@ -54,6 +76,13 @@ typedef struct {
     float position_max_rad;          /* 位置上限，rad */
 } Axis0MotorConfig;
 
+/*
+ * MT6701 ABZ 增量编码器配置。
+ *
+ * PPR/CPR 容易混淆：PPR 是 A/B 单通道每机械圈的脉冲数，
+ * CPR 是经过四倍频后的计数数，通常 CPR = PPR * 4。
+ * 因为 ABZ 不是绝对角，上电后必须通过 index 或校准流程确定电角度零位。
+ */
 typedef struct {
     int32_t encoder_ppr;             /* ABZ 每转脉冲数 PPR，默认 1024 */
     int32_t encoder_cpr;             /* 四倍频计数 CPR，默认 4096 */
@@ -62,6 +91,13 @@ typedef struct {
     bool use_index_z;                /* 是否使用 Z/index；第一版允许 false */
 } Axis0EncoderConfig;
 
+/*
+ * 控制周期和控制器增益。
+ *
+ * 这里保存的是“配置目标值”，实际定时器是否真的运行在这些频率，
+ * 由 board/HAL 初始化负责。调试时应同时用示波器或计数器确认实际 ISR 周期，
+ * 否则 PI 积分项会因为 dt_s 不匹配而表现异常。
+ */
 typedef struct {
     float pwm_frequency_hz;          /* PWM 频率，Hz，默认 20000 */
     float current_loop_hz;           /* 电流环频率，Hz，默认 20000 */
@@ -74,6 +110,13 @@ typedef struct {
     float position_kp;               /* 位置环比例增益，(rad/s)/rad */
 } Axis0ControlConfig;
 
+/*
+ * 保护阈值配置。
+ *
+ * 快速保护通常在 ISR 内检查（例如相电流、vbus、DRV nFAULT），
+ * 慢速保护可在 100 Hz/1 kHz 任务中检查（例如温度、通信超时）。
+ * 阈值应留有硬件测量误差余量，不要贴着电源或电机极限设置。
+ */
 typedef struct {
     float vbus_min_v;                /* 母线欠压阈值，V */
     float vbus_max_v;                /* 母线过压阈值，V */
@@ -121,6 +164,17 @@ typedef struct {
     Axis0ControlMode control_mode;   /* 控制模式，由后台命令写入 */
 } Axis0Command;
 
+/*
+ * Axis0 顶层上下文。
+ *
+ * 并发约定：
+ * - rt：高速 ISR 写，后台只读或快照读取；
+ * - cmd/requested_state/config：后台写，ISR 只读必要字段；
+ * - fault_flags：ISR 和保护路径都可能置位，清零只能由受控的清故障流程执行。
+ *
+ * 这个学习框架先用单个结构体表达数据流，移植到真实固件时建议把
+ * “命令输入”和“实时观测”拆成双缓冲/环形日志，减少临界区时间。
+ */
 typedef struct {
     Axis0Config config;              /* 运行配置 */
     Axis0RealtimeState rt;           /* 实时状态，主要 ISR 更新 */

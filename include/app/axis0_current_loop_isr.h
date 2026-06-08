@@ -25,7 +25,8 @@ typedef struct {
     CurrentController *current_controller;
     CurrentSensorConfig *current_sensor;
     EncoderMt6701AbzState *encoder;
-    Drv8301 *drv;
+    Drv8301 *drv0;               /* M0/Axis0 DRV8301 */
+    Drv8301 *drv1;               /* M1/Axis1 DRV8301；Axis0-only 也要初始化并监控 */
 } Axis0IsrContext;
 
 void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s);

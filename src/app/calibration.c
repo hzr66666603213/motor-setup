@@ -26,6 +26,9 @@
 #define CALIB_OFFSET_SAMPLES          2000u
 #define CALIB_STEP_TIMEOUT_S          3.0f
 #define CALIB_ENCODER_MIN_DELTA_COUNT 16
+#define CALIB_RESISTANCE_START_V      0.05f
+#define CALIB_INDUCTANCE_START_V      0.05f
+#define CALIB_INJECTION_MAX_V         0.10f
 
 static void calib_fail(Axis0Context *axis, Axis0CalibrationContext *calib, Axis0CalibrationError error)
 {
@@ -52,6 +55,8 @@ void axis0_calibration_start(Axis0CalibrationContext *calib, Axis0CalibrationSte
     calib->accum_b = 0.0f;
     calib->accum_c = 0.0f;
     calib->max_offset_span_count = 20.0f;
+    calib->resistance_test_voltage_v = CALIB_RESISTANCE_START_V;
+    calib->inductance_pulse_voltage_v = CALIB_INDUCTANCE_START_V;
     calib->start_encoder_count = 0;
 }
 
@@ -112,10 +117,11 @@ void axis0_calibration_update(Axis0Context *axis,
         /*
          * B. 相电阻测量
          * 低电压/低电流注入，等待稳态电流后估算 R=V/I。
+         * 起步电压必须非常低：0.05V，最多逐步到 0.1V。
          * 当前 skeleton 不直接输出电压，避免未接硬件时误操作。
          *
          * 真实实现建议：
-         * - 施加很小的 d 轴电压或相间电压；
+         * - 施加 0.05V 起步的小 d 轴电压或相间电压；
          * - 等待电流到稳态；
          * - 用已知电压 / 稳态电流估算相电阻；
          * - 全程检查 calibration_current_a。
@@ -137,6 +143,7 @@ void axis0_calibration_update(Axis0Context *axis,
         /*
          * C. 相电感测量
          * 施加短脉冲并测量 di/dt，估算 L=V/(di/dt)。
+         * 起步脉冲电压也按 0.05V，最多 0.1V，不从 0.5V/1V 开始。
          * 当前只保留步骤位置，真实实现必须加过流保护。
          *
          * 注意：电感测量脉冲很短，但仍可能在低电阻小电机上造成电流快速上升。

@@ -26,7 +26,8 @@ typedef struct {
     PositionController *position_controller;
     CurrentSensorConfig *current_sensor;
     EncoderMt6701AbzState *encoder;
-    Drv8301 *drv;
+    Drv8301 *drv0;               /* M0/Axis0 DRV8301 */
+    Drv8301 *drv1;               /* M1/Axis1 DRV8301；共享 EN_GATE/nFAULT，必须处理 */
 } Axis0StateMachineContext;
 
 void axis_request_state(Axis0Context *axis, Axis0StateId requested_state);

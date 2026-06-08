@@ -19,6 +19,18 @@ bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t len
     return true;
 }
 
+bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *tx, uint8_t *rx, size_t length)
+{
+    /*
+     * device_id 用于同一 SPI 总线上的不同片选：
+     * - ODrive v3.6 DRV8301 M0 CS = PC13
+     * - ODrive v3.6 DRV8301 M1 CS = PC14
+     * mock 中不真正拉片选，只保留接口形状。
+     */
+    (void)device_id;
+    return hal_spi_transfer(bus_id, tx, rx, length);
+}
+
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
     /* mock 中 DMA 与普通传输等价；真实工程应异步返回并由回调置位完成标志。 */

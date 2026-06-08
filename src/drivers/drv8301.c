@@ -47,6 +47,16 @@
 #define DRV8301_CTRL1_OC_ADJ_SHIFT       6u
 #define DRV8301_CTRL2_GAIN_SHIFT         2u
 
+static float drv8301_gain_from_code(uint8_t gain_code)
+{
+    switch (gain_code & 0x03u) {
+    case 0u: return 10.0f;
+    case 1u: return 20.0f;
+    case 2u: return 40.0f;
+    default: return 80.0f;
+    }
+}
+
 static uint16_t drv8301_make_read(uint8_t addr)
 {
     return DRV8301_SPI_READ | ((uint16_t)addr << DRV8301_ADDR_SHIFT);
@@ -57,7 +67,7 @@ static uint16_t drv8301_make_write(uint8_t addr, uint16_t data)
     return ((uint16_t)addr << DRV8301_ADDR_SHIFT) | (data & DRV8301_DATA_MASK);
 }
 
-static bool drv8301_spi_transfer16(uint16_t tx, uint16_t *rx)
+static bool drv8301_spi_transfer16(const Drv8301 *drv, uint16_t tx, uint16_t *rx)
 {
     /*
      * DRV8301 SPI 一帧为 16 bit。
@@ -67,20 +77,20 @@ static bool drv8301_spi_transfer16(uint16_t tx, uint16_t *rx)
      */
     uint8_t tx_buf[2] = { (uint8_t)(tx >> 8), (uint8_t)(tx & 0xffu) };
     uint8_t rx_buf[2] = { 0u, 0u };
-    if (!hal_spi_transfer(3u, tx_buf, rx_buf, sizeof(tx_buf))) {
+    if (!hal_spi_transfer_device(3u, drv->spi_device_id, tx_buf, rx_buf, sizeof(tx_buf))) {
         return false;
     }
     *rx = ((uint16_t)rx_buf[0] << 8) | rx_buf[1];
     return true;
 }
 
-static bool drv8301_write_reg(uint8_t addr, uint16_t data)
+static bool drv8301_write_reg(const Drv8301 *drv, uint8_t addr, uint16_t data)
 {
     uint16_t rx = 0u;
-    return drv8301_spi_transfer16(drv8301_make_write(addr, data), &rx);
+    return drv8301_spi_transfer16(drv, drv8301_make_write(addr, data), &rx);
 }
 
-static bool drv8301_read_reg(uint8_t addr, uint16_t *data)
+static bool drv8301_read_reg(const Drv8301 *drv, uint8_t addr, uint16_t *data)
 {
     uint16_t ignored = 0u;
     uint16_t rx = 0u;
@@ -89,10 +99,10 @@ static bool drv8301_read_reg(uint8_t addr, uint16_t *data)
      * DRV8301 的 SPI 读数据延迟一帧返回：
      * 第 1 帧发送 read command，第 2 帧发送任意安全命令并接收上一帧结果。
      */
-    if (!drv8301_spi_transfer16(drv8301_make_read(addr), &ignored)) {
+    if (!drv8301_spi_transfer16(drv, drv8301_make_read(addr), &ignored)) {
         return false;
     }
-    if (!drv8301_spi_transfer16(drv8301_make_read(DRV8301_REG_STATUS1), &rx)) {
+    if (!drv8301_spi_transfer16(drv, drv8301_make_read(DRV8301_REG_STATUS1), &rx)) {
         return false;
     }
     *data = rx & DRV8301_DATA_MASK;
@@ -114,6 +124,11 @@ static void drv8301_parse_status(Drv8301Status *status)
 
 bool drv8301_init(Drv8301 *drv)
 {
+    return drv8301_init_axis(drv, 0u);
+}
+
+bool drv8301_init_axis(Drv8301 *drv, uint8_t axis_index)
+{
     /*
      * 初始化顺序：
      * 1. 清软件状态；
@@ -122,6 +137,9 @@ bool drv8301_init(Drv8301 *drv)
      * 如果第 3 步失败，initialized=false，状态机不应允许闭环。
      */
     memset(drv, 0, sizeof(*drv));
+    drv->axis_index = axis_index;
+    drv->spi_device_id = axis_index;
+    drv->shunt_amp_gain_v_v = 10.0f;
     drv8301_disable(drv);
     drv->initialized = drv8301_configure_for_6pwm(drv);
     return drv->initialized;
@@ -166,8 +184,8 @@ bool drv8301_read_status(Drv8301 *drv)
      */
     uint16_t status1 = 0u;
     uint16_t status2 = 0u;
-    if (!drv8301_read_reg(DRV8301_REG_STATUS1, &status1) ||
-        !drv8301_read_reg(DRV8301_REG_STATUS2, &status2)) {
+    if (!drv8301_read_reg(drv, DRV8301_REG_STATUS1, &status1) ||
+        !drv8301_read_reg(drv, DRV8301_REG_STATUS2, &status2)) {
         drv->status.spi_error = true;
         return false;
     }
@@ -187,7 +205,7 @@ bool drv8301_clear_faults(Drv8301 *drv)
      */
     drv->status.unknown_fault = false;
     drv->status.spi_error = false;
-    if (!drv8301_write_reg(DRV8301_REG_CONTROL1, DRV8301_CTRL1_GATE_RESET)) {
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, DRV8301_CTRL1_GATE_RESET)) {
         drv->status.spi_error = true;
         return false;
     }
@@ -210,12 +228,13 @@ bool drv8301_configure_for_6pwm(Drv8301 *drv)
         ((uint16_t)8u << DRV8301_CTRL1_OC_ADJ_SHIFT);
     const uint16_t control2 = (0u << DRV8301_CTRL2_GAIN_SHIFT);
 
-    if (!drv8301_write_reg(DRV8301_REG_CONTROL1, control1) ||
-        !drv8301_write_reg(DRV8301_REG_CONTROL2, control2)) {
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, control1) ||
+        !drv8301_write_reg(drv, DRV8301_REG_CONTROL2, control2)) {
         drv->status.spi_error = true;
         return false;
     }
     drv->status.spi_error = false;
+    drv->shunt_amp_gain_v_v = 10.0f;
     return true;
 }
 
@@ -231,7 +250,7 @@ bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code)
         ((uint16_t)DRV8301_OCP_MODE_CURRENT_LIMIT << DRV8301_CTRL1_OCP_MODE_SHIFT) |
         (code << DRV8301_CTRL1_OC_ADJ_SHIFT);
 
-    if (!drv8301_write_reg(DRV8301_REG_CONTROL1, control1)) {
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, control1)) {
         drv->status.spi_error = true;
         return false;
     }
@@ -251,10 +270,25 @@ bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code)
         ((uint16_t)DRV8301_OCP_MODE_CURRENT_LIMIT << DRV8301_CTRL1_OCP_MODE_SHIFT) |
         ((uint16_t)8u << DRV8301_CTRL1_OC_ADJ_SHIFT);
 
-    if (!drv8301_write_reg(DRV8301_REG_CONTROL1, control1)) {
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, control1)) {
         drv->status.spi_error = true;
         return false;
     }
+    drv->status.spi_error = false;
+    return true;
+}
+
+bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code)
+{
+    const uint16_t code = (uint16_t)(gain_code & 0x03u);
+    const uint16_t control2 = code << DRV8301_CTRL2_GAIN_SHIFT;
+
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL2, control2)) {
+        drv->status.spi_error = true;
+        return false;
+    }
+
+    drv->shunt_amp_gain_v_v = drv8301_gain_from_code(gain_code);
     drv->status.spi_error = false;
     return true;
 }

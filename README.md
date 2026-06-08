@@ -46,6 +46,8 @@ include/
   foc/
     foc_math.h                 Clarke/Park/反 Park/角度归一化/限幅/滤波。
     svpwm.h                    独立 SVPWM 模块。
+  sim/
+    foc_sim.h                  Simulink/PC 侧纯算法 FOC 仿真入口，不依赖 STM32 HAL。
   control/
     current_controller.h       d/q 电流 PI。
     velocity_controller.h      速度 PI。
@@ -72,6 +74,8 @@ src/
   foc/
     foc_math.c
     svpwm.c
+  sim/
+    foc_sim.c                  调用 foc_math/current_controller/svpwm 的仿真步进实现。
   control/
     current_controller.c
     velocity_controller.c
@@ -83,6 +87,71 @@ src/
     hal_*.c                    当前是 mock/stub，后续替换为 STM32 实现。
 tests/
   foc_math_test.c
+  foc_sim_test.c               PC 侧仿真入口 smoke test。
+```
+
+## Simulink 仿真入口
+
+本工程提供了一个不依赖 STM32 HAL 的 FOC 仿真入口，文件为：
+
+- `include/sim/foc_sim.h`
+- `src/sim/foc_sim.c`
+
+该入口不包含 `stm32f4xx_hal.h`，也不调用 `hal_pwm`、`hal_adc`、`hal_spi`、`hal_gpio`。它只调用纯算法模块：
+
+- `src/foc/foc_math.c`
+- `src/foc/svpwm.c`
+- `src/control/current_controller.c`
+
+Simulink C Caller 推荐调用 `foc_sim_step_wrapper()`，不要直接调用 `foc_sim_step()`。
+
+`foc_sim_step_wrapper()` 的特点：
+
+- wrapper 内部会自动初始化静态 context，不需要在 Simulink `InitFcn` 里用 `coder.ceval('foc_sim_init')`。
+- 输入/输出使用 `double`，匹配 Simulink 默认信号类型。
+- `pole_pairs` 先用 `double` 输入，例如 `7.0`，wrapper 内部会检查并四舍五入成整数极对数。
+
+```c
+status = foc_sim_step_wrapper(ia,
+                              ib,
+                              ic,
+                              mechanical_angle_rad,
+                              mechanical_velocity_rad_s,
+                              vbus,
+                              id_target,
+                              iq_target,
+                              dt,
+                              pole_pairs,
+                              encoder_offset,
+                              &id,
+                              &iq,
+                              &vd,
+                              &vq,
+                              &v_alpha,
+                              &v_beta,
+                              &duty_u,
+                              &duty_v,
+                              &duty_w);
+```
+
+`foc_sim_step_wrapper()` 的输入和输出全部是标量或标量指针，便于 Simulink C Caller 绑定。返回值为 `0` 表示正常；输入无效时返回 `-2`，输出会置为零电压和 `50%` duty。
+
+PC 侧可用普通 gcc 做 smoke test：
+
+```bash
+make sim_test
+```
+
+如果没有 `make`，可以直接编译这些文件：
+
+```bash
+gcc -std=c11 -Wall -Wextra -Werror -Iinclude \
+  tests/foc_sim_test.c \
+  src/sim/foc_sim.c \
+  src/control/current_controller.c \
+  src/foc/foc_math.c \
+  src/foc/svpwm.c \
+  -lm -o build/foc_sim_test
 ```
 
 ## 控制频率
@@ -250,6 +319,7 @@ ODrive 板必须由自己的直流电源供电，STLINK 的 VTref 只用于电�
 ```c
 static Axis0Context axis0;
 static Drv8301 drv0;
+static Drv8301 drv1;
 static EncoderMt6701AbzState enc0;
 static CurrentSensorConfig current_sensor0;
 static CurrentController current_ctrl0;
@@ -267,7 +337,9 @@ int main(void)
     axis0.requested_state = AXIS0_STATE_IDLE;
 
     current_sensor_set_default_config(&current_sensor0);
-    drv8301_init(&drv0);
+    drv8301_init_axis(&drv0, 0);
+    drv8301_init_axis(&drv1, 1);
+    current_sensor_bind_drv8301_gain(&current_sensor0, drv0.shunt_amp_gain_v_v);
     encoder_mt6701_abz_init(&enc0, &encoder_config);
     current_controller_init(&current_ctrl0,
                             axis0.config.control.current_kp,
@@ -286,7 +358,8 @@ int main(void)
 
     sm0.current_sensor = &current_sensor0;
     sm0.encoder = &enc0;
-    sm0.drv = &drv0;
+    sm0.drv0 = &drv0;
+    sm0.drv1 = &drv1;
     sm0.velocity_controller = &velocity_ctrl0;
     sm0.position_controller = &position_ctrl0;
 
@@ -309,7 +382,8 @@ void adc_or_pwm_20khz_callback(void)
         .current_controller = &current_ctrl0,
         .current_sensor = &current_sensor0,
         .encoder = &enc0,
-        .drv = &drv0,
+        .drv0 = &drv0,
+        .drv1 = &drv1,
     };
 
     axis0_current_loop_isr(&isr_ctx, 1.0f / 20000.0f);
@@ -598,6 +672,7 @@ set input_position 0.0
 - `calibration.c` 需要补上开环电压矢量/小 d 轴电流注入函数，否则电阻、电感、方向、offset 只是流程占位。
 - DRV8301 寄存器配置和状态解析需要按 datasheet 补齐。
 - 电流采样比例、VBUS 比例必须按 ODrive v3.6 实物校准。
+- ODrive v3.6 24V/56V 版本可能使用不同 VBUS 分压比例，不同版本不要共用同一个 `vbus_scale_v_per_count`。
 
 ## 文本命令示例
 

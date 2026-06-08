@@ -1,0 +1,13 @@
+# PC test build output
+build/
+
+# Simulink generated cache/build folders
+slprj/
+
+# MATLAB/Simulink temporary files
+*.asv
+*.autosave
+*.slxc
+
+# Accidental folder created by Unix-style mkdir flags on Windows shells
+-p/

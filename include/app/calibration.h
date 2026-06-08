@@ -44,6 +44,8 @@ typedef struct {
     float accum_b;                   /* 累计值 B 或 count */
     float accum_c;                   /* 累计值 C 或 count */
     float max_offset_span_count;     /* 零偏允许波动，count */
+    float resistance_test_voltage_v; /* 电阻测量起步电压，V，默认 0.05 */
+    float inductance_pulse_voltage_v;/* 电感测量起步脉冲电压，V，默认 0.05~0.1 */
     int32_t start_encoder_count;     /* 编码器方向判断起始计数 */
 } Axis0CalibrationContext;
 

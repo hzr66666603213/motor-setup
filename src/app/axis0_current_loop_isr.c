@@ -55,6 +55,8 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
     /*
      * Step 1：读取 Axis0 三相电流 ADC 原始值。
      * ODrive v3.x 常见两路相电流采样，第三相可由 ia+ib+ic=0 推算。
+     * 采样时刻应落在 PWM 中点附近，避开 MOSFET 换相和死区造成的尖峰；
+     * 真实 STM32 实现通常由 TIM1 触发 ADC injected conversion，再在转换完成中断进本函数。
      * 如果 ADC DMA/注入通道未完成，必须立即置故障，不能继续用旧样本。
      */
     if (!board_axis0_read_phase_current_raw(&raw_a, &raw_b, &raw_c)) {
@@ -64,7 +66,9 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
     /*
      * Step 2：ADC count -> A。
      * current_sensor 内部使用零偏和 A/count 比例。
-     * 第一次上电必须先做 current offset calibration，否则静态电流会带偏置。
+     * 零偏来自“PWM 关闭且相电流约为 0A”时的多次平均；比例来自采样电阻、
+     * 运放增益和 ADC 参考电压。第一次上电必须先做 current offset calibration，
+     * 否则静态电流会带偏置，PI 积分项可能在电机未动时就积累错误电压。
      */
     CurrentSensorSample current = current_sensor_convert_raw(ctx->current_sensor, raw_a, raw_b, raw_c);
     axis->rt.ia_a = current.ia_a;
@@ -82,8 +86,10 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
 
     /*
      * Step 4：更新 MT6701 ABZ 编码器状态。
-     * 当前 ABZ 是增量反馈，因此 mechanical_angle_rad 是相对角。
-     * 电角度零位必须由 encoder calibration 得到。
+     * 当前 ABZ 是增量反馈，因此 mechanical_angle_rad 是相对角；
+     * 如果不使用 Z/index，上电后的机械零点没有绝对意义。
+     * FOC 真正需要的是 electrical_angle_rad，因此必须先完成 encoder calibration，
+     * 得到方向 direction 和电角度零位 encoder_offset_rad。
      */
     encoder_mt6701_abz_update(ctx->encoder, dt_s);
     axis->rt.mechanical_angle_rad = ctx->encoder->mechanical_angle_rad;
@@ -115,6 +121,8 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
      * - VELOCITY/POSITION：由 1kHz 外环预先算好 iq_target。
      * - IDLE：目标为 0。
      * 第一版 id_target 固定为 0，后续弱磁/MTPA 会改变 id_target。
+     * 对表贴小电机而言，调试早期保持 id=0 最容易观察问题：
+     * 如果电角度 offset 错误，iq 会投影到 d 轴，表现为噪声、抖动或过流。
      */
     float id_target_a = 0.0f;
     float iq_target_a = 0.0f;
@@ -162,7 +170,9 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
     /*
      * Step 10：SVPWM。
      * 根据 alpha/beta 电压和母线电压生成三相 duty。
-     * 输出 duty 最终限制在 0..1，真实 PWM 后端还要考虑死区和互补输出极性。
+     * duty=0.5 表示桥臂平均电压在母线中点；三相 duty 的相对差值才形成电机端电压。
+     * 输出 duty 最终限制在 0..1，真实 PWM 后端还要考虑死区、互补输出极性、
+     * 最小导通时间以及低边/高边采样窗口。
      */
     SvpwmDuty duty = svpwm_generate(axis->rt.v_alpha_v, axis->rt.v_beta_v, axis->rt.vbus_v);
     axis->rt.duty_a = duty.duty_a;
@@ -180,7 +190,7 @@ void axis0_current_loop_isr(Axis0IsrContext *ctx, float dt_s)
      * 包括过流、母线异常、DRV nFAULT、ADC 无效、编码器无效。
      * 任意故障都必须在本 ISR 周期内关 PWM 和 EN_GATE。
      */
-    axis0_protection_check_fast(axis, ctx->encoder, ctx->drv);
+    axis0_protection_check_fast(axis, ctx->encoder, ctx->drv0, ctx->drv1);
     if (axis->fault_flags != AXIS0_FAULT_NONE) {
         axis0_fault_enter_safe_state(axis);
     }

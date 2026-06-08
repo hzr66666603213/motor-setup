@@ -69,7 +69,9 @@ extern "C" {
 typedef struct {
     bool pwm_disabled;               /* PWM 是否处于关闭状态 */
     bool drv_gate_enabled;           /* DRV8301 EN_GATE 是否使能 */
-    bool drv_nfault_active;          /* nFAULT 是否有效，true 表示故障 */
+    bool drv_nfault_active;          /* 共享 nFAULT 是否有效，true 表示 M0/M1 任一 DRV 报故障 */
+    bool drv0_status_valid;          /* M0 DRV8301 状态是否已读取 */
+    bool drv1_status_valid;          /* M1 DRV8301 状态是否已读取；Axis0-only 也需要处理 */
     bool adc_valid;                  /* ADC 采样是否有效 */
     bool encoder_valid;              /* 编码器是否有效 */
     float vbus_v;                    /* 母线电压，V */
@@ -89,9 +91,11 @@ void board_axis0_set_pwm_duty(float duty_a, float duty_b, float duty_c);
 
 /* 读取 Axis0 两/三相电流 ADC 原始值；第三相可由 current_sensor 模块推算。 */
 bool board_axis0_read_phase_current_raw(uint16_t *raw_a, uint16_t *raw_b, uint16_t *raw_c);
+bool board_axis0_has_third_current_sample(void);
 
 /* 读取母线电压，单位 V。 */
 float board_read_vbus_v(void);
+void board_set_vbus_scale_v_per_count(float scale_v_per_count);
 
 /* 读取 DRV8301 nFAULT，true 表示故障有效。 */
 bool board_read_drv_nfault(void);

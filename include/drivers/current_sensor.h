@@ -21,6 +21,11 @@ typedef struct {
     float offset_b_count;       /* B/V 相 ADC 零偏，count */
     float offset_c_count;       /* C/W 相 ADC 零偏，count */
     float amp_per_count;        /* ADC count 到电流的比例，A/count */
+    float adc_ref_voltage_v;    /* ADC 参考电压，V */
+    float adc_full_scale_count; /* ADC 满量程 count，例如 4095 */
+    float shunt_resistance_ohm; /* 分流电阻，ohm，必须按 ODrive v3.6 实物确认 */
+    float drv8301_gain_v_v;     /* DRV8301 shunt amplifier gain，V/V */
+    float vbus_scale_v_per_count; /* VBUS ADC 比例，V/count，24V/56V 版本需实测 */
     bool two_shunt_mode;        /* true 表示第三相由 -ia-ib 推算 */
 } CurrentSensorConfig;
 
@@ -32,11 +37,13 @@ typedef struct {
 } CurrentSensorSample;
 
 void current_sensor_set_default_config(CurrentSensorConfig *config);
+void current_sensor_bind_drv8301_gain(CurrentSensorConfig *config, float drv8301_gain_v_v);
+void current_sensor_recalculate_amp_per_count(CurrentSensorConfig *config);
 CurrentSensorSample current_sensor_convert_raw(const CurrentSensorConfig *config,
                                                uint16_t raw_a,
                                                uint16_t raw_b,
                                                uint16_t raw_c);
-float axis0_current_sensor_vbus_from_raw(uint16_t raw);
+float axis0_current_sensor_vbus_from_raw(const CurrentSensorConfig *config, uint16_t raw);
 
 #ifdef __cplusplus
 }

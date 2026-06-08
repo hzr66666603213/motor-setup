@@ -36,6 +36,9 @@ typedef struct {
 typedef struct {
     bool initialized;         /* SPI 配置是否完成 */
     bool enabled;             /* EN_GATE 是否使能 */
+    uint8_t axis_index;       /* 0=M0/Axis0 DRV8301，1=M1/Axis1 DRV8301 */
+    uint8_t spi_device_id;    /* SPI 片选设备 ID，HAL 后端据此选择 PC13/PC14 */
+    float shunt_amp_gain_v_v; /* DRV8301 内部电流放大器增益，V/V，必须和 current_sensor 绑定 */
     Drv8301Status status;     /* 最近一次状态 */
 } Drv8301;
 
@@ -49,6 +52,7 @@ typedef struct {
 #define DRV8301_OCP_MODE_DISABLED       3u
 
 bool drv8301_init(Drv8301 *drv);
+bool drv8301_init_axis(Drv8301 *drv, uint8_t axis_index);
 bool drv8301_enable(Drv8301 *drv);
 void drv8301_disable(Drv8301 *drv);
 bool drv8301_read_status(Drv8301 *drv);
@@ -56,6 +60,7 @@ bool drv8301_clear_faults(Drv8301 *drv);
 bool drv8301_configure_for_6pwm(Drv8301 *drv);
 bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code);
 bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code);
+bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code);
 bool drv8301_has_fault(const Drv8301 *drv);
 
 #ifdef __cplusplus

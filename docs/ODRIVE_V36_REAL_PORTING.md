@@ -132,7 +132,8 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 - 从 volatile 缓存复制到局部
 - `raw->u = s_raw_phase_a`
 - `raw->v = s_raw_phase_b`
-- `raw->w = 2048` 或保留占位，真实电流在 `drivers/current_sensor.c` 用两相模式推算
+- `raw->w = 0`，并且不要把它当作有效相电流
+- `CurrentSensorConfig.two_shunt_mode = true` 时，`drivers/current_sensor.c` 明确用 `ic = -ia - ib` 推算第三相
 
 ### 电流比例公式
 
@@ -153,6 +154,15 @@ phase_current_A = (raw_count - offset_count) * amp_per_count
 
 ODrive v3.6 的 `Rshunt`、放大器增益需要按实物/原理图确认。不要凭默认值直接大电流运行。
 
+DRV8301 gain 和 `amp_per_count` 必须绑定：
+
+```c
+drv8301_set_shunt_amp_gain(&drv0, gain_code);
+current_sensor_bind_drv8301_gain(&current_sensor0, drv0.shunt_amp_gain_v_v);
+```
+
+如果只改 DRV8301 寄存器、不改 `amp_per_count`，电流环看到的 A 值就是错的。
+
 ### VBUS 比例公式
 
 假设母线分压为：
@@ -169,6 +179,8 @@ VBUS = raw / 4095 * Vref * (R_high + R_low) / R_low
 
 先用万用表测真实母线电压，再调整 `board_read_vbus_v()` 或 `axis0_current_sensor_vbus_from_raw()` 的比例，让 `get vbus` 与万用表一致。
 
+ODrive v3.6 有不同母线电压版本，24V/56V 版本的分压比例可能不同。不要把某个版本的 `V/count` 直接复制到另一块板上；每块板第一次调试都用万用表做一次 VBUS 标定。
+
 ## 3. `hal_spi.c`：真实读写 DRV8301
 
 ### CubeMX 配置
@@ -178,27 +190,32 @@ VBUS = raw / 4095 * Vref * (R_high + R_low) / R_low
 - MISO `PC11`
 - MOSI `PC12`
 - Axis0 CS `PC13`
+- Axis1 CS `PC14`
 - Mode 1 或按 DRV8301 datasheet 配置 CPOL/CPHA
 - 16-bit 或 8-bit 都可；当前代码按两个 byte 发送
 
 ### HAL 实现思路
 
-`hal_spi_transfer()` 中：
+`hal_spi_transfer_device()` 中根据 `device_id` 选择片选：
 
 ```c
-bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
+bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id,
+                             const uint8_t *tx, uint8_t *rx, size_t length)
 {
     if (bus_id != 3u) {
         return false;
     }
 
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+    GPIO_TypeDef *cs_port = GPIOC;
+    uint16_t cs_pin = (device_id == 0u) ? GPIO_PIN_13 : GPIO_PIN_14;
+
+    HAL_GPIO_WritePin(cs_port, cs_pin, GPIO_PIN_RESET);
     HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(&hspi3,
                                                    (uint8_t *)tx,
                                                    rx,
                                                    length,
                                                    10);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(cs_port, cs_pin, GPIO_PIN_SET);
     return st == HAL_OK;
 }
 ```
@@ -208,6 +225,7 @@ bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t len
 - 这个阻塞 SPI 只能在启动/后台使用。
 - 不能在 `axis0_current_loop_isr()` 中调用。
 - DRV8301 读寄存器结果延迟一帧，`drv8301.c` 已按“两帧读”方式封装。
+- EN_GATE 和 nFAULT 是 M0/M1 共用的，Axis0-only 也必须初始化并读取 M1 DRV8301 状态。
 
 ### DRV8301 当前已实现
 
@@ -236,6 +254,14 @@ bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t len
 
 - `PB12 EN_GATE`：GPIO Output，默认低
 - `PD2 nFAULT`：GPIO Input，上拉/不上拉按原理图确认
+
+注意：ODrive v3.6 的 EN_GATE/nFAULT 是 M0/M1 共用。即使第一阶段只控制 Axis0，也不能忽略 M1：
+
+- 初始化 `drv8301_init_axis(&drv0, 0)`
+- 初始化 `drv8301_init_axis(&drv1, 1)`
+- M1 PWM 不启用，M1 gate 由共享 EN_GATE 一起受控
+- 后台同时读取 M0/M1 status
+- 共享 nFAULT 有效时必须认为整板功率级不安全
 
 ### HAL 实现
 
@@ -335,7 +361,7 @@ static void axis0_apply_voltage_in_electrical_frame(Axis0Context *axis,
 安全版本：
 
 1. 使能 DRV8301 和 PWM
-2. 施加很小的固定电压，例如 `0.2V ~ 0.5V`
+2. 施加很小的固定电压，从 `0.05V` 起步，最多逐步到 `0.1V`
 3. 等待电流稳定
 4. 记录电流 `I`
 5. `R = V / I`
@@ -412,7 +438,8 @@ encoder_offset = target_electrical_angle
 
 ```c
 drv8301_read_status(&drv0);
-if (drv8301_has_fault(&drv0)) {
+drv8301_read_status(&drv1);
+if (drv8301_has_fault(&drv0) || drv8301_has_fault(&drv1)) {
     set_fault(&axis0, AXIS0_FAULT_DRV8301_FAULT);
 }
 ```
@@ -432,6 +459,8 @@ scale_new = scale_old * multimeter_vbus / firmware_vbus
 ```
 
 直到误差足够小。
+
+如果是 24V 版本和 56V 版本混用，必须分别保存各自的 `vbus_scale_v_per_count`。
 
 ### 电流
 

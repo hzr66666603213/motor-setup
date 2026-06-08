@@ -18,7 +18,8 @@ bool hal_adc_get_phase_current_raw(HalAdcPhaseRaw *raw)
     /* 12-bit ADC 中点，模拟零电流附近的采样结果。 */
     raw->u = 2048u;
     raw->v = 2048u;
-    raw->w = 2048u;
+    /* ODrive v3.6 Axis0 two-shunt mode 下第三相 raw 无效，不伪造 ADC 中点。 */
+    raw->w = 0u;
     return true;
 }
 

@@ -163,7 +163,7 @@ void axis_update_background(Axis0Context *axis, Axis0StateMachineContext *sm)
      * - 慢速保护检查；
      * - 后续可加入 DRV8301 SPI 状态读取、USB/CAN 通信、Flash 保存等。
      */
-    axis0_protection_check_slow(axis, sm->encoder, sm->drv);
+    axis0_protection_check_slow(axis, sm->encoder, sm->drv0, sm->drv1);
     if (axis->fault_flags != AXIS0_FAULT_NONE) {
         axis0_fault_enter_safe_state(axis);
     }

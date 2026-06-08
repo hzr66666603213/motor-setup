@@ -40,12 +40,14 @@ void protection_note_output_saturation(Axis *axis, const ProtectionConfig *confi
 /* ODrive v3.6 Axis0 快速保护：可在 20 kHz ISR 中调用。 */
 void axis0_protection_check_fast(Axis0Context *axis,
                                  const EncoderMt6701AbzState *encoder,
-                                 const Drv8301 *drv);
+                                 const Drv8301 *drv0,
+                                 const Drv8301 *drv1);
 
 /* ODrive v3.6 Axis0 慢速保护：1kHz 或后台调用。 */
 void axis0_protection_check_slow(Axis0Context *axis,
                                  const EncoderMt6701AbzState *encoder,
-                                 const Drv8301 *drv);
+                                 Drv8301 *drv0,
+                                 Drv8301 *drv1);
 
 #ifdef __cplusplus
 }
