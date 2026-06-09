@@ -1,0 +1,11 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:22:6:axis_request_state	1
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:28:6:axis_is_ready_for_closed_loop	6
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:37:13:axis_consume_request_if_matches	3
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:44:13:axis_consume_invalid_request	1
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:49:13:axis_enter_state	16
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:94:13:axis_update_idle	11
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:117:13:axis_update_calibration	7
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:135:13:axis_update_open_loop_test	2
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:155:13:axis_update_closed_loop_outer	3
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:173:6:axis_update_1khz	32
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis_state_machine.c:235:6:axis_update_background	2

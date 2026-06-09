@@ -1,0 +1,5 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis0_current_loop_isr.c:23:13:axis0_update_fast_measurements	3
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis0_current_loop_isr.c:72:13:axis0_check_fast_protection	2
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis0_current_loop_isr.c:80:13:axis0_write_safe_neutral_duty	1
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis0_current_loop_isr.c:92:13:axis0_closed_loop_update	5
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/axis0_current_loop_isr.c:142:6:axis0_current_loop_isr	7

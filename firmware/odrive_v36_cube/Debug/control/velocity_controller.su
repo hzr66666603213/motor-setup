@@ -1,0 +1,4 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/control/velocity_controller.c:11:6:velocity_controller_init	32	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/control/velocity_controller.c:21:6:velocity_controller_reset	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/control/velocity_controller.c:26:6:velocity_controller_set_gains	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/control/velocity_controller.c:32:7:velocity_controller_update	40	static

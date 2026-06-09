@@ -1,0 +1,8 @@
+../Core/Src/main.c:78:13:uart2_write	24	static
+../Core/Src/main.c:95:13:uart2_printf_line	16	static
+../Core/Src/main.c:101:13:axis0_context_init_minimal	144	static
+../Core/Src/main.c:114:13:print_bringup_status	328	static
+../Core/Src/main.c:147:5:main	16	static
+../Core/Src/main.c:222:6:SystemClock_Config	88	static
+../Core/Src/main.c:258:6:HAL_ADCEx_InjectedConvCpltCallback	16	static
+../Core/Src/main.c:269:6:Error_Handler	4	static,ignoring_inline_asm

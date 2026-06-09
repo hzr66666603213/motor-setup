@@ -1,0 +1,4 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_spi_stm32f405.c:35:13:select_device	3
+C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_spi_stm32f405.c:50:6:hal_spi_transfer	5
+C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_spi_stm32f405.c:63:6:hal_spi_transfer_device	2
+C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_spi_stm32f405.c:79:6:hal_spi_transfer_dma	5

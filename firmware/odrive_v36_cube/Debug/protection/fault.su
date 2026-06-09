@@ -1,0 +1,10 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:15:6:fault_set	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:22:6:fault_clear_all	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:28:6:fault_has	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:33:6:fault_has_any	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:38:6:fault_enter_safe_state	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:47:6:set_fault	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:53:6:clear_faults	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:61:6:has_fault	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:66:13:get_fault_string	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/protection/fault.c:88:6:axis0_fault_enter_safe_state	16	static

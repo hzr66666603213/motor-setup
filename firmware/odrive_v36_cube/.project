@@ -29,4 +29,41 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>app</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/app</location>
+		</link>
+		<link>
+			<name>board</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/board</location>
+		</link>
+		<link>
+			<name>control</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/control</location>
+		</link>
+		<link>
+			<name>foc</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/foc</location>
+		</link>
+		<link>
+			<name>hal_stm32f405</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405</location>
+		</link>
+		<link>
+			<name>motor_drivers</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/drivers</location>
+		</link>
+		<link>
+			<name>protection</name>
+			<type>2</type>
+			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/protection</location>
+		</link>
+	</linkedResources>
 </projectDescription>

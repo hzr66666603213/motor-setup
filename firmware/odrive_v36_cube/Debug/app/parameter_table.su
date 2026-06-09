@@ -1,0 +1,6 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:20:13:in_range	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:26:6:axis0_param_get	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:47:6:axis0_param_set	40	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:122:13:axis0_state_to_string	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:142:6:axis0_parse_state	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/parameter_table.c:160:6:axis0_parse_control_mode	16	static

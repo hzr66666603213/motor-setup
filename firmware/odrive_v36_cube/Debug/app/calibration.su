@@ -1,0 +1,11 @@
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:42:14:calib_abs	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:47:14:calib_limit_injection_voltage	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:62:13:calib_fail	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:69:13:calib_current_within_limit	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:77:13:calib_power_stage_active	24	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:83:13:axis0_apply_open_loop_voltage	40	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:102:13:axis0_apply_voltage_in_electrical_frame	32	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:125:6:axis0_calibration_start	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:140:13:calib_next	16	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:150:6:axis0_calibration_update	56	static
+C:/Users/Shu/Documents/GitHub/motor_set/src/app/calibration.c:328:6:axis0_calibration_finished	16	static
