@@ -1,5 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/current_controller.c:21:6:current_controller_init	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/current_controller.c:31:6:current_controller_reset	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/current_controller.c:37:6:current_controller_set_gains	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/current_controller.c:43:6:current_controller_update	2
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/current_controller.c:90:6:current_controller_tune_from_rl	6

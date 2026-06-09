@@ -1,3 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_gpio_stm32f405.c:25:6:hal_gpio_read_fault_pin	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_gpio_stm32f405.c:31:6:hal_gpio_set_gate_enable	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_gpio_stm32f405.c:42:10:hal_gpio_read_limit_inputs	1

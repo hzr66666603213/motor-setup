@@ -1,8 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:31:6:encoder_mt6701_abz_set_default_config	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:44:6:encoder_mt6701_abz_init	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:68:6:encoder_mt6701_abz_update	32	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:94:6:encoder_mt6701_abz_clear_count	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:107:6:encoder_mt6701_abz_set_cpr	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:115:6:encoder_mt6701_abz_set_offset	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:122:6:encoder_mt6701_abz_set_direction	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/encoder_mt6701_abz.c:129:9:encoder_mt6701_abz_read_raw_count	8	static

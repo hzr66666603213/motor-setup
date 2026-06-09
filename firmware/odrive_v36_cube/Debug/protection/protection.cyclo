@@ -1,6 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:21:6:protection_set_defaults	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:34:6:protection_check_fast	7
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:55:6:protection_check_slow	9
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:85:6:protection_note_output_saturation	4
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:101:6:axis0_protection_check_fast	18
-C:/Users/Shu/Documents/GitHub/motor_set/src/protection/protection.c:136:6:axis0_protection_check_slow	15

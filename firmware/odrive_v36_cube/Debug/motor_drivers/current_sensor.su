@@ -1,5 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/current_sensor.c:10:6:current_sensor_set_default_config	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/current_sensor.c:24:6:current_sensor_bind_drv8301_gain	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/current_sensor.c:36:6:current_sensor_recalculate_amp_per_count	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/current_sensor.c:48:21:current_sensor_convert_raw	40	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/drivers/current_sensor.c:69:7:axis0_current_sensor_vbus_from_raw	16	static

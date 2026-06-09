@@ -1,3 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/position_controller.c:11:6:position_controller_init	32	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/position_controller.c:23:6:position_controller_set_gain	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/control/position_controller.c:28:7:position_controller_update	40	static

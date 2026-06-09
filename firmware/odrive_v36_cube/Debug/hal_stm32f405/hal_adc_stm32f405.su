@@ -1,8 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:37:6:hal_adc_init	16	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:55:6:hal_adc_stm32f405_on_injected_complete	48	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:91:6:hal_adc_get_phase_current_raw	40	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:104:6:hal_adc_get_snapshot	24	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:114:10:hal_adc_get_vbus_raw	32	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:120:10:hal_adc_get_mos_temperature_raw	32	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:126:10:hal_adc_get_motor_temperature_raw	4	static
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_adc_stm32f405.c:132:6:hal_adc_samples_valid	4	static

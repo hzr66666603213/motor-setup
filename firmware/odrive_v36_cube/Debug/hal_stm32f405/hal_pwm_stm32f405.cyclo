@@ -1,9 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:26:14:clamp01	3
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:37:17:duty_to_ccr	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:43:6:hal_pwm_init	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:50:6:hal_pwm_enable	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:67:6:hal_pwm_disable	3
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:88:6:hal_pwm_start_adc_trigger_only	5
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:110:6:hal_pwm_set_duty	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:121:6:hal_pwm_set_all_low	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_pwm_stm32f405.c:129:6:hal_pwm_is_enabled	1

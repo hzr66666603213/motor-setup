@@ -1,4 +1,0 @@
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_encoder_stm32f405.c:24:6:hal_encoder0_init	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_encoder_stm32f405.c:33:9:hal_encoder0_get_count	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_encoder_stm32f405.c:47:6:hal_encoder0_reset_count	1
-C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405/hal_encoder_stm32f405.c:55:6:hal_encoder0_index_found	1
