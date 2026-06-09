@@ -1,6 +1,9 @@
 # PC test build output
 build/
 
+# STM32CubeIDE generated build output
+firmware/odrive_v36_cube/Debug/
+
 # Simulink generated cache/build folders
 slprj/
 

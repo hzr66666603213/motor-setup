@@ -33,37 +33,37 @@
 		<link>
 			<name>app</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/app</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/app</locationURI>
 		</link>
 		<link>
 			<name>board</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/board</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/board</locationURI>
 		</link>
 		<link>
 			<name>control</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/control</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/control</locationURI>
 		</link>
 		<link>
 			<name>foc</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/foc</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/foc</locationURI>
 		</link>
 		<link>
 			<name>hal_stm32f405</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/hal/stm32f405</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/hal/stm32f405</locationURI>
 		</link>
 		<link>
 			<name>motor_drivers</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/drivers</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/drivers</locationURI>
 		</link>
 		<link>
 			<name>protection</name>
 			<type>2</type>
-			<location>C:/Users/Shu/Documents/GitHub/motor_set/src/protection</location>
+			<locationURI>PARENT-2-PROJECT_LOC/src/protection</locationURI>
 		</link>
 	</linkedResources>
 </projectDescription>
