@@ -52,6 +52,54 @@
 - 2804 电机极对数，默认 7 只是初始值。
 - USART2 的实际引脚 PA2/PA3 是否已接出到你的调试转串口。
 
+## Bring-up 阶段上板检查
+
+本阶段只验证板级基础链路，不进入电机控制。当前固件的安全边界是：
+
+- 允许：烧录、串口打印、VBUS ADC 观察、两相电流 ADC raw 观察、TIM1 CC4 触发 injected ADC、TIM3 Encoder Mode 计数、EN_GATE/nFAULT 电平检查。
+- 禁止：接入负载闭环运行、请求 `closed_loop_control`、使能 DRV8301 gate、打开真实三相功率 PWM、做电阻/电感/编码器 offset 校准。
+- 电机三相线默认不接。即使接了编码器，也只允许手转观察 ABZ 计数。
+
+本次代码检查确认：
+
+- `main.c` 只调用 `hal_adc_init()`、`board_init_power_safe()`、`HAL_TIM_Encoder_Start()` 和 1s 状态打印。
+- `board_init_power_safe()` 会拉低 `EN_GATE`，关闭 TIM1 `MOE`，再启动 ADC trigger-only。
+- `hal_pwm_start_adc_trigger_only()` 只启动 TIM1 base 和 TIM1 CH4/OC4，不启动 CH1/2/3 和 CH1N/2N/3N。
+- `HAL_ADCEx_InjectedConvCpltCallback(hadc)` 已转发到 `hal_adc_stm32f405_on_injected_complete((void *)hadc)`。
+- ADC snapshot 的 `seq` 只在 ADC1 与 ADC2 本周期 injected conversion 都完成后递增。
+- 当前 CubeMX `main.c` 尚未接入 `axis0_current_loop_isr()`、状态机、console、DRV8301 初始化，因此它不会让电机转起来。
+
+串口 bring-up 输出字段含义：
+
+```text
+bringup: adc_init=1 board_init=1 cb=1234 snap_ok=1 valid=1 seq=617 raw_u=2040 raw_v=2038 raw_vbus=820 nfault=0 gate=0 pwm_disabled=1 fault=0x00000000
+```
+
+- `adc_init=1`：ADC injected interrupt 启动成功。
+- `board_init=1`：安全上电初始化成功，至少没有检测到 nFAULT 处于有效故障态。
+- `cb`：ADC injected callback 计数。它持续增加，说明 ADC IRQ 正在被 TIM1 触发。
+- `snap_ok=1`、`valid=1`：ADC 快照可用。
+- `seq`：完整 ADC 快照序号。它持续增加，说明 ADC1/ADC2 都在更新。
+- `raw_u/raw_v`：Axis0 two-shunt 电流采样原始值。
+- `raw_vbus`：母线电压 ADC 原始值，接入低压电源后应随 VBUS 改变。
+- `nfault=0`：DRV8301 nFAULT 未触发。该信号低有效，显示 1 表示故障。
+- `gate=0`：EN_GATE 关闭。
+- `pwm_disabled=1`：三相功率 PWM 未使能。
+- `fault=0x00000000`：软件故障位为空。
+
+Bring-up 阶段通过条件：
+
+- 串口每 1s 持续打印，没有 HardFault 或反复复位。
+- `adc_init=1`，`board_init=1`。
+- 接 12V 低压限流电源后，`cb` 和 `seq` 持续增加。
+- `raw_vbus` 随母线电压变化，且不会跳变到明显异常值。
+- `raw_u/raw_v` 在 EN_GATE 关闭时稳定在零偏附近。
+- `nfault=0`，`gate=0`，`pwm_disabled=1`。
+- 示波器或调试器确认 TIM1 `MOE=0`，CH1/2/3 与 CH1N/2N/3N 没有功率 PWM 输出。
+- 手转 MT6701 编码器时 TIM3 CNT 有连续变化。
+
+任何一个条件不满足，都停在 bring-up 阶段，不接电机三相线，不进入 PWM test 或开环电压测试。
+
 ## CubeMX 外设配置摘要
 
 当前 `.ioc` 关键配置：
