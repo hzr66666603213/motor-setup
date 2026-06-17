@@ -47,6 +47,15 @@ typedef struct {
     bool valid;            /* 当前快照是否有效 */
 } HalAdcSnapshot;
 
+typedef struct {
+    uint32_t injected_start_adc1_status;
+    uint32_t injected_start_adc2_status;
+    uint32_t irq_count;
+    uint32_t adc1_callback_count;
+    uint32_t adc2_callback_count;
+    uint32_t snapshot_count;
+} HalAdcDiagnostics;
+
 bool hal_adc_init(void);
 bool hal_adc_get_phase_current_raw(HalAdcPhaseRaw *raw);
 bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot);
@@ -54,6 +63,7 @@ uint16_t hal_adc_get_vbus_raw(void);
 uint16_t hal_adc_get_mos_temperature_raw(void);
 uint16_t hal_adc_get_motor_temperature_raw(void);
 bool hal_adc_samples_valid(void);
+void hal_adc_get_diagnostics(HalAdcDiagnostics *diagnostics);
 
 /*
  * STM32F405 真实后端的 ADC injected conversion 完成通知。
@@ -66,6 +76,7 @@ bool hal_adc_samples_valid(void);
  * STM32F405 后端只有在 hadc1/hadc2 本周期数据都有效后才会递增 snapshot.seq。
  */
 void hal_adc_stm32f405_on_injected_complete(void *hadc);
+void hal_adc_stm32f405_on_irq_enter(void);
 
 #ifdef __cplusplus
 }

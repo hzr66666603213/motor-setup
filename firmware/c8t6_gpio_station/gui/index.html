@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C8T6 GPIO Station</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #f5f7fb;
+      color: #1d2733;
+    }
+    body { margin: 0; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 22px;
+      border-bottom: 1px solid #d7dde8;
+      background: #ffffff;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 650; }
+    main { padding: 18px 22px; max-width: 1180px; margin: 0 auto; }
+    button, select {
+      height: 34px;
+      border: 1px solid #b8c2d1;
+      background: #fff;
+      border-radius: 6px;
+      padding: 0 10px;
+      font-size: 14px;
+    }
+    button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+    button:disabled { opacity: .55; }
+    .status { font-size: 13px; color: #526174; }
+    .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 10px;
+    }
+    .pin {
+      background: #fff;
+      border: 1px solid #d7dde8;
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .name { font-weight: 650; }
+    .value { font-size: 13px; color: #526174; }
+    .actions { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+    pre {
+      margin-top: 14px;
+      background: #101828;
+      color: #d1e7ff;
+      padding: 12px;
+      min-height: 120px;
+      max-height: 240px;
+      overflow: auto;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>C8T6 GPIO Station</h1>
+    <button id="connect" class="primary">连接串口</button>
+  </header>
+  <main>
+    <div class="toolbar">
+      <span id="status" class="status">未连接。请选择 PB6/PB7 后台串口，115200 8N1。</span>
+      <button id="hello" disabled>握手</button>
+      <button id="refresh" disabled>刷新全部</button>
+    </div>
+    <section id="pins" class="grid"></section>
+    <pre id="log"></pre>
+  </main>
+  <script>
+    const pins = ["PA0","PA1","PA2","PA3","PA4","PA5","PA6","PA7","PA8","PA11","PA12","PA15","PB0","PB1","PB3","PB4","PB5","PB6","PB7","PB8","PB9","PB10","PB11","PB12","PB13","PB14","PB15","PC13","PC14","PC15"];
+    let port, reader, writer;
+
+    const log = (text) => {
+      const node = document.getElementById("log");
+      node.textContent += text + "\n";
+      node.scrollTop = node.scrollHeight;
+    };
+
+    const send = async (cmd) => {
+      log("> " + cmd);
+      await writer.write(new TextEncoder().encode(cmd + "\n"));
+    };
+
+    const buildPins = () => {
+      const root = document.getElementById("pins");
+      root.innerHTML = "";
+      for (const pin of pins) {
+        const el = document.createElement("div");
+        el.className = "pin";
+        el.innerHTML = `
+          <div>
+            <div class="name">${pin}</div>
+            <div class="value" id="v-${pin}">?</div>
+          </div>
+          <select id="m-${pin}">
+            <option value="IN">输入</option>
+            <option value="OUT">输出</option>
+            <option value="ANALOG">模拟</option>
+          </select>
+          <div class="actions">
+            <button data-cmd="MODE ${pin}">设模式</button>
+            <button data-cmd="READ ${pin}">读</button>
+            <button data-cmd="WRITE ${pin} 1">高</button>
+            <button data-cmd="WRITE ${pin} 0">低</button>
+            <button data-cmd="TOGGLE ${pin}">翻转</button>
+          </div>`;
+        root.appendChild(el);
+      }
+      root.addEventListener("click", async (event) => {
+        const btn = event.target.closest("button");
+        if (!btn || !writer) return;
+        let cmd = btn.dataset.cmd;
+        if (cmd && cmd.startsWith("MODE ")) {
+          const pin = cmd.split(" ")[1];
+          cmd = `MODE ${pin} ${document.getElementById("m-" + pin).value}`;
+        }
+        await send(cmd);
+      });
+    };
+
+    const readLoop = async () => {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (port.readable) {
+        reader = port.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, idx).trim();
+              buffer = buffer.slice(idx + 1);
+              if (line) log("< " + line);
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    };
+
+    document.getElementById("connect").onclick = async () => {
+      if (!("serial" in navigator)) {
+        document.getElementById("status").textContent = "当前浏览器不支持 Web Serial，请用 Chrome 或 Edge。";
+        return;
+      }
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      writer = port.writable.getWriter();
+      document.getElementById("status").textContent = "已连接，115200 8N1。";
+      document.getElementById("hello").disabled = false;
+      document.getElementById("refresh").disabled = false;
+      readLoop();
+      await send("HELLO");
+    };
+
+    document.getElementById("hello").onclick = () => send("HELLO");
+    document.getElementById("refresh").onclick = async () => {
+      for (const pin of pins) await send("READ " + pin);
+    };
+
+    buildPins();
+  </script>
+</body>
+</html>

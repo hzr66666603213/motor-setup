@@ -26,6 +26,7 @@ extern ADC_HandleTypeDef hadc2;
 
 static volatile HalAdcSnapshot s_snapshot;
 static volatile bool s_adc_started = false;
+static volatile HalAdcDiagnostics s_adc_diagnostics;
 
 static uint16_t s_pending_vbus_raw;
 static uint16_t s_pending_mos_temp_raw;
@@ -45,11 +46,22 @@ bool hal_adc_init(void)
     s_snapshot.seq = 0u;
     s_pending_adc1_ready = false;
     s_pending_adc2_ready = false;
+    s_adc_diagnostics.irq_count = 0u;
+    s_adc_diagnostics.adc1_callback_count = 0u;
+    s_adc_diagnostics.adc2_callback_count = 0u;
+    s_adc_diagnostics.snapshot_count = 0u;
 
     const HAL_StatusTypeDef ok1 = HAL_ADCEx_InjectedStart_IT(&hadc1);
     const HAL_StatusTypeDef ok2 = HAL_ADCEx_InjectedStart_IT(&hadc2);
+    s_adc_diagnostics.injected_start_adc1_status = (uint32_t)ok1;
+    s_adc_diagnostics.injected_start_adc2_status = (uint32_t)ok2;
     s_adc_started = (ok1 == HAL_OK) && (ok2 == HAL_OK);
     return s_adc_started;
+}
+
+void hal_adc_stm32f405_on_irq_enter(void)
+{
+    s_adc_diagnostics.irq_count++;
 }
 
 void hal_adc_stm32f405_on_injected_complete(void *hadc)
@@ -57,10 +69,12 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
     ADC_HandleTypeDef *adc = (ADC_HandleTypeDef *)hadc;
 
     if (adc == &hadc1) {
+        s_adc_diagnostics.adc1_callback_count++;
         s_pending_vbus_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
         s_pending_mos_temp_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
         s_pending_adc1_ready = true;
     } else if (adc == &hadc2) {
+        s_adc_diagnostics.adc2_callback_count++;
         s_pending_current_u_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
         s_pending_current_v_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
         s_pending_adc2_ready = true;
@@ -82,6 +96,7 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
         next.seq = s_snapshot.seq + 1u;
         next.valid = s_adc_started;
         s_snapshot = next;
+        s_adc_diagnostics.snapshot_count++;
 
         s_pending_adc1_ready = false;
         s_pending_adc2_ready = false;
@@ -132,4 +147,13 @@ uint16_t hal_adc_get_motor_temperature_raw(void)
 bool hal_adc_samples_valid(void)
 {
     return s_adc_started && s_snapshot.valid;
+}
+
+void hal_adc_get_diagnostics(HalAdcDiagnostics *diagnostics)
+{
+    if (diagnostics == 0) {
+        return;
+    }
+
+    *diagnostics = s_adc_diagnostics;
 }

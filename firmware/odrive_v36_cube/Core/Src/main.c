@@ -36,6 +36,7 @@
 #include "board/board_odrive_v36.h"
 #include "config/axis0_default_config.h"
 #include "hal/hal_adc.h"
+#include "hal/hal_pwm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -113,18 +114,26 @@ static void axis0_context_init_minimal(void)
 
 static void print_bringup_status(void)
 {
-  char line[192];
+  char line[320];
 
   HalAdcSnapshot snap = {0};
+  HalAdcDiagnostics adc_diag = {0};
+  HalPwmDiagnostics pwm_diag = {0};
   const bool snap_ok = hal_adc_get_snapshot(&snap);
   const BoardOdriveV36Status board_status = board_get_status();
+  hal_adc_get_diagnostics(&adc_diag);
+  hal_pwm_get_diagnostics(&pwm_diag);
 
   snprintf(line,
            sizeof(line),
-           "bringup: adc_init=%u board_init=%u cb=%lu snap_ok=%u valid=%u seq=%lu raw_u=%u raw_v=%u raw_vbus=%u nfault=%u gate=%u pwm_disabled=%u fault=0x%08lX",
+           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_u=%u raw_v=%u raw_vbus=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
            (unsigned int)g_adc_init_ok,
            (unsigned int)g_board_init_ok,
+           (unsigned long)adc_diag.irq_count,
            (unsigned long)g_adc_callback_count,
+           (unsigned long)adc_diag.adc1_callback_count,
+           (unsigned long)adc_diag.adc2_callback_count,
+           (unsigned long)adc_diag.snapshot_count,
            (unsigned int)snap_ok,
            (unsigned int)snap.valid,
            (unsigned long)snap.seq,
@@ -134,8 +143,42 @@ static void print_bringup_status(void)
            (unsigned int)board_status.drv_nfault_active,
            (unsigned int)board_status.drv_gate_enabled,
            (unsigned int)board_status.pwm_disabled,
+           (unsigned long)pwm_diag.base_start_status,
+           (unsigned long)pwm_diag.oc4_start_status,
+           (unsigned long)adc_diag.injected_start_adc1_status,
+           (unsigned long)adc_diag.injected_start_adc2_status,
            (unsigned long)g_axis0.fault_flags);
 
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "tim1: cr1=0x%08lX cnt=%lu arr=%lu ccr4=%lu ccer=0x%08lX sr=0x%08lX bdtr=0x%08lX",
+           (unsigned long)TIM1->CR1,
+           (unsigned long)TIM1->CNT,
+           (unsigned long)TIM1->ARR,
+           (unsigned long)TIM1->CCR4,
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->SR,
+           (unsigned long)TIM1->BDTR);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "adc1: cr1=0x%08lX cr2=0x%08lX sr=0x%08lX jsqr=0x%08lX",
+           (unsigned long)ADC1->CR1,
+           (unsigned long)ADC1->CR2,
+           (unsigned long)ADC1->SR,
+           (unsigned long)ADC1->JSQR);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "adc2: cr1=0x%08lX cr2=0x%08lX sr=0x%08lX jsqr=0x%08lX",
+           (unsigned long)ADC2->CR1,
+           (unsigned long)ADC2->CR2,
+           (unsigned long)ADC2->SR,
+           (unsigned long)ADC2->JSQR);
   uart2_printf_line(line);
 }
 /* USER CODE END 0 */
@@ -231,10 +274,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
 
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {

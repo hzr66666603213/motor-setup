@@ -14,6 +14,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,14 @@ void hal_pwm_start_adc_trigger_only(void);
 void hal_pwm_set_duty(float duty_u, float duty_v, float duty_w);
 void hal_pwm_set_all_low(void);
 bool hal_pwm_is_enabled(void);
+
+typedef struct {
+    uint32_t base_start_status;
+    uint32_t oc4_start_status;
+    uint32_t start_count;
+} HalPwmDiagnostics;
+
+void hal_pwm_get_diagnostics(HalPwmDiagnostics *diagnostics);
 
 #ifdef __cplusplus
 }
