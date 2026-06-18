@@ -18,7 +18,7 @@
 
 static BoardOdriveV36Status s_board_status;
 static bool s_debug_led_on = false;
-static float s_vbus_scale_v_per_count = 60.0f / 4095.0f;
+static float s_vbus_scale_v_per_count = 60.83f / 4095.0f;
 static uint32_t s_last_phase_adc_seq = 0u;
 
 static bool board_vbus_in_safe_range(const Axis0Context *axis, float vbus_v)

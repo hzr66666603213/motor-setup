@@ -121,12 +121,13 @@ static void print_bringup_status(void)
   HalPwmDiagnostics pwm_diag = {0};
   const bool snap_ok = hal_adc_get_snapshot(&snap);
   const BoardOdriveV36Status board_status = board_get_status();
+  const unsigned int enc_cnt = (unsigned int)__HAL_TIM_GET_COUNTER(&htim3);
   hal_adc_get_diagnostics(&adc_diag);
   hal_pwm_get_diagnostics(&pwm_diag);
 
   snprintf(line,
            sizeof(line),
-           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_u=%u raw_v=%u raw_vbus=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
+           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_u=%u raw_v=%u raw_vbus=%u enc_cnt=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
            (unsigned int)g_adc_init_ok,
            (unsigned int)g_board_init_ok,
            (unsigned long)adc_diag.irq_count,
@@ -140,6 +141,7 @@ static void print_bringup_status(void)
            (unsigned int)snap.raw_u,
            (unsigned int)snap.raw_v,
            (unsigned int)snap.raw_vbus,
+           enc_cnt,
            (unsigned int)board_status.drv_nfault_active,
            (unsigned int)board_status.drv_gate_enabled,
            (unsigned int)board_status.pwm_disabled,
