@@ -24,6 +24,18 @@ bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *t
     return hal_spi_transfer(bus_id, tx, rx, length);
 }
 
+bool hal_spi_transfer16_device(uint8_t bus_id, uint8_t device_id, const uint16_t *tx, uint16_t *rx, size_t word_count)
+{
+    (void)bus_id;
+    (void)device_id;
+    for (size_t i = 0u; i < word_count; ++i) {
+        if (rx != 0) {
+            rx[i] = (tx != 0) ? tx[i] : 0u;
+        }
+    }
+    return true;
+}
+
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
     return hal_spi_transfer(bus_id, tx, rx, length);

@@ -76,6 +76,29 @@ bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *t
     return ok;
 }
 
+bool hal_spi_transfer16_device(uint8_t bus_id, uint8_t device_id, const uint16_t *tx, uint16_t *rx, size_t word_count)
+{
+    GPIO_TypeDef *cs_port = 0;
+    uint16_t cs_pin = 0u;
+    bool ok = false;
+
+    if (bus_id != HAL_SPI_BUS_DRV8301 || tx == 0 || rx == 0 || word_count == 0u) {
+        return false;
+    }
+    if (!select_device(device_id, &cs_port, &cs_pin)) {
+        return false;
+    }
+
+    HAL_GPIO_WritePin(cs_port, cs_pin, GPIO_PIN_RESET);
+    ok = HAL_SPI_TransmitReceive(&hspi3,
+                                  (uint8_t *)tx,
+                                  (uint8_t *)rx,
+                                  (uint16_t)word_count,
+                                  HAL_SPI_TIMEOUT_MS) == HAL_OK;
+    HAL_GPIO_WritePin(cs_port, cs_pin, GPIO_PIN_SET);
+    return ok;
+}
+
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
     if (bus_id != HAL_SPI_BUS_DRV8301 || tx == 0 || rx == 0 || length == 0u) {

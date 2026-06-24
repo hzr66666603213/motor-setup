@@ -31,6 +31,18 @@ bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *t
     return hal_spi_transfer(bus_id, tx, rx, length);
 }
 
+bool hal_spi_transfer16_device(uint8_t bus_id, uint8_t device_id, const uint16_t *tx, uint16_t *rx, size_t word_count)
+{
+    (void)bus_id;
+    (void)device_id;
+    for (size_t i = 0u; i < word_count; ++i) {
+        if (rx) {
+            rx[i] = tx ? tx[i] : 0u;
+        }
+    }
+    return true;
+}
+
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length)
 {
     /* mock 中 DMA 与普通传输等价；真实工程应异步返回并由回调置位完成标志。 */

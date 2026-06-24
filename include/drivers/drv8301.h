@@ -42,6 +42,22 @@ typedef struct {
     Drv8301Status status;     /* 最近一次状态 */
 } Drv8301;
 
+typedef struct {
+    uint16_t status1;
+    uint16_t status2;
+    uint16_t control1;
+    uint16_t control2;
+} Drv8301Registers;
+
+typedef struct {
+    bool status1_ok;
+    bool status2_ok;
+    uint16_t status1_frame;
+    uint16_t status2_frame;
+    uint16_t status1_data;
+    uint16_t status2_data;
+} Drv8301StatusReadback;
+
 #define DRV8301_GATE_CURRENT_1P7A       0u
 #define DRV8301_GATE_CURRENT_0P7A       1u
 #define DRV8301_GATE_CURRENT_0P25A      2u
@@ -53,11 +69,18 @@ typedef struct {
 
 bool drv8301_init(Drv8301 *drv);
 bool drv8301_init_axis(Drv8301 *drv, uint8_t axis_index);
+void drv8301_prepare_axis(Drv8301 *drv, uint8_t axis_index);
 bool drv8301_enable(Drv8301 *drv);
 void drv8301_disable(Drv8301 *drv);
 bool drv8301_read_status(Drv8301 *drv);
 bool drv8301_clear_faults(Drv8301 *drv);
+bool drv8301_gate_reset(Drv8301 *drv);
 bool drv8301_configure_for_6pwm(Drv8301 *drv);
+bool drv8301_read_status_raw(Drv8301 *drv, Drv8301StatusReadback *readback);
+bool drv8301_read_registers(Drv8301 *drv, Drv8301Registers *regs);
+bool drv8301_configure_and_verify(Drv8301 *drv, Drv8301Registers *regs);
+uint16_t drv8301_default_control1(void);
+uint16_t drv8301_default_control2(void);
 bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code);
 bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code);
 bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code);

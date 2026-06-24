@@ -20,6 +20,7 @@ extern "C" {
 /* 阻塞式 SPI 传输接口；仅建议在后台/初始化/低频任务中使用。 */
 bool hal_spi_transfer(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length);
 bool hal_spi_transfer_device(uint8_t bus_id, uint8_t device_id, const uint8_t *tx, uint8_t *rx, size_t length);
+bool hal_spi_transfer16_device(uint8_t bus_id, uint8_t device_id, const uint16_t *tx, uint16_t *rx, size_t word_count);
 /* DMA SPI 传输接口；具体完成通知由目标工程补充。 */
 bool hal_spi_transfer_dma(uint8_t bus_id, const uint8_t *tx, uint8_t *rx, size_t length);
 
