@@ -42,7 +42,9 @@
 #include "hal/hal_adc.h"
 #include "hal/hal_gpio.h"
 #include "hal/hal_pwm.h"
+#include "motor_identification.h"
 #include "protection/fault.h"
+#include "../../../../src/motor_identification.c"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,6 +90,7 @@ typedef struct {
   uint32_t ccr1;
   uint32_t ccr2;
   uint32_t ccr3;
+  uint32_t ccr4;
   uint32_t ccer;
   uint32_t bdtr;
   uint32_t moe;
@@ -238,6 +241,7 @@ typedef struct {
   uint32_t ccr1;
   uint32_t ccr2;
   uint32_t ccr3;
+  uint32_t ccr4;
   uint32_t sample_high_side_mask;
   uint32_t sample_low_side_mask;
   uint32_t deadtime_mask;
@@ -468,6 +472,25 @@ typedef struct {
 } InductanceSamplePoint;
 
 typedef struct {
+  uint8_t captured;
+  uint8_t accepted;
+  uint8_t rank_order;
+  uint32_t reject_mask;
+  float baseline_pc0_mean;
+  float baseline_pc1_mean;
+  float baseline_i_alpha;
+  float baseline_i_beta;
+  float vbus_mean;
+  float baseline_applied_v;
+  float pulse_applied_v;
+  float fall_first_applied_v;
+  uint16_t pulse_last_pc0;
+  uint16_t pulse_last_pc1;
+  uint16_t fall_pc0[12];
+  uint16_t fall_pc1[12];
+} InductanceRepeatDiag;
+
+typedef struct {
   float baseline_voltage;
   float pulse_voltage;
   float nominal_delta_voltage;
@@ -487,20 +510,71 @@ typedef struct {
   float L_initial_slope_uH;
   float L_discrete_uH;
   float R_discrete_candidate;
+  float L_arx_fixed_R_uH;
+  float L_arx_free_R_uH;
+  float L_arx_smoothed_fixed_R_uH;
+  float R_arx_free_candidate;
+  float L_fused_uH;
+  uint32_t fused_method_count;
+  float baseline_sigma_a;
+  float baseline_sigma_b;
+  float fall_tail_sigma;
+  float effective_noise_counts;
+  float effective_noise_amp;
+  float rise_tail_median;
+  float rise_peak_minus_tail;
+  float rise_fitted_amplitude;
+  float rise_fitted_offset;
+  float rise_residual_rms;
+  uint32_t fall_fit_start_index;
+  uint32_t fall_fit_end_index;
+  uint32_t fall_fit_point_count;
+  float fall_initial_current;
+  float fall_noise_floor;
+  float fall_fitted_offset;
+  float fall_residual_rms;
+  float fall_weighted_residual_rms;
+  float fall_normalized_residual_rms;
+  float fall_window_score;
+  float fall_residual_curvature;
+  uint32_t fall_residual_max_index;
+  float fall_residual_max_counts;
+  uint32_t fall_residual_same_sign_run;
   float rise_fit_r_squared;
   float fall_fit_r_squared;
   float rise_max_residual_a;
   float fall_max_residual_a;
+  MotorIdentMonotonicStats rise_monotonic_stats;
+  MotorIdentMonotonicStats fall_monotonic_stats;
   bool monotonic_rise_ok;
   bool monotonic_fall_ok;
   bool level_reliable;
+  bool active_sample_window_valid;
   bool dynamics_too_fast;
   bool pulse_too_short;
   uint32_t rank_order_a_valid_repeats;
   uint32_t rank_order_b_valid_repeats;
+  uint32_t rank_order_a_rejected_repeats;
+  uint32_t rank_order_b_rejected_repeats;
   float rank_order_a_peak_delta_i_alpha;
   float rank_order_b_peak_delta_i_alpha;
+  float rank_order_a_peak_delta_i_beta;
+  float rank_order_b_peak_delta_i_beta;
   float rank_order_ab_peak_bias_percent;
+  float rank_order_beta_bias;
+  float rank_baseline_i_alpha[2];
+  float rank_baseline_i_beta[2];
+  float rank_rise_delta_i_mean[2][30];
+  float rank_rise_delta_i_std[2][30];
+  float rank_fall_delta_i_mean[2][80];
+  float rank_fall_delta_i_std[2][80];
+  uint32_t rank_rise_valid_count[2][30];
+  uint32_t rank_fall_valid_count[2][80];
+  MotorIdentRobustResult rank_robust[2];
+  MotorIdentArxFit repeat_arx_fixed_r;
+  float repeat_arx_L_uH;
+  float repeat_arx_r_squared;
+  uint32_t repeat_arx_pair_count;
   float rise_delta_i_mean[30];
   float rise_delta_i_std[30];
   float rise_delta_i_beta_mean[30];
@@ -511,6 +585,7 @@ typedef struct {
   uint32_t fall_valid_count[80];
   InductanceSamplePoint rise_samples[30];
   InductanceSamplePoint fall_samples[80];
+  InductanceRepeatDiag repeat_diag[64];
 } PhaseInductanceLevelResult;
 
 typedef struct {
@@ -1051,8 +1126,14 @@ typedef struct {
 #define PHASE_RESISTANCE_ORIGINAL_OHM 3.170f
 #define PHASE_RESISTANCE_DEVIATION_MAX_RATIO 0.15f
 #define PHASE_INDUCTANCE_LEVEL_COUNT 2u
-#define PHASE_INDUCTANCE_REPEAT_COUNT 64u
+#ifndef PHASE_INDUCTANCE_REPEAT_COUNT
+#define PHASE_INDUCTANCE_REPEAT_COUNT 32u
+#endif
+#if (PHASE_INDUCTANCE_REPEAT_COUNT == 64u)
 #define PHASE_INDUCTANCE_MIN_VALID_REPEATS 48u
+#else
+#define PHASE_INDUCTANCE_MIN_VALID_REPEATS 24u
+#endif
 #define PHASE_INDUCTANCE_BASE_ALPHA_V 0.20f
 #define PHASE_INDUCTANCE_ALIGN_RAMP_MS 300u
 #define PHASE_INDUCTANCE_ALIGN_HOLD_MS 500u
@@ -2125,6 +2206,7 @@ static void sample_window_diag_update(void)
   diag->ccr1 = TIM1->CCR1;
   diag->ccr2 = TIM1->CCR2;
   diag->ccr3 = TIM1->CCR3;
+  diag->ccr4 = TIM1->CCR4;
 
   const uint32_t ccrs[3] = {TIM1->CCR1, TIM1->CCR2, TIM1->CCR3};
   for (uint32_t i = 0u; i < 3u; ++i) {
@@ -2146,6 +2228,49 @@ static void sample_window_diag_update(void)
   }
   diag->current_sample_window_valid = diag->low_side_active_count >= 2u;
   g_drv_test.low_side_sample_window_valid = diag->current_sample_window_valid;
+}
+
+static bool inductance_print_active_sample_window(uint32_t level_index,
+                                                  const char *tag,
+                                                  float active_command_v)
+{
+  sample_window_diag_update();
+  const SampleWindowDiag *sw = &g_drv_test.sample_window_diag;
+  const uint32_t min_counts = abs_diff_u32(TIM1->CCR4, TIM1->CCR1) <
+                              abs_diff_u32(TIM1->CCR4, TIM1->CCR2)
+                                  ? abs_diff_u32(TIM1->CCR4, TIM1->CCR1)
+                                  : abs_diff_u32(TIM1->CCR4, TIM1->CCR2);
+  const uint32_t min_counts3 =
+      min_counts < abs_diff_u32(TIM1->CCR4, TIM1->CCR3)
+          ? min_counts
+          : abs_diff_u32(TIM1->CCR4, TIM1->CCR3);
+  const float distance_us =
+      ((float)min_counts3 * 1000000.0f) / TIM1_TIMER_CLOCK_HZ;
+  const int32_t v_m = float_to_scaled_i32(active_command_v, 1000.0f);
+  const uint32_t dist_m = float_to_scaled_u32(distance_us, 1000.0f);
+  char line[384];
+  snprintf(line,
+           sizeof(line),
+           "inductance_level%lu_active_sample_window: tag=%s TIM1_CNT=%lu direction=%lu active_command=%s%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu high_side_mask=0x%lX low_side_mask=0x%lX vw_low_side_sampleable=%u distance_to_nearest_edge_us=%lu.%03lu sample_window_valid=%u",
+           (unsigned long)level_index,
+           tag,
+           (unsigned long)sw->current_tim1_cnt,
+           (unsigned long)sw->current_tim1_dir,
+           (v_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(v_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(v_m) % 1000u),
+           (unsigned long)sw->ccr1,
+           (unsigned long)sw->ccr2,
+           (unsigned long)sw->ccr3,
+           (unsigned long)sw->ccr4,
+           (unsigned long)sw->sample_high_side_mask,
+           (unsigned long)sw->sample_low_side_mask,
+           (unsigned int)((sw->sample_low_side_mask & 0x6u) == 0x6u),
+           (unsigned long)(dist_m / 1000u),
+           (unsigned long)(dist_m % 1000u),
+           (unsigned int)sw->current_sample_window_valid);
+  uart2_printf_line(line);
+  return sw->current_sample_window_valid && ((sw->sample_low_side_mask & 0x6u) == 0x6u);
 }
 
 static bool power_stage_update_phase_edge_timing(void)
@@ -3751,7 +3876,7 @@ static float inductance_std_from_sums(float sum, float sumsq, uint32_t n)
   return sqrtf(var);
 }
 
-static void inductance_fit_rise(PhaseInductanceLevelResult *level)
+static void __attribute__((unused)) inductance_fit_rise(PhaseInductanceLevelResult *level)
 {
   const float amplitude_init = level->delta_v_applied / PHASE_INDUCTANCE_R_PHASE_OHM;
   float best_r2 = -1000.0f;
@@ -3819,7 +3944,7 @@ static void inductance_fit_rise(PhaseInductanceLevelResult *level)
   level->L_rise_uH = PHASE_INDUCTANCE_R_PHASE_OHM * best_tau_us;
 }
 
-static void inductance_fit_fall(PhaseInductanceLevelResult *level)
+static void __attribute__((unused)) inductance_fit_fall(PhaseInductanceLevelResult *level)
 {
   float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
   uint32_t n = 0u;
@@ -3893,7 +4018,7 @@ static void inductance_fit_initial_slope(PhaseInductanceLevelResult *level)
   }
 }
 
-static void inductance_fit_discrete(PhaseInductanceLevelResult *level)
+static void __attribute__((unused)) inductance_fit_discrete(PhaseInductanceLevelResult *level)
 {
   float s11 = 0.0f, s12 = 0.0f, s22 = 0.0f, sy1 = 0.0f, sy2 = 0.0f;
   uint32_t n = 0u;
@@ -3967,23 +4092,78 @@ static void inductance_finalize_level(PhaseInductanceLevelResult *level)
           ? (level->peak_delta_i_alpha / g_drv_test.current_amp_per_count)
           : 0.0f;
 
-  level->monotonic_rise_ok = true;
-  level->monotonic_fall_ok = true;
-  for (uint32_t k = 1u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
-    if (level->rise_delta_i_mean[k] + 0.02f < level->rise_delta_i_mean[k - 1u]) {
-      level->monotonic_rise_ok = false;
-    }
+  MotorIdentRobustResult robust = {0};
+  (void)motor_ident_robust_fit_level(level->rise_delta_i_mean,
+                                     PHASE_INDUCTANCE_RISE_SAMPLES,
+                                     level->rise_delta_i_std,
+                                     level->fall_delta_i_mean,
+                                     PHASE_INDUCTANCE_FALL_SAMPLES,
+                                     level->fall_delta_i_std,
+                                     PHASE_INDUCTANCE_TS_US * 1.0e-6f,
+                                     PHASE_INDUCTANCE_R_PHASE_OHM,
+                                     level->delta_v_applied,
+                                     g_drv_test.current_amp_per_count,
+                                     &robust);
+  for (uint32_t ri = 0u; ri < 2u; ++ri) {
+    (void)motor_ident_robust_fit_level(level->rank_rise_delta_i_mean[ri],
+                                       PHASE_INDUCTANCE_RISE_SAMPLES,
+                                       level->rank_rise_delta_i_std[ri],
+                                       level->rank_fall_delta_i_mean[ri],
+                                       PHASE_INDUCTANCE_FALL_SAMPLES,
+                                       level->rank_fall_delta_i_std[ri],
+                                       PHASE_INDUCTANCE_TS_US * 1.0e-6f,
+                                       PHASE_INDUCTANCE_R_PHASE_OHM,
+                                       level->delta_v_applied,
+                                       g_drv_test.current_amp_per_count,
+                                       &level->rank_robust[ri]);
   }
-  for (uint32_t k = 1u; k < PHASE_INDUCTANCE_FALL_SAMPLES; ++k) {
-    if (level->fall_delta_i_mean[k] > level->fall_delta_i_mean[k - 1u] + 0.02f) {
-      level->monotonic_fall_ok = false;
-    }
-  }
-
-  inductance_fit_rise(level);
-  inductance_fit_fall(level);
+  level->baseline_sigma_a = 0.0f;
+  level->baseline_sigma_b = 0.0f;
+  level->fall_tail_sigma = robust.fall_tail_sigma_a;
+  level->effective_noise_amp = robust.effective_noise_a;
+  level->effective_noise_counts = robust.effective_noise_counts;
+  level->rise_tail_median = robust.rise_tail_median_a;
+  level->rise_peak_minus_tail = robust.rise_peak_minus_tail_a;
+  level->rise_fitted_amplitude = robust.rise_fit.fitted_amplitude_a;
+  level->rise_fitted_offset = robust.rise_fit.fitted_offset_a;
+  level->rise_residual_rms = robust.rise_fit.residual_rms_a;
+  level->fall_fit_start_index = robust.fall_fit.start_index;
+  level->fall_fit_end_index = robust.fall_fit.end_index;
+  level->fall_fit_point_count = robust.fall_fit.point_count;
+  level->fall_initial_current = robust.fall_fit.fitted_amplitude_a;
+  level->fall_noise_floor = robust.fall_fit.residual_rms_a;
+  level->fall_fitted_offset = robust.fall_fit.fitted_offset_a;
+  level->fall_residual_rms = robust.fall_fit.residual_rms_a;
+  level->fall_weighted_residual_rms = robust.fall_fit.weighted_residual_rms_a;
+  level->fall_normalized_residual_rms = robust.fall_fit.normalized_residual_rms;
+  level->fall_window_score = robust.fall_fit.window_score;
+  level->fall_residual_curvature = robust.fall_fit.residual_curvature;
+  level->fall_residual_max_index = robust.fall_fit.residual_max_index;
+  level->fall_residual_max_counts = robust.fall_fit.residual_max_counts;
+  level->fall_residual_same_sign_run = robust.fall_fit.residual_same_sign_run;
+  level->monotonic_rise_ok = robust.monotonic_rise_ok;
+  level->monotonic_fall_ok = robust.monotonic_fall_ok;
+  level->tau_rise_us = robust.rise_fit.fitted_tau_s * 1000000.0f;
+  level->tau_fall_us = robust.fall_fit.fitted_tau_s * 1000000.0f;
+  level->sample_delay_us = 0.0f;
+  level->rise_fit_r_squared = robust.rise_fit.r_squared;
+  level->fall_fit_r_squared = robust.fall_fit.r_squared;
+  level->rise_max_residual_a = robust.rise_fit.residual_max_a;
+  level->fall_max_residual_a = robust.fall_fit.residual_max_a;
+  level->rise_monotonic_stats = robust.rise_monotonic;
+  level->fall_monotonic_stats = robust.fall_monotonic;
+  level->L_rise_uH = robust.rise_fit.fitted_inductance_h * 1000000.0f;
+  level->L_fall_uH = robust.fall_fit.fitted_inductance_h * 1000000.0f;
+  level->L_arx_fixed_R_uH = robust.arx_fixed_r.inductance_h * 1000000.0f;
+  level->L_arx_free_R_uH = robust.arx_free.inductance_h * 1000000.0f;
+  level->L_arx_smoothed_fixed_R_uH =
+      robust.arx_smoothed_fixed_r.inductance_h * 1000000.0f;
+  level->R_arx_free_candidate = robust.arx_free.resistance_ohm;
+  level->L_fused_uH = robust.fused_inductance_h * 1000000.0f;
+  level->fused_method_count = robust.fused_method_count;
   inductance_fit_initial_slope(level);
-  inductance_fit_discrete(level);
+  level->L_discrete_uH = level->L_arx_smoothed_fixed_R_uH;
+  level->R_discrete_candidate = level->R_arx_free_candidate;
 
   const float rise_fall_diff =
       percent_difference_f(level->L_rise_uH, level->L_fall_uH);
@@ -4000,8 +4180,16 @@ static void inductance_finalize_level(PhaseInductanceLevelResult *level)
     level->pulse_too_short = true;
   }
 
+  const uint32_t min_rank_repeats = PHASE_INDUCTANCE_MIN_VALID_REPEATS / 2u;
+  const bool rank_order_balance_ok =
+      (level->rank_order_a_valid_repeats >= min_rank_repeats) &&
+      (level->rank_order_b_valid_repeats >= min_rank_repeats) &&
+      (level->rank_order_ab_peak_bias_percent < PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT);
+
   level->level_reliable =
       (level->valid_repeat_count >= PHASE_INDUCTANCE_MIN_VALID_REPEATS) &&
+      rank_order_balance_ok &&
+      level->active_sample_window_valid &&
       (level->delta_v_applied > 0.0f) &&
       ((level->peak_delta_i_alpha >= PHASE_INDUCTANCE_MIN_PEAK_A) ||
        (level->effective_adc_counts >= PHASE_INDUCTANCE_MIN_COUNTS)) &&
@@ -4013,8 +4201,9 @@ static void inductance_finalize_level(PhaseInductanceLevelResult *level)
       (level->rise_fit_r_squared >= PHASE_INDUCTANCE_FIT_R2_MIN) &&
       (level->fall_fit_r_squared >= PHASE_INDUCTANCE_FIT_R2_MIN) &&
       (level->L_rise_uH > 0.0f) &&
-      (level->L_fall_uH > 0.0f) &&
       (level->L_discrete_uH > 0.0f) &&
+      (level->L_fused_uH > 0.0f) &&
+      (level->fused_method_count >= 2u) &&
       (rise_fall_diff < PHASE_INDUCTANCE_RISE_FALL_DIFF_MAX_PERCENT) &&
       (discrete_diff < PHASE_INDUCTANCE_DISCRETE_DIFF_MAX_PERCENT) &&
       !g_drv_test.current_trip_fault.latched &&
@@ -4022,7 +4211,8 @@ static void inductance_finalize_level(PhaseInductanceLevelResult *level)
       !level->pulse_too_short;
 }
 
-static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
+static bool phase_inductance_run_level(uint32_t level_index,
+                                       PhaseInductanceLevelResult *level,
                                        uint32_t *last_seq,
                                        float pulse_voltage)
 {
@@ -4030,6 +4220,13 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
   level->baseline_voltage = PHASE_INDUCTANCE_BASE_ALPHA_V;
   level->pulse_voltage = pulse_voltage;
   level->nominal_delta_voltage = pulse_voltage - PHASE_INDUCTANCE_BASE_ALPHA_V;
+  float repeat_arx_sxx = 0.0f;
+  float repeat_arx_sx = 0.0f;
+  float repeat_arx_syx = 0.0f;
+  float repeat_arx_sy = 0.0f;
+  float repeat_arx_y_sum = 0.0f;
+  float repeat_arx_y_sumsq = 0.0f;
+  uint32_t repeat_arx_n = 0u;
 
   for (uint32_t repeat = 0u; repeat < PHASE_INDUCTANCE_REPEAT_COUNT; ++repeat) {
     bool repeat_ok = true;
@@ -4047,10 +4244,21 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
     memset(fall_points, 0, sizeof(fall_points));
     float pulse_applied_sum = 0.0f;
     uint32_t pulse_applied_n = 0u;
+    float baseline_raw_pc0_sum = 0.0f;
+    float baseline_raw_pc1_sum = 0.0f;
+    float baseline_vbus_sum = 0.0f;
+    uint32_t repeat_reject_mask = 0u;
     const int64_t encoder_start = g_encoder_accum;
     const HalAdcM0RankOrder rank_order =
         ((repeat & 1u) == 0u) ? HAL_ADC_M0_ORDER_PC0_PC1
                               : HAL_ADC_M0_ORDER_PC1_PC0;
+    InductanceRepeatDiag *rdiag =
+        (repeat < PHASE_INDUCTANCE_REPEAT_COUNT) ? &level->repeat_diag[repeat] : NULL;
+    if (rdiag != NULL) {
+      memset(rdiag, 0, sizeof(*rdiag));
+      rdiag->captured = 1u;
+      rdiag->rank_order = (uint8_t)rank_order;
+    }
 
     if (!hal_adc_set_m0_rank_order(rank_order)) {
       level->rejected_repeat_count++;
@@ -4073,8 +4281,9 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
                                   &applied,
                                   &sample_vbus) ||
           !inductance_alignment_sample_ok(&snap, &sample)) {
-        if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
-          inductance_print_reject("baseline", repeat, 0xffffffffu,
+          if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
+            repeat_reject_mask = 0xffffffffu;
+            inductance_print_reject("baseline", repeat, 0xffffffffu,
                                   &snap, &sample, encoder_start, 0.0f);
         }
         repeat_ok = false;
@@ -4082,6 +4291,9 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
       }
       baseline_i_alpha_sum += sample.i_alpha;
       baseline_i_beta_sum += sample.i_beta;
+      baseline_raw_pc0_sum += (float)snap.raw_pc0_m0_so1;
+      baseline_raw_pc1_sum += (float)snap.raw_pc1_m0_so2;
+      baseline_vbus_sum += sample_vbus;
       baseline_applied_sum += applied;
       baseline_n++;
       if (!inductance_apply_command(PHASE_INDUCTANCE_BASE_ALPHA_V,
@@ -4097,6 +4309,14 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
         (baseline_n > 0u) ? (baseline_i_beta_sum / (float)baseline_n) : 0.0f;
     const float baseline_applied =
         (baseline_n > 0u) ? (baseline_applied_sum / (float)baseline_n) : 0.0f;
+    if (rdiag != NULL && baseline_n > 0u) {
+      rdiag->baseline_pc0_mean = baseline_raw_pc0_sum / (float)baseline_n;
+      rdiag->baseline_pc1_mean = baseline_raw_pc1_sum / (float)baseline_n;
+      rdiag->baseline_i_alpha = baseline_i_alpha;
+      rdiag->baseline_i_beta = baseline_i_beta;
+      rdiag->vbus_mean = baseline_vbus_sum / (float)baseline_n;
+      rdiag->baseline_applied_v = baseline_applied;
+    }
 
     if (repeat_ok) {
       if (!inductance_apply_command(pulse_voltage, &s_inductance_active_command)) {
@@ -4119,6 +4339,7 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
           if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
             const uint32_t mask =
                 inductance_reject_mask(&snap, &sample, encoder_start);
+            repeat_reject_mask = mask;
             inductance_print_reject("rise", repeat, mask,
                                     &snap, &sample, encoder_start, baseline_i_beta);
           }
@@ -4127,7 +4348,24 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
         }
         pulse_applied_sum += applied;
         pulse_applied_n++;
+        if (rdiag != NULL && k == (PHASE_INDUCTANCE_RISE_SAMPLES - 1u)) {
+          rdiag->pulse_last_pc0 = snap.raw_pc0_m0_so1;
+          rdiag->pulse_last_pc1 = snap.raw_pc1_m0_so2;
+        }
         if (k < PHASE_INDUCTANCE_RISE_SAMPLES) {
+          if (repeat == 0u &&
+              (k == 0u ||
+               k == (PHASE_INDUCTANCE_RISE_SAMPLES / 2u) ||
+               k == (PHASE_INDUCTANCE_RISE_SAMPLES - 1u))) {
+            if (inductance_print_active_sample_window(
+                    level_index,
+                    (k == 0u) ? "pulse_first" :
+                    (k == (PHASE_INDUCTANCE_RISE_SAMPLES - 1u)) ? "pulse_last" :
+                    "pulse_mid",
+                    pulse_voltage)) {
+              level->active_sample_window_valid = true;
+            }
+          }
           rise_alpha[k] = sample.i_alpha - baseline_i_alpha;
           rise_beta[k] = sample.i_beta - baseline_i_beta;
           inductance_sample_capture(&rise_points[k],
@@ -4170,6 +4408,7 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
           if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
             const uint32_t mask =
                 inductance_reject_mask(&snap, &sample, encoder_start);
+            repeat_reject_mask = mask;
             inductance_print_reject("fall", repeat, mask,
                                     &snap, &sample, encoder_start, baseline_i_beta);
           }
@@ -4177,8 +4416,24 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
           break;
         }
         if (k < PHASE_INDUCTANCE_FALL_SAMPLES) {
+          if (repeat == 0u && k == 0u) {
+            if (inductance_print_active_sample_window(level_index,
+                                                      "fall_first",
+                                                      PHASE_INDUCTANCE_BASE_ALPHA_V)) {
+              level->active_sample_window_valid = true;
+            }
+          }
           fall_alpha[k] = sample.i_alpha - baseline_i_alpha;
           fall_beta[k] = sample.i_beta - baseline_i_beta;
+          if (rdiag != NULL) {
+            if (k < 12u) {
+              rdiag->fall_pc0[k] = snap.raw_pc0_m0_so1;
+              rdiag->fall_pc1[k] = snap.raw_pc1_m0_so2;
+            }
+            if (k == 0u) {
+              rdiag->fall_first_applied_v = applied;
+            }
+          }
           inductance_sample_capture(&fall_points[k],
                                     &snap,
                                     &sample,
@@ -4198,30 +4453,50 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
     }
 
     if (repeat_ok) {
+      const uint32_t rank_idx =
+          (rank_order == HAL_ADC_M0_ORDER_PC0_PC1) ? 0u : 1u;
+      const float repeat_delta_v =
+          ((pulse_applied_n > 0u) ? (pulse_applied_sum / (float)pulse_applied_n) : 0.0f) -
+          baseline_applied;
       level->valid_repeat_count++;
+      if (rdiag != NULL) {
+        rdiag->accepted = 1u;
+        rdiag->pulse_applied_v = baseline_applied + repeat_delta_v;
+      }
       float repeat_peak_alpha = 0.0f;
+      float repeat_peak_beta = 0.0f;
       for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
         if (rise_alpha[k] > repeat_peak_alpha) {
           repeat_peak_alpha = rise_alpha[k];
+        }
+        const float beta_abs = fabsf(rise_beta[k]);
+        if (beta_abs > repeat_peak_beta) {
+          repeat_peak_beta = beta_abs;
         }
       }
       if (rank_order == HAL_ADC_M0_ORDER_PC0_PC1) {
         level->rank_order_a_valid_repeats++;
         level->rank_order_a_peak_delta_i_alpha += repeat_peak_alpha;
+        level->rank_order_a_peak_delta_i_beta += repeat_peak_beta;
       } else {
         level->rank_order_b_valid_repeats++;
         level->rank_order_b_peak_delta_i_alpha += repeat_peak_alpha;
+        level->rank_order_b_peak_delta_i_beta += repeat_peak_beta;
       }
+      level->rank_baseline_i_alpha[rank_idx] += baseline_i_alpha;
+      level->rank_baseline_i_beta[rank_idx] += baseline_i_beta;
       level->baseline_i_alpha += baseline_i_alpha;
       level->baseline_i_beta += baseline_i_beta;
       level->delta_v_applied +=
-          ((pulse_applied_n > 0u) ? (pulse_applied_sum / (float)pulse_applied_n) : 0.0f) -
-          baseline_applied;
+          repeat_delta_v;
       for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
         level->rise_delta_i_mean[k] += rise_alpha[k];
         level->rise_delta_i_std[k] += rise_alpha[k] * rise_alpha[k];
         level->rise_delta_i_beta_mean[k] += rise_beta[k];
         level->rise_valid_count[k]++;
+        level->rank_rise_delta_i_mean[rank_idx][k] += rise_alpha[k];
+        level->rank_rise_delta_i_std[rank_idx][k] += rise_alpha[k] * rise_alpha[k];
+        level->rank_rise_valid_count[rank_idx][k]++;
         if (level->valid_repeat_count == 1u) {
           level->rise_samples[k] = rise_points[k];
         }
@@ -4231,12 +4506,45 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
         level->fall_delta_i_std[k] += fall_alpha[k] * fall_alpha[k];
         level->fall_delta_i_beta_mean[k] += fall_beta[k];
         level->fall_valid_count[k]++;
+        level->rank_fall_delta_i_mean[rank_idx][k] += fall_alpha[k];
+        level->rank_fall_delta_i_std[rank_idx][k] += fall_alpha[k] * fall_alpha[k];
+        level->rank_fall_valid_count[rank_idx][k]++;
         if (level->valid_repeat_count == 1u) {
           level->fall_samples[k] = fall_points[k];
         }
       }
+      for (uint32_t k = 0u; k + 1u < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
+        const float x = rise_alpha[k] - repeat_delta_v / PHASE_INDUCTANCE_R_PHASE_OHM;
+        const float y = rise_alpha[k + 1u] - repeat_delta_v / PHASE_INDUCTANCE_R_PHASE_OHM;
+        repeat_arx_sxx += x * x;
+        repeat_arx_sx += x;
+        repeat_arx_syx += y * x;
+        repeat_arx_sy += y;
+        repeat_arx_y_sum += y;
+        repeat_arx_y_sumsq += y * y;
+        repeat_arx_n++;
+      }
+      for (uint32_t k = 0u; k + 1u < PHASE_INDUCTANCE_FALL_SAMPLES; ++k) {
+        const float x = fall_alpha[k];
+        const float y = fall_alpha[k + 1u];
+        repeat_arx_sxx += x * x;
+        repeat_arx_sx += x;
+        repeat_arx_syx += y * x;
+        repeat_arx_sy += y;
+        repeat_arx_y_sum += y;
+        repeat_arx_y_sumsq += y * y;
+        repeat_arx_n++;
+      }
     } else {
+      if (rdiag != NULL) {
+        rdiag->reject_mask = (repeat_reject_mask != 0u) ? repeat_reject_mask : 1u;
+      }
       level->rejected_repeat_count++;
+      if (rank_order == HAL_ADC_M0_ORDER_PC0_PC1) {
+        level->rank_order_a_rejected_repeats++;
+      } else {
+        level->rank_order_b_rejected_repeats++;
+      }
       if (g_drv_test.current_trip_fault.latched) {
         break;
       }
@@ -4262,11 +4570,23 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
     level->delta_v_applied *= inv;
   }
   if (level->rank_order_a_valid_repeats > 0u) {
+    level->rank_baseline_i_alpha[0] /=
+        (float)level->rank_order_a_valid_repeats;
+    level->rank_baseline_i_beta[0] /=
+        (float)level->rank_order_a_valid_repeats;
     level->rank_order_a_peak_delta_i_alpha /=
+        (float)level->rank_order_a_valid_repeats;
+    level->rank_order_a_peak_delta_i_beta /=
         (float)level->rank_order_a_valid_repeats;
   }
   if (level->rank_order_b_valid_repeats > 0u) {
+    level->rank_baseline_i_alpha[1] /=
+        (float)level->rank_order_b_valid_repeats;
+    level->rank_baseline_i_beta[1] /=
+        (float)level->rank_order_b_valid_repeats;
     level->rank_order_b_peak_delta_i_alpha /=
+        (float)level->rank_order_b_valid_repeats;
+    level->rank_order_b_peak_delta_i_beta /=
         (float)level->rank_order_b_valid_repeats;
   }
   if ((level->rank_order_a_valid_repeats > 0u) &&
@@ -4274,6 +4594,60 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
     level->rank_order_ab_peak_bias_percent =
         percent_difference_f(level->rank_order_a_peak_delta_i_alpha,
                              level->rank_order_b_peak_delta_i_alpha);
+    level->rank_order_beta_bias =
+        level->rank_order_a_peak_delta_i_beta -
+        level->rank_order_b_peak_delta_i_beta;
+  }
+  for (uint32_t ri = 0u; ri < 2u; ++ri) {
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
+      const uint32_t n = level->rank_rise_valid_count[ri][k];
+      if (n > 0u) {
+        const float sum = level->rank_rise_delta_i_mean[ri][k];
+        const float sumsq = level->rank_rise_delta_i_std[ri][k];
+        level->rank_rise_delta_i_mean[ri][k] = sum / (float)n;
+        level->rank_rise_delta_i_std[ri][k] =
+            inductance_std_from_sums(sum, sumsq, n);
+      }
+    }
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_FALL_SAMPLES; ++k) {
+      const uint32_t n = level->rank_fall_valid_count[ri][k];
+      if (n > 0u) {
+        const float sum = level->rank_fall_delta_i_mean[ri][k];
+        const float sumsq = level->rank_fall_delta_i_std[ri][k];
+        level->rank_fall_delta_i_mean[ri][k] = sum / (float)n;
+        level->rank_fall_delta_i_std[ri][k] =
+            inductance_std_from_sums(sum, sumsq, n);
+      }
+    }
+  }
+  if (repeat_arx_n >= 4u) {
+    MotorIdentArxFit *fit = &level->repeat_arx_fixed_r;
+    const float nf = (float)repeat_arx_n;
+    const float det = nf * repeat_arx_sxx - repeat_arx_sx * repeat_arx_sx;
+    if (fabsf(det) > 1.0e-12f) {
+      fit->a = (nf * repeat_arx_syx - repeat_arx_sx * repeat_arx_sy) / det;
+      fit->c = (repeat_arx_sy - fit->a * repeat_arx_sx) / nf;
+      fit->b = (1.0f - fit->a) / PHASE_INDUCTANCE_R_PHASE_OHM;
+      if (fit->a > 0.0f && fit->a < 1.0f && fit->b > 0.0f) {
+        fit->tau_s = -(PHASE_INDUCTANCE_TS_US * 1.0e-6f) / logf(fit->a);
+        fit->resistance_ohm = PHASE_INDUCTANCE_R_PHASE_OHM;
+        fit->inductance_h = fit->resistance_ohm * fit->tau_s;
+        const float y_mean = repeat_arx_y_sum / nf;
+        const float ss_tot = repeat_arx_y_sumsq - nf * y_mean * y_mean;
+        const float ss_res =
+            repeat_arx_y_sumsq -
+            2.0f * fit->a * repeat_arx_syx -
+            2.0f * fit->c * repeat_arx_sy +
+            fit->a * fit->a * repeat_arx_sxx +
+            2.0f * fit->a * fit->c * repeat_arx_sx +
+            nf * fit->c * fit->c;
+        fit->r_squared = (ss_tot > 1.0e-12f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+        fit->valid = true;
+        level->repeat_arx_L_uH = fit->inductance_h * 1000000.0f;
+        level->repeat_arx_r_squared = fit->r_squared;
+        level->repeat_arx_pair_count = repeat_arx_n;
+      }
+    }
   }
   (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
   inductance_finalize_level(level);
@@ -4282,12 +4656,28 @@ static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
 
 static float inductance_level_average_uH(const PhaseInductanceLevelResult *level)
 {
-  float sum = 0.0f;
+  if (level->L_fused_uH > 0.0f) {
+    return level->L_fused_uH;
+  }
+  float values[5];
   uint32_t n = 0u;
-  if (level->L_rise_uH > 0.0f) { sum += level->L_rise_uH; n++; }
-  if (level->L_fall_uH > 0.0f) { sum += level->L_fall_uH; n++; }
-  if (level->L_discrete_uH > 0.0f) { sum += level->L_discrete_uH; n++; }
-  return (n > 0u) ? (sum / (float)n) : 0.0f;
+  if (level->L_rise_uH > 0.0f) { values[n++] = level->L_rise_uH; }
+  if (level->L_fall_uH > 0.0f) { values[n++] = level->L_fall_uH; }
+  if (level->L_initial_slope_uH > 0.0f) { values[n++] = level->L_initial_slope_uH; }
+  if (level->L_arx_fixed_R_uH > 0.0f) { values[n++] = level->L_arx_fixed_R_uH; }
+  if (level->L_arx_free_R_uH > 0.0f) { values[n++] = level->L_arx_free_R_uH; }
+  for (uint32_t i = 1u; i < n; ++i) {
+    const float key = values[i];
+    uint32_t j = i;
+    while (j > 0u && values[j - 1u] > key) {
+      values[j] = values[j - 1u];
+      --j;
+    }
+    values[j] = key;
+  }
+  if (n == 0u) { return 0.0f; }
+  return ((n & 1u) != 0u) ? values[n / 2u]
+                          : 0.5f * (values[n / 2u - 1u] + values[n / 2u]);
 }
 
 static bool phase_inductance_identification_run(void)
@@ -4399,12 +4789,14 @@ static bool phase_inductance_identification_run(void)
   }
 
   if (ok) {
-    ok = phase_inductance_run_level(&g_drv_test.inductance_levels[0],
+    ok = phase_inductance_run_level(0u,
+                                    &g_drv_test.inductance_levels[0],
                                     &last_seq,
                                     0.80f);
   }
   if (ok) {
-    ok = phase_inductance_run_level(&g_drv_test.inductance_levels[1],
+    ok = phase_inductance_run_level(1u,
+                                    &g_drv_test.inductance_levels[1],
                                     &last_seq,
                                     1.00f);
   }
@@ -8717,7 +9109,7 @@ static void print_drv_bringup_test_status(void)
            (unsigned long)sw->ccr1,
            (unsigned long)sw->ccr2,
            (unsigned long)sw->ccr3,
-           (unsigned long)sw->sample_cnt,
+           (unsigned long)sw->ccr4,
            (unsigned long)sw->sample_high_side_mask,
            (unsigned long)sw->sample_low_side_mask,
            (unsigned long)sw->deadtime_mask,
@@ -9285,6 +9677,160 @@ static void print_drv_bringup_test_status(void)
                (unsigned int)lvl->pulse_too_short,
                (unsigned int)lvl->level_reliable);
       uart2_printf_line(line);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_robust: active_sample_window_valid=%u baseline_sigma_a=%ld.%03ld baseline_sigma_b=%ld.%03ld fall_tail_sigma=%ld.%03ld effective_noise_counts=%ld.%02ld effective_noise_amp=%ld.%03ld rise_tail_median=%ld.%03ld rise_peak_minus_tail=%ld.%03ld fitted_amplitude=%ld.%03ld fitted_offset=%ld.%03ld rise_residual_rms=%ld.%03ld fall_fit_start_index=%lu fall_fit_end_index=%lu fall_fit_point_count=%lu fall_initial_current=%ld.%03ld fall_noise_floor=%ld.%03ld fall_fitted_offset=%ld.%03ld fall_residual_rms=%ld.%03ld L_arx_fixed_R_uH=%ld.%03ld L_arx_free_R_uH=%ld.%03ld L_arx_smoothed_fixed_R_uH=%ld.%03ld R_arx_free_candidate=%ld.%03ld L_fused_uH=%ld.%03ld fused_method_count=%lu",
+               (unsigned long)li,
+               (unsigned int)lvl->active_sample_window_valid,
+               (long)(float_to_scaled_i32(lvl->baseline_sigma_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->baseline_sigma_a, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->baseline_sigma_b, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->baseline_sigma_b, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_tail_sigma, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_tail_sigma, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->effective_noise_counts, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->effective_noise_counts, 100.0f)) % 100u),
+               (long)(float_to_scaled_i32(lvl->effective_noise_amp, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->effective_noise_amp, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_tail_median, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_tail_median, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_peak_minus_tail, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_peak_minus_tail, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_fitted_amplitude, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_fitted_amplitude, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_fitted_offset, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_fitted_offset, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_residual_rms, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_residual_rms, 1000.0f)) % 1000u),
+               (unsigned long)lvl->fall_fit_start_index,
+               (unsigned long)lvl->fall_fit_end_index,
+               (unsigned long)lvl->fall_fit_point_count,
+               (long)(float_to_scaled_i32(lvl->fall_initial_current, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_initial_current, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_noise_floor, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_noise_floor, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_fitted_offset, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_fitted_offset, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_residual_rms, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_residual_rms, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_arx_fixed_R_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_arx_fixed_R_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_arx_free_R_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_arx_free_R_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_arx_smoothed_fixed_R_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_arx_smoothed_fixed_R_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->R_arx_free_candidate, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->R_arx_free_candidate, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_fused_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_fused_uH, 1000.0f)) % 1000u),
+               (unsigned long)lvl->fused_method_count);
+      uart2_printf_line(line);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_fall_window: start_index=%lu end_index=%lu point_count=%lu weighted_residual_rms=%ld.%03ld normalized_residual_rms=%ld.%03ld window_score=%ld.%03ld residual_max_index=%lu residual_max_a=%ld.%03ld residual_max_counts=%ld.%02ld residual_same_sign_run=%lu residual_curvature=%ld.%03ld fitted_offset=%ld.%03ld fall_fit_r_squared=%ld.%03ld",
+               (unsigned long)li,
+               (unsigned long)lvl->fall_fit_start_index,
+               (unsigned long)lvl->fall_fit_end_index,
+               (unsigned long)lvl->fall_fit_point_count,
+               (long)(float_to_scaled_i32(lvl->fall_weighted_residual_rms, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_weighted_residual_rms, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_normalized_residual_rms, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_normalized_residual_rms, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_window_score, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_window_score, 1000.0f)) % 1000u),
+               (unsigned long)lvl->fall_residual_max_index,
+               (long)(float_to_scaled_i32(lvl->fall_max_residual_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_max_residual_a, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_residual_max_counts, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_residual_max_counts, 100.0f)) % 100u),
+               (unsigned long)lvl->fall_residual_same_sign_run,
+               (long)(float_to_scaled_i32(lvl->fall_residual_curvature, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_residual_curvature, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_fitted_offset, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_fitted_offset, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_fit_r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_fit_r_squared, 1000.0f)) % 1000u));
+      uart2_printf_line(line);
+      const MotorIdentMonotonicStats *rise_mono = &lvl->rise_monotonic_stats;
+      const uint32_t rise_ratio_centi =
+          float_to_scaled_u32(rise_mono->violation_ratio, 100.0f);
+      const int32_t rise_slope_milli =
+          float_to_scaled_i32(rise_mono->global_trend_slope, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_monotonic_rise: monotonic_window_start=%lu monotonic_window_end=%lu comparison_count=%lu violation_count=%lu violation_ratio=%lu.%02lu max_violation_a=%ld.%03ld max_violation_counts=%ld.%02ld tolerance_max_a=%ld.%03ld global_trend_slope=%s%lu.%03lu monotonic_rise_ok=%u",
+               (unsigned long)li,
+               (unsigned long)rise_mono->window_start,
+               (unsigned long)rise_mono->window_end,
+               (unsigned long)rise_mono->comparison_count,
+               (unsigned long)rise_mono->violation_count,
+               (unsigned long)(rise_ratio_centi / 100u),
+               (unsigned long)(rise_ratio_centi % 100u),
+               (long)(float_to_scaled_i32(rise_mono->max_violation_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rise_mono->max_violation_a, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(rise_mono->max_violation_counts, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(rise_mono->max_violation_counts, 100.0f)) % 100u),
+               (long)(float_to_scaled_i32(rise_mono->tolerance_max_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rise_mono->tolerance_max_a, 1000.0f)) % 1000u),
+               (rise_slope_milli < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(rise_slope_milli) / 1000u),
+               (unsigned long)(abs_i32_to_u32(rise_slope_milli) % 1000u),
+               (unsigned int)rise_mono->ok);
+      uart2_printf_line(line);
+      const MotorIdentMonotonicStats *fall_mono = &lvl->fall_monotonic_stats;
+      const uint32_t fall_ratio_centi =
+          float_to_scaled_u32(fall_mono->violation_ratio, 100.0f);
+      const int32_t fall_slope_milli =
+          float_to_scaled_i32(fall_mono->global_trend_slope, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_monotonic_fall: monotonic_window_start=%lu monotonic_window_end=%lu comparison_count=%lu violation_count=%lu violation_ratio=%lu.%02lu max_violation_a=%ld.%03ld max_violation_counts=%ld.%02ld tolerance_max_a=%ld.%03ld global_trend_slope=%s%lu.%03lu monotonic_fall_ok=%u",
+               (unsigned long)li,
+               (unsigned long)fall_mono->window_start,
+               (unsigned long)fall_mono->window_end,
+               (unsigned long)fall_mono->comparison_count,
+               (unsigned long)fall_mono->violation_count,
+               (unsigned long)(fall_ratio_centi / 100u),
+               (unsigned long)(fall_ratio_centi % 100u),
+               (long)(float_to_scaled_i32(fall_mono->max_violation_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(fall_mono->max_violation_a, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(fall_mono->max_violation_counts, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(fall_mono->max_violation_counts, 100.0f)) % 100u),
+               (long)(float_to_scaled_i32(fall_mono->tolerance_max_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(fall_mono->tolerance_max_a, 1000.0f)) % 1000u),
+               (fall_slope_milli < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(fall_slope_milli) / 1000u),
+               (unsigned long)(abs_i32_to_u32(fall_slope_milli) % 1000u),
+               (unsigned int)fall_mono->ok);
+      uart2_printf_line(line);
+      const bool rank_order_bias_pass =
+          (lvl->rank_order_a_valid_repeats >= (PHASE_INDUCTANCE_MIN_VALID_REPEATS / 2u)) &&
+          (lvl->rank_order_b_valid_repeats >= (PHASE_INDUCTANCE_MIN_VALID_REPEATS / 2u)) &&
+          (lvl->rank_order_ab_peak_bias_percent < PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_rank: valid_repeat_count_rank_a=%lu rejected_repeat_count_rank_a=%lu valid_repeat_count_rank_b=%lu rejected_repeat_count_rank_b=%lu total_valid_repeat_count=%lu rank_a_offset_pc0=UNAVAILABLE rank_a_offset_pc1=UNAVAILABLE rank_b_offset_pc0=UNAVAILABLE rank_b_offset_pc1=UNAVAILABLE alpha_rank_a_peak=%ld.%03ld alpha_rank_b_peak=%ld.%03ld beta_rank_a_peak=%ld.%03ld beta_rank_b_peak=%ld.%03ld rank_order_alpha_difference_percent=%ld.%02ld rank_order_beta_bias=%ld.%03ld rank_order_bias_pass=%u min_rank_repeats=%lu",
+               (unsigned long)li,
+               (unsigned long)lvl->rank_order_a_valid_repeats,
+               (unsigned long)lvl->rank_order_a_rejected_repeats,
+               (unsigned long)lvl->rank_order_b_valid_repeats,
+               (unsigned long)lvl->rank_order_b_rejected_repeats,
+               (unsigned long)lvl->valid_repeat_count,
+               (long)(float_to_scaled_i32(lvl->rank_order_a_peak_delta_i_alpha, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_a_peak_delta_i_alpha, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rank_order_b_peak_delta_i_alpha, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_b_peak_delta_i_alpha, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rank_order_a_peak_delta_i_beta, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_a_peak_delta_i_beta, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rank_order_b_peak_delta_i_beta, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_b_peak_delta_i_beta, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rank_order_ab_peak_bias_percent, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_ab_peak_bias_percent, 100.0f)) % 100u),
+               (long)(float_to_scaled_i32(lvl->rank_order_beta_bias, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_order_beta_bias, 1000.0f)) % 1000u),
+               (unsigned int)rank_order_bias_pass,
+               (unsigned long)(PHASE_INDUCTANCE_MIN_VALID_REPEATS / 2u));
+      uart2_printf_line(line);
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu_repeat_arx_fixed_R: valid=%u pair_count=%lu L_uH=%ld.%03ld r_squared=%ld.%03ld a=%ld.%06ld c=%ld.%06ld",
+               (unsigned long)li,
+               (unsigned int)lvl->repeat_arx_fixed_r.valid,
+               (unsigned long)lvl->repeat_arx_pair_count,
+               (long)(float_to_scaled_i32(lvl->repeat_arx_L_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->repeat_arx_L_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->repeat_arx_r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->repeat_arx_r_squared, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->repeat_arx_fixed_r.a, 1000000.0f) / 1000000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->repeat_arx_fixed_r.a, 1000000.0f)) % 1000000u),
+               (long)(float_to_scaled_i32(lvl->repeat_arx_fixed_r.c, 1000000.0f) / 1000000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->repeat_arx_fixed_r.c, 1000000.0f)) % 1000000u));
+      uart2_printf_line(line);
+      for (uint32_t ri = 0u; ri < 2u; ++ri) {
+        const char rank_label = (ri == 0u) ? 'A' : 'B';
+        const MotorIdentRobustResult *rr = &lvl->rank_robust[ri];
+        const uint32_t rank_repeats =
+            (ri == 0u) ? lvl->rank_order_a_valid_repeats :
+                         lvl->rank_order_b_valid_repeats;
+        snprintf(line,
+                 sizeof(line),
+                 "inductance_level%lu_rank%c_fit: valid_repeats=%lu baseline_i_alpha=%ld.%03ld baseline_i_beta=%ld.%03ld L_rise_uH=%ld.%03ld rise_r2=%ld.%03ld rise_residual_rms=%ld.%03ld rise_tail_current=%ld.%03ld L_fall_uH=%ld.%03ld fall_r2=%ld.%03ld fall_residual_rms=%ld.%03ld fall_start=%lu fall_end=%lu fall_points=%lu first_fall_current=%ld.%03ld fall_offset=%ld.%03ld",
+                 (unsigned long)li,
+                 rank_label,
+                 (unsigned long)rank_repeats,
+                 (long)(float_to_scaled_i32(lvl->rank_baseline_i_alpha[ri], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_baseline_i_alpha[ri], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(lvl->rank_baseline_i_beta[ri], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_baseline_i_beta[ri], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->rise_fit.fitted_inductance_h * 1000000.0f, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->rise_fit.fitted_inductance_h * 1000000.0f, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->rise_fit.r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->rise_fit.r_squared, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->rise_fit.residual_rms_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->rise_fit.residual_rms_a, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->rise_tail_median_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->rise_tail_median_a, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->fall_fit.fitted_inductance_h * 1000000.0f, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->fall_fit.fitted_inductance_h * 1000000.0f, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->fall_fit.r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->fall_fit.r_squared, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->fall_fit.residual_rms_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->fall_fit.residual_rms_a, 1000.0f)) % 1000u),
+                 (unsigned long)rr->fall_fit.start_index,
+                 (unsigned long)rr->fall_fit.end_index,
+                 (unsigned long)rr->fall_fit.point_count,
+                 (long)(float_to_scaled_i32(lvl->rank_fall_delta_i_mean[ri][0], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_fall_delta_i_mean[ri][0], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rr->fall_fit.fitted_offset_a, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rr->fall_fit.fitted_offset_a, 1000.0f)) % 1000u));
+        uart2_printf_line(line);
+      }
       if (lvl->dynamics_too_fast) { uart2_printf_line("INDUCTANCE_DYNAMICS_TOO_FAST_FOR_20KHZ"); }
       if (lvl->pulse_too_short) { uart2_printf_line("INDUCTANCE_PULSE_TOO_SHORT"); }
       for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
@@ -9294,12 +9840,14 @@ static void print_drv_bringup_test_status(void)
         const int32_t next_v_m = float_to_scaled_i32(sp->commanded_next_v_alpha, 1000.0f);
         snprintf(line,
                  sizeof(line),
-                 "inductance_level%lu_rise_sample%02lu: t_us=%lu adc_seq=%lu voltage_command_seq=%lu voltage_for_this_sample=%s%lu.%03lu commanded_voltage=%s%lu.%03lu commanded_next_voltage=%s%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
+                 "inductance_level%lu_rise_sample%02lu: t_us=%lu adc_seq=%lu voltage_command_seq=%lu raw_pc0=%u raw_pc1=%u voltage_for_this_sample=%s%lu.%03lu commanded_voltage=%s%lu.%03lu commanded_next_voltage=%s%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
                  (unsigned long)li,
                  (unsigned long)k,
                  (unsigned long)((k + 1u) * (uint32_t)PHASE_INDUCTANCE_TS_US),
                  (unsigned long)sp->adc_seq,
                  (unsigned long)sp->voltage_command_seq,
+                 (unsigned int)sp->raw_pc0,
+                 (unsigned int)sp->raw_pc1,
                  (sample_v_m < 0) ? "-" : "",
                  (unsigned long)(abs_i32_to_u32(sample_v_m) / 1000u),
                  (unsigned long)(abs_i32_to_u32(sample_v_m) % 1000u),
@@ -9326,12 +9874,14 @@ static void print_drv_bringup_test_status(void)
         const int32_t next_v_m = float_to_scaled_i32(sp->commanded_next_v_alpha, 1000.0f);
         snprintf(line,
                  sizeof(line),
-                 "inductance_level%lu_fall_sample%02lu: t_us=%lu adc_seq=%lu voltage_command_seq=%lu voltage_for_this_sample=%s%lu.%03lu commanded_voltage=%s%lu.%03lu commanded_next_voltage=%s%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
+                 "inductance_level%lu_fall_sample%02lu: t_us=%lu adc_seq=%lu voltage_command_seq=%lu raw_pc0=%u raw_pc1=%u voltage_for_this_sample=%s%lu.%03lu commanded_voltage=%s%lu.%03lu commanded_next_voltage=%s%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
                  (unsigned long)li,
                  (unsigned long)k,
                  (unsigned long)(k * (uint32_t)PHASE_INDUCTANCE_TS_US),
                  (unsigned long)sp->adc_seq,
                  (unsigned long)sp->voltage_command_seq,
+                 (unsigned int)sp->raw_pc0,
+                 (unsigned int)sp->raw_pc1,
                  (sample_v_m < 0) ? "-" : "",
                  (unsigned long)(abs_i32_to_u32(sample_v_m) / 1000u),
                  (unsigned long)(abs_i32_to_u32(sample_v_m) % 1000u),
@@ -9349,6 +9899,70 @@ static void print_drv_bringup_test_status(void)
                  (long)(float_to_scaled_i32(lvl->fall_delta_i_std[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_delta_i_std[k], 1000.0f)) % 1000u),
                  (long)(float_to_scaled_i32(lvl->fall_delta_i_beta_mean[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_delta_i_beta_mean[k], 1000.0f)) % 1000u),
                  (unsigned long)lvl->fall_valid_count[k]);
+        uart2_printf_line(line);
+      }
+      for (uint32_t ri = 0u; ri < 2u; ++ri) {
+        const char rank_label = (ri == 0u) ? 'A' : 'B';
+        for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
+          snprintf(line,
+                   sizeof(line),
+                   "inductance_level%lu_rank%c_rise_sample%02lu: mean=%ld.%03ld std=%ld.%03ld valid_count=%lu",
+                   (unsigned long)li,
+                   rank_label,
+                   (unsigned long)k,
+                   (long)(float_to_scaled_i32(lvl->rank_rise_delta_i_mean[ri][k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_rise_delta_i_mean[ri][k], 1000.0f)) % 1000u),
+                   (long)(float_to_scaled_i32(lvl->rank_rise_delta_i_std[ri][k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_rise_delta_i_std[ri][k], 1000.0f)) % 1000u),
+                   (unsigned long)lvl->rank_rise_valid_count[ri][k]);
+          uart2_printf_line(line);
+        }
+        for (uint32_t k = 0u; k < PHASE_INDUCTANCE_FALL_SAMPLES; ++k) {
+          snprintf(line,
+                   sizeof(line),
+                   "inductance_level%lu_rank%c_fall_sample%02lu: mean=%ld.%03ld std=%ld.%03ld valid_count=%lu",
+                   (unsigned long)li,
+                   rank_label,
+                   (unsigned long)k,
+                   (long)(float_to_scaled_i32(lvl->rank_fall_delta_i_mean[ri][k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_fall_delta_i_mean[ri][k], 1000.0f)) % 1000u),
+                   (long)(float_to_scaled_i32(lvl->rank_fall_delta_i_std[ri][k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rank_fall_delta_i_std[ri][k], 1000.0f)) % 1000u),
+                   (unsigned long)lvl->rank_fall_valid_count[ri][k]);
+          uart2_printf_line(line);
+        }
+      }
+      for (uint32_t rep = 0u; rep < PHASE_INDUCTANCE_REPEAT_COUNT; ++rep) {
+        const InductanceRepeatDiag *rd = &lvl->repeat_diag[rep];
+        if (rd->captured == 0u) {
+          continue;
+        }
+        snprintf(line,
+                 sizeof(line),
+                 "inductance_level%lu_repeat%02lu_diag: rank_order=%u accepted=%u reject_mask=0x%08lX baseline_pc0_mean=%ld.%02ld baseline_pc1_mean=%ld.%02ld baseline_i_alpha=%ld.%03ld baseline_i_beta=%ld.%03ld vbus=%ld.%03ld baseline_applied=%ld.%03ld pulse_applied=%ld.%03ld fall_first_applied=%ld.%03ld pulse_last_pc0=%u pulse_last_pc1=%u fall_pc0=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u fall_pc1=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+                 (unsigned long)li,
+                 (unsigned long)rep,
+                 (unsigned int)rd->rank_order,
+                 (unsigned int)rd->accepted,
+                 (unsigned long)rd->reject_mask,
+                 (long)(float_to_scaled_i32(rd->baseline_pc0_mean, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->baseline_pc0_mean, 100.0f)) % 100u),
+                 (long)(float_to_scaled_i32(rd->baseline_pc1_mean, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->baseline_pc1_mean, 100.0f)) % 100u),
+                 (long)(float_to_scaled_i32(rd->baseline_i_alpha, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->baseline_i_alpha, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rd->baseline_i_beta, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->baseline_i_beta, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rd->vbus_mean, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->vbus_mean, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rd->baseline_applied_v, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->baseline_applied_v, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rd->pulse_applied_v, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->pulse_applied_v, 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(rd->fall_first_applied_v, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(rd->fall_first_applied_v, 1000.0f)) % 1000u),
+                 (unsigned int)rd->pulse_last_pc0,
+                 (unsigned int)rd->pulse_last_pc1,
+                 (unsigned int)rd->fall_pc0[0], (unsigned int)rd->fall_pc0[1],
+                 (unsigned int)rd->fall_pc0[2], (unsigned int)rd->fall_pc0[3],
+                 (unsigned int)rd->fall_pc0[4], (unsigned int)rd->fall_pc0[5],
+                 (unsigned int)rd->fall_pc0[6], (unsigned int)rd->fall_pc0[7],
+                 (unsigned int)rd->fall_pc0[8], (unsigned int)rd->fall_pc0[9],
+                 (unsigned int)rd->fall_pc0[10], (unsigned int)rd->fall_pc0[11],
+                 (unsigned int)rd->fall_pc1[0], (unsigned int)rd->fall_pc1[1],
+                 (unsigned int)rd->fall_pc1[2], (unsigned int)rd->fall_pc1[3],
+                 (unsigned int)rd->fall_pc1[4], (unsigned int)rd->fall_pc1[5],
+                 (unsigned int)rd->fall_pc1[6], (unsigned int)rd->fall_pc1[7],
+                 (unsigned int)rd->fall_pc1[8], (unsigned int)rd->fall_pc1[9],
+                 (unsigned int)rd->fall_pc1[10], (unsigned int)rd->fall_pc1[11]);
         uart2_printf_line(line);
       }
     }
@@ -9540,7 +10154,7 @@ static void print_drv_bringup_test_status(void)
 
   snprintf(line,
            sizeof(line),
-           "power_final: gate=%u nfault=%u ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu",
+           "power_final: gate=%u nfault=%u ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu drv0_control1=0x%04X drv0_control2=0x%04X drv1_control1=0x%04X drv1_control2=0x%04X adc_rank_order=%lu fault_code=0x%08lX",
            (unsigned int)g_drv_test.final_gate,
            (unsigned int)g_drv_test.final_nfault,
            (unsigned long)g_drv_test.final_ccer,
@@ -9548,7 +10162,13 @@ static void print_drv_bringup_test_status(void)
            (unsigned long)((g_drv_test.final_bdtr & TIM_BDTR_MOE) ? 1u : 0u),
            (unsigned long)g_drv_test.final_ccr1,
            (unsigned long)g_drv_test.final_ccr2,
-           (unsigned long)g_drv_test.final_ccr3);
+           (unsigned long)g_drv_test.final_ccr3,
+           (unsigned int)g_drv_test.drv0_regs.control1,
+           (unsigned int)g_drv_test.drv0_regs.control2,
+           (unsigned int)g_drv_test.drv1_regs.control1,
+           (unsigned int)g_drv_test.drv1_regs.control2,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned long)g_drv_test.fault_code);
   uart2_printf_line(line);
 
   if (g_drv_test.pass) {
