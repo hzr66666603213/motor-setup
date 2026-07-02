@@ -43,7 +43,8 @@ typedef enum {
     AXIS0_FAULT_MOTOR_CALIBRATION_FAILED  = 1u << 10,
     AXIS0_FAULT_ENCODER_CALIBRATION_FAILED= 1u << 11,
     AXIS0_FAULT_OVERTEMPERATURE           = 1u << 12,
-    AXIS0_FAULT_CONTROL_SATURATION        = 1u << 13
+    AXIS0_FAULT_CONTROL_SATURATION        = 1u << 13,
+    AXIS0_FAULT_CURRENT_PROTECTION        = 1u << 14
 } Axis0FaultFlags;
 
 /* ODrive v3.6 Axis0 专用故障接口。 */

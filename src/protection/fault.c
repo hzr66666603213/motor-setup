@@ -81,6 +81,7 @@ const char *get_fault_string(Axis0FaultFlags fault)
     case AXIS0_FAULT_ENCODER_CALIBRATION_FAILED: return "encoder_calibration_failed";
     case AXIS0_FAULT_OVERTEMPERATURE: return "overtemperature";
     case AXIS0_FAULT_CONTROL_SATURATION: return "control_saturation";
+    case AXIS0_FAULT_CURRENT_PROTECTION: return "current_protection";
     default: return "unknown";
     }
 }

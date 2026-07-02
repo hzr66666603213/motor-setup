@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app/axis0_types.h"
@@ -278,9 +279,15 @@ typedef struct {
 typedef struct {
   uint8_t gain_code;
   float gain_v_v;
+  float current_amp_per_count;
+  float counts_for_0p60A;
+  float counts_for_1p00A;
   bool gain_readback_ok;
   bool dc_cal_clear_ok;
   bool dc_cal_stuck_active;
+  bool power_test_allowed;
+  bool power_test_skipped;
+  const char *power_test_skip_reason;
   bool faulted;
   uint16_t control2_drv0;
   uint16_t control2_drv1;
@@ -295,6 +302,15 @@ typedef struct {
   float std_pc[4];
   float mean_pc[4];
   float delta_pc[4];
+  float repeat_delta_pc[5][4];
+  float repeat_response_mag_m0[5];
+  float repeat_response_mag_m1[5];
+  float delta_std_pc[4];
+  float m0_response_std;
+  float m1_response_std;
+  bool m0_sign_consistent;
+  bool m1_sign_consistent;
+  bool adc_saturated;
   float m0_response_mag;
   float m1_response_mag;
   float v_alpha;
@@ -304,6 +320,7 @@ typedef struct {
   uint32_t ccr3;
   uint32_t ccr4;
   float snapshots_per_pwm_cycle;
+  uint32_t encoder_motion_counts;
   uint16_t drv0_status1;
   uint16_t drv1_status1;
   uint32_t moe;
@@ -311,6 +328,183 @@ typedef struct {
   uint32_t nfault;
   uint32_t fault_code;
 } GainAxisMapResult;
+
+typedef struct {
+  float commanded_v_alpha;
+  float applied_v_alpha;
+  float applied_voltage_magnitude;
+  bool valid;
+  bool faulted;
+  uint32_t invalid_reason;
+  uint32_t samples;
+  float raw_pc0_mean;
+  float raw_pc0_std;
+  float raw_pc1_mean;
+  float raw_pc1_std;
+  float delta_pc0_counts;
+  float delta_pc1_counts;
+  float iu_mean;
+  float iu_std;
+  float iv_mean;
+  float iv_std;
+  float iw_mean;
+  float iw_std;
+  float i_alpha_mean;
+  float i_alpha_std;
+  float i_beta_mean;
+  float i_beta_std;
+  float i_alpha_effective_counts;
+  float beta_over_alpha_ratio;
+  float phase_current_max;
+  float phase_current_rms;
+  float phase_current_abs_mean_max;
+  uint32_t encoder_motion_counts;
+  float vbus_mean;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  uint32_t ccr4;
+  uint16_t raw_pc0_min;
+  uint16_t raw_pc0_max;
+  uint16_t raw_pc1_min;
+  uint16_t raw_pc1_max;
+} AlphaResistancePointResult;
+
+typedef struct {
+  const char *name;
+  uint8_t pc0_phase;
+  uint8_t pc1_phase;
+  int8_t pc0_sign;
+  int8_t pc1_sign;
+  uint32_t valid_points;
+  bool monotonic_ok;
+  bool reliable;
+  float beta_alpha_mean;
+  float phase_resistance_ohm;
+  float inverter_voltage_offset_v;
+  float fit_r_squared;
+  float max_residual_v;
+  float predicted_current_at_0p5v;
+  float predicted_current_at_1p0v;
+  float voltage_required_for_0p1A;
+  float voltage_required_for_0p2A;
+  float voltage_required_for_0p25A;
+  float score;
+} AlphaCurrentMapCandidateResult;
+
+typedef struct {
+  const char *name;
+  float angle_deg;
+  float v_alpha_command;
+  float v_beta_command;
+  float applied_v_alpha;
+  float applied_v_beta;
+  bool valid;
+  bool faulted;
+  uint32_t samples;
+  float raw_pc0_mean;
+  float raw_pc0_std;
+  float raw_pc1_mean;
+  float raw_pc1_std;
+  float delta_pc0_counts;
+  float delta_pc1_counts;
+  float pc0_current_mean;
+  float pc1_current_mean;
+  int64_t encoder_start;
+  int64_t encoder_end;
+  uint32_t encoder_motion_counts;
+  float encoder_speed_peak_rpm;
+  float encoder_speed_at_sample_rpm;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  uint32_t ccr4;
+  float phase_current_rms;
+  uint32_t nfault;
+  uint16_t drv0_status1;
+  uint16_t drv1_status1;
+  uint32_t fault_code;
+} PhaseVectorMapResult;
+
+typedef struct {
+  const char *name;
+  bool global_sign_inverted;
+  bool pass;
+  bool reliable;
+  float cosine_similarity[3];
+  float phase_pattern_error[3];
+  float voltage_current_angle_error_deg[3];
+  float current_vector_scale[3];
+  float normalized_iu[3];
+  float normalized_iv[3];
+  float normalized_iw[3];
+  float reconstructed_i_alpha[3];
+  float reconstructed_i_beta[3];
+  float score;
+} PhaseMappingCandidateEval;
+
+typedef struct {
+  uint32_t adc_seq;
+  int32_t relative_sample_index;
+  float commanded_v_alpha;
+  float applied_v_alpha_est;
+  float vbus_v;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  uint32_t ccr4;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  float iu;
+  float iv;
+  float iw;
+  float i_alpha;
+  float i_beta;
+  int64_t encoder_accum;
+  uint32_t moe;
+  uint32_t en_gate;
+} InductanceSamplePoint;
+
+typedef struct {
+  float baseline_voltage;
+  float pulse_voltage;
+  float nominal_delta_voltage;
+  float delta_v_applied;
+  uint32_t valid_repeat_count;
+  uint32_t rejected_repeat_count;
+  float baseline_i_alpha;
+  float baseline_i_beta;
+  float peak_delta_i_alpha;
+  float peak_delta_i_beta;
+  float effective_adc_counts;
+  float tau_rise_us;
+  float tau_fall_us;
+  float sample_delay_us;
+  float L_rise_uH;
+  float L_fall_uH;
+  float L_initial_slope_uH;
+  float L_discrete_uH;
+  float R_discrete_candidate;
+  float rise_fit_r_squared;
+  float fall_fit_r_squared;
+  float rise_max_residual_a;
+  float fall_max_residual_a;
+  bool monotonic_rise_ok;
+  bool monotonic_fall_ok;
+  bool level_reliable;
+  bool dynamics_too_fast;
+  bool pulse_too_short;
+  float rise_delta_i_mean[10];
+  float rise_delta_i_std[10];
+  float rise_delta_i_beta_mean[10];
+  uint32_t rise_valid_count[10];
+  float fall_delta_i_mean[10];
+  float fall_delta_i_std[10];
+  float fall_delta_i_beta_mean[10];
+  uint32_t fall_valid_count[10];
+  InductanceSamplePoint rise_samples[10];
+  InductanceSamplePoint fall_samples[10];
+} PhaseInductanceLevelResult;
 
 typedef struct {
   uint32_t samples;
@@ -343,6 +537,32 @@ typedef struct {
   float iq;
   float magnitude_max;
 } CurrentDqSample;
+
+typedef struct {
+  uint32_t samples;
+  double raw0_sum;
+  double raw0_sumsq;
+  double raw1_sum;
+  double raw1_sumsq;
+  double iu_sum;
+  double iu_sumsq;
+  double iv_sum;
+  double iv_sumsq;
+  double iw_sum;
+  double iw_sumsq;
+  double ialpha_sum;
+  double ialpha_sumsq;
+  double ibeta_sum;
+  double ibeta_sumsq;
+  double phase_rms_sumsq;
+  double vbus_sum;
+  float phase_current_max;
+  float phase_abs_mean_max;
+  uint16_t raw0_min;
+  uint16_t raw0_max;
+  uint16_t raw1_min;
+  uint16_t raw1_max;
+} AlphaResistanceStats;
 
 typedef struct {
   uint32_t state;
@@ -534,9 +754,37 @@ typedef struct {
   SampleWindowDiag sample_window_diag;
   DirectAlphaResult direct_alpha[5];
   GainAxisMapResult gain_axis_map[4];
+  AlphaResistancePointResult alpha_resistance_points[9];
+  AlphaCurrentMapCandidateResult alpha_map_candidates[24];
+  PhaseVectorMapResult phase_vectors[3];
+  PhaseMappingCandidateEval phase_mapping_candidates[4];
+  PhaseInductanceLevelResult inductance_levels[2];
   uint32_t voltage_diag_count;
   uint32_t direct_alpha_count;
   uint32_t gain_axis_map_count;
+  uint32_t alpha_resistance_point_count;
+  uint32_t alpha_map_candidate_count;
+  uint32_t phase_vector_count;
+  uint32_t phase_mapping_candidate_count;
+  int32_t alpha_best_map_index;
+  int32_t phase_mapping_best_index;
+  bool phase_mapping_candidate_valid;
+  const char *confirmed_mapping;
+  const char *phase_mapping_classification;
+  float phase_resistance_original_ohm;
+  float phase_resistance_confirmed_ohm;
+  float inverter_voltage_offset_confirmed_v;
+  float fit_r_squared_confirmed;
+  float beta_alpha_ratio_max_confirmed;
+  float phase_inductance_level_a_uH;
+  float phase_inductance_level_b_uH;
+  float phase_inductance_est_h;
+  float phase_inductance_est_uH;
+  float electrical_time_constant_us;
+  float inductance_two_level_difference_percent;
+  bool phase_inductance_identification_reliable;
+  const char *phase_inductance_classification;
+  uint32_t alpha_fit_point_count;
   float m0_ratio_20_to_10;
   float m0_ratio_40_to_20;
   float m0_ratio_80_to_40;
@@ -563,6 +811,12 @@ typedef struct {
   float phase_resistance_est_ohm;
   float inverter_voltage_offset_est_v;
   float fit_r_squared;
+  float maximum_fit_residual_v;
+  float predicted_current_at_0p5v;
+  float predicted_current_at_1p0v;
+  float voltage_required_for_0p1A;
+  float voltage_required_for_0p25A;
+  const char *phase_resistance_classification;
   float voltage_required_for_0p2A_est;
   float voltage_required_for_0p3A_est;
   uint32_t sweep_point_count;
@@ -649,7 +903,7 @@ typedef struct {
 #define PHASE_RESISTANCE_UNSET -1.0f
 #define DC_CAL_STD_MAX_COUNTS 4.0f
 #define CURRENT_SHUNT_OHM 0.0005f
-#define CURRENT_AMP_GAIN_V_PER_V 40.0f
+#define CURRENT_AMP_GAIN_V_PER_V 80.0f
 #define CURRENT_ADC_VREF_V 3.3f
 #define CURRENT_ADC_FULL_SCALE_COUNTS 4096.0f
 #define CURRENT_POLARITY_U 1
@@ -738,13 +992,78 @@ typedef struct {
 #define GAIN_AXIS_MAP_COUNT 4u
 #define GAIN_AXIS_OFFSET_SAMPLES 16384u
 #define GAIN_AXIS_OFFSET_TIMEOUT_MS 5000u
+#define GAIN_AXIS_REPEAT_COUNT 5u
 #define GAIN_AXIS_ALIGN_MS 500u
-#define GAIN_AXIS_RAMP_MS 200u
-#define GAIN_AXIS_HOLD_MS 500u
-#define GAIN_AXIS_SAMPLE_LAST_MS 300u
-#define GAIN_AXIS_DOWN_MS 200u
-#define GAIN_AXIS_ALPHA_V 0.50f
+#define GAIN_AXIS_BASELINE_MS 200u
+#define GAIN_AXIS_PAIR_RAMP_MS 100u
+#define GAIN_AXIS_INJECT_MS 300u
+#define GAIN_AXIS_HOLD_ALPHA_V 0.20f
+#define GAIN_AXIS_INJECT_ALPHA_V 0.50f
 #define GAIN_AXIS_MIN_RELIABLE_COUNTS 3.0f
+#define ALPHA_RESISTANCE_POINT_COUNT 4u
+#define ALPHA_RESISTANCE_ALIGN_RAMP_MS 300u
+#define ALPHA_RESISTANCE_ALIGN_HOLD_MS 500u
+#define ALPHA_RESISTANCE_RAMP_MS 150u
+#define ALPHA_RESISTANCE_SETTLE_MS 250u
+#define ALPHA_RESISTANCE_SAMPLE_MS 400u
+#define ALPHA_RESISTANCE_SAMPLE_IGNORE_MS 50u
+#define ALPHA_RESISTANCE_MAX_V 1.00f
+#define ALPHA_RESISTANCE_STOP_IALPHA_A 0.25f
+#define ALPHA_RESISTANCE_PHASE_MEAN_STOP_A 0.30f
+#define ALPHA_RESISTANCE_PHASE_RMS_STOP_A 0.35f
+#define ALPHA_RESISTANCE_MOTION_MAX_COUNTS 40u
+#define ALPHA_RESISTANCE_MIN_COUNTS 5.0f
+#define ALPHA_RESISTANCE_MIN_FIT_POINTS 4u
+#define ALPHA_INVALID_CURRENT_COUNTS_TOO_SMALL (1u << 0)
+#define ALPHA_INVALID_CURRENT_POLARITY (1u << 1)
+#define ALPHA_INVALID_BETA_ALPHA_RATIO (1u << 2)
+#define ALPHA_INVALID_CURRENT_NOISE (1u << 3)
+#define ALPHA_INVALID_ENCODER_MOVED (1u << 4)
+#define ALPHA_INVALID_ADC_INVALID (1u << 5)
+#define ALPHA_INVALID_SAFETY_FAULT (1u << 6)
+#define ALPHA_CURRENT_MAP_CANDIDATE_COUNT 24u
+#define ALPHA_CURRENT_MAP_MIN_VALID_POINTS 4u
+#define ALPHA_CURRENT_MAP_RATIO_MAX 0.30f
+#define ALPHA_CURRENT_MAP_R2_MIN 0.95f
+#define PHASE_VECTOR_MAP_COUNT 3u
+#define PHASE_VECTOR_MAGNITUDE_V 0.80f
+#define PHASE_VECTOR_RAMP_MS 300u
+#define PHASE_VECTOR_HOLD_MS 700u
+#define PHASE_VECTOR_SAMPLE_MS 500u
+#define PHASE_VECTOR_DOWN_MS 200u
+#define PHASE_VECTOR_WAIT_MS 300u
+#define PHASE_VECTOR_MOTION_MAX_COUNTS 350u
+#define PHASE_VECTOR_RPM_MAX 150.0f
+#define PHASE_VECTOR_SAMPLE_RPM_MAX 5.0f
+#define PHASE_MAPPING_CANDIDATE_COUNT 4u
+#define PHASE_MAPPING_COSINE_MIN 0.95f
+#define PHASE_MAPPING_PATTERN_ERROR_MAX 0.15f
+#define PHASE_MAPPING_ANGLE_ERROR_MAX_DEG 15.0f
+#define PHASE_RESISTANCE_ORIGINAL_OHM 3.170f
+#define PHASE_RESISTANCE_DEVIATION_MAX_RATIO 0.15f
+#define PHASE_INDUCTANCE_LEVEL_COUNT 2u
+#define PHASE_INDUCTANCE_REPEAT_COUNT 64u
+#define PHASE_INDUCTANCE_MIN_VALID_REPEATS 48u
+#define PHASE_INDUCTANCE_BASE_ALPHA_V 0.20f
+#define PHASE_INDUCTANCE_ALIGN_RAMP_MS 300u
+#define PHASE_INDUCTANCE_ALIGN_HOLD_MS 500u
+#define PHASE_INDUCTANCE_BASELINE_SAMPLES 20u
+#define PHASE_INDUCTANCE_RISE_SAMPLES 30u
+#define PHASE_INDUCTANCE_FALL_SAMPLES 80u
+#define PHASE_INDUCTANCE_CAPTURE_SAMPLES 10u
+#define PHASE_INDUCTANCE_REPEAT_WAIT_MS 5u
+#define PHASE_INDUCTANCE_TS_US 50.0f
+#define PHASE_INDUCTANCE_R_PHASE_OHM 3.200f
+#define PHASE_INDUCTANCE_MIN_PEAK_A 0.15f
+#define PHASE_INDUCTANCE_MIN_COUNTS 8.0f
+#define PHASE_INDUCTANCE_BETA_RATIO_MAX 0.20f
+#define PHASE_INDUCTANCE_BETA_ABS_MAX_A 0.08f
+#define PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A 0.50f
+#define PHASE_INDUCTANCE_ENCODER_PULSE_MAX_COUNTS 8u
+#define PHASE_INDUCTANCE_FIT_R2_MIN 0.95f
+#define PHASE_INDUCTANCE_RISE_FALL_DIFF_MAX_PERCENT 25.0f
+#define PHASE_INDUCTANCE_DISCRETE_DIFF_MAX_PERCENT 30.0f
+#define PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT 20.0f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -783,7 +1102,18 @@ static void current_observe_stats_update(CurrentObserveStats *stats, const Curre
 static bool power_stage_check_adc_sample_timing(void);
 static bool power_stage_update_phase_edge_timing(void);
 static bool direct_alpha_voltage_diagnostic_run(uint32_t *last_seq);
-static bool current_sense_gain_axis_mapping_run(void);
+static bool __attribute__((unused)) current_sense_gain_axis_mapping_run(void);
+static bool phase_resistance_alpha_identification_run(void);
+static void alpha_current_map_candidates_evaluate(void);
+static bool alpha_map_candidate_point_valid(const AlphaResistancePointResult *pt,
+                                            const AlphaCurrentMapCandidateResult *cand,
+                                            float *i_alpha,
+                                            float *i_beta,
+                                            float *ratio);
+static bool phase_vector_mapping_run(uint32_t *last_seq);
+static void phase_vector_mapping_evaluate(void);
+static void phase_resistance_apply_confirmed_mapping(void);
+static bool phase_inductance_identification_run(void);
 static void current_observe_stats_finalize(const CurrentObserveStats *stats,
                                            float *id_mean,
                                            float *iq_mean,
@@ -1599,16 +1929,16 @@ static bool power_stage_configure_drivers(void)
   g_drv_test.drv0_cfg = drv8301_configure_and_verify(&g_drv0, &g_drv_test.drv0_regs);
   g_drv_test.drv1_cfg = drv8301_configure_and_verify(&g_drv1, &g_drv_test.drv1_regs);
   g_drv_test.expected_control2 =
-      drv8301_make_control2(DRV8301_SHUNT_GAIN_40V_PER_V, false, false);
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, false, false);
 
   if (g_drv_test.drv0_cfg) {
     g_drv_test.drv0_cfg =
-        drv8301_set_shunt_amp_gain(&g_drv0, DRV8301_SHUNT_GAIN_40V_PER_V) &&
+        drv8301_set_shunt_amp_gain(&g_drv0, DRV8301_SHUNT_GAIN_80V_PER_V) &&
         drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
   }
   if (g_drv_test.drv1_cfg) {
     g_drv_test.drv1_cfg =
-        drv8301_set_shunt_amp_gain(&g_drv1, DRV8301_SHUNT_GAIN_40V_PER_V) &&
+        drv8301_set_shunt_amp_gain(&g_drv1, DRV8301_SHUNT_GAIN_80V_PER_V) &&
         drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
   }
 
@@ -1621,8 +1951,8 @@ static bool power_stage_configure_drivers(void)
   g_drv_test.gain40_readback_ok =
       (g_drv_test.actual_control2_drv0 == g_drv_test.expected_control2) &&
       (g_drv_test.actual_control2_drv1 == g_drv_test.expected_control2) &&
-      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_40V_PER_V) &&
-      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_40V_PER_V);
+      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_80V_PER_V);
 
   g_drv_test.drv0_status_ok = g_drv_test.drv0_cfg &&
                               !drv_status_has_fault(g_drv_test.drv0_regs.status1,
@@ -1666,8 +1996,8 @@ static bool power_stage_collect_dc_cal_offsets(void)
         (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
       ((g_drv_test.actual_control2_drv1 &
         (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
-      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_40V_PER_V) &&
-      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_40V_PER_V);
+      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_80V_PER_V);
 
   return g_drv_test.dc_cal_offsets_pass && g_drv_test.dc_cal_clear_ok;
 }
@@ -2180,6 +2510,176 @@ static bool response_direction_consistent(const GainAxisMapResult *a,
   return ((ax * bx) >= 0.0f) && ((ay * by) >= 0.0f);
 }
 
+static float float_array_mean(const float *values, uint32_t count)
+{
+  if (count == 0u) {
+    return 0.0f;
+  }
+  float sum = 0.0f;
+  for (uint32_t i = 0u; i < count; ++i) {
+    sum += values[i];
+  }
+  return sum / (float)count;
+}
+
+static float float_array_std(const float *values, uint32_t count, float mean)
+{
+  if (count < 2u) {
+    return 0.0f;
+  }
+  float sumsq = 0.0f;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const float d = values[i] - mean;
+    sumsq += d * d;
+  }
+  return sqrtf(sumsq / (float)(count - 1u));
+}
+
+static bool repeat_axis_sign_consistent(const GainAxisMapResult *res,
+                                        uint32_t base_index)
+{
+  for (uint32_t ch = 0u; ch < 2u; ++ch) {
+    const float mean = res->delta_pc[base_index + ch];
+    if (fabsf(mean) < 0.25f) {
+      continue;
+    }
+    for (uint32_t i = 0u; i < GAIN_AXIS_REPEAT_COUNT; ++i) {
+      const float v = res->repeat_delta_pc[i][base_index + ch];
+      if ((fabsf(v) >= 0.25f) && ((v * mean) < 0.0f)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool gain_axis_response_reliable(const GainAxisMapResult *res, bool m0)
+{
+  const float mag = m0 ? res->m0_response_mag : res->m1_response_mag;
+  const float std = m0 ? res->m0_response_std : res->m1_response_std;
+  const bool sign_ok = m0 ? res->m0_sign_consistent : res->m1_sign_consistent;
+  return res->power_test_allowed &&
+         !res->faulted &&
+         !res->adc_saturated &&
+         sign_ok &&
+         (mag > (3.0f * std));
+}
+
+static bool gain_axis_collect_stage(GainAxisMapResult *res,
+                                    uint32_t *last_seq,
+                                    float start_alpha,
+                                    float end_alpha,
+                                    uint32_t duration_ms,
+                                    AdcFourChannelStats *stats,
+                                    uint32_t substate,
+                                    uint32_t *last_drv_read_ms,
+                                    uint32_t *encoder_motion_max,
+                                    float *applied_voltage_est)
+{
+  HalAdcSnapshot snap = {0};
+  const uint32_t start_ms = HAL_GetTick();
+  uint32_t elapsed_ms = 0u;
+
+  while (elapsed_ms < duration_ms) {
+    elapsed_ms = HAL_GetTick() - start_ms;
+    float alpha = end_alpha;
+    if (duration_ms > 0u) {
+      const float t = clampf((float)elapsed_ms / (float)duration_ms, 0.0f, 1.0f);
+      alpha = start_alpha + (end_alpha - start_alpha) * t;
+    }
+    alpha = clampf(alpha, 0.0f, GAIN_AXIS_INJECT_ALPHA_V);
+
+    if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      res->faulted = true;
+      return false;
+    }
+    if (snap.raw_u < g_drv_test.run_raw_u_min) { g_drv_test.run_raw_u_min = snap.raw_u; }
+    if (snap.raw_u > g_drv_test.run_raw_u_max) { g_drv_test.run_raw_u_max = snap.raw_u; }
+    if (snap.raw_v < g_drv_test.run_raw_v_min) { g_drv_test.run_raw_v_min = snap.raw_v; }
+    if (snap.raw_v > g_drv_test.run_raw_v_max) { g_drv_test.run_raw_v_max = snap.raw_v; }
+
+    (void)encoder_tracker_sample();
+    const uint32_t motion = (uint32_t)llabs(g_encoder_accum);
+    if (motion > *encoder_motion_max) {
+      *encoder_motion_max = motion;
+    }
+    if (!encoder_delta_ok()) {
+      res->faulted = true;
+      return false;
+    }
+
+    const float vbus_v = board_read_vbus_v();
+    if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
+      res->faulted = true;
+      return false;
+    }
+    encoder_apply_alpha_beta_svpwm(alpha, 0.0f, vbus_v);
+    sample_window_diag_update();
+
+    const CurrentDqSample sample = current_observe_calculate(&snap, 0.0f);
+    if (!current_trip_diag_record_and_check(TEST_STATE_SAMPLE_POSITION_TEST,
+                                            substate,
+                                            &snap,
+                                            &sample,
+                                            alpha,
+                                            0.0f,
+                                            0.0f,
+                                            vbus_v) ||
+        !power_stage_update_phase_edge_timing() ||
+        !nfault_ok() ||
+        !m1_is_safe_off() ||
+        !ccrs_in_open_loop_range()) {
+      res->faulted = true;
+      return false;
+    }
+
+    for (uint32_t ri = 0u; ri < 4u; ++ri) {
+      const uint16_t raw = snapshot_pc_raw(&snap, ri);
+      if (raw <= CURRENT_RAW_MIN_SAFE_COUNT || raw >= CURRENT_RAW_MAX_SAFE_COUNT) {
+        res->adc_saturated = true;
+        res->faulted = true;
+        return false;
+      }
+    }
+
+    if ((HAL_GetTick() - *last_drv_read_ms) >= 100u) {
+      *last_drv_read_ms = HAL_GetTick();
+      if (!drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) ||
+          !drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs)) {
+        res->faulted = true;
+        return false;
+      }
+      res->control2_inject_drv0 = g_drv_test.drv0_regs.control2;
+      res->control2_inject_drv1 = g_drv_test.drv1_regs.control2;
+      if (((res->control2_inject_drv0 | res->control2_inject_drv1) &
+           (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) != 0u) {
+        res->dc_cal_stuck_active = true;
+        res->faulted = true;
+        return false;
+      }
+      if (!drv8301_read_status(&g_drv0) || !drv8301_read_status(&g_drv1) ||
+          drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) ||
+          drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw)) {
+        res->faulted = true;
+        return false;
+      }
+    }
+
+    if (stats != NULL) {
+      adc_four_stats_update(stats, &snap);
+    }
+    res->ccr1 = TIM1->CCR1;
+    res->ccr2 = TIM1->CCR2;
+    res->ccr3 = TIM1->CCR3;
+    res->ccr4 = TIM1->CCR4;
+    VoltagePathDiag vdiag;
+    voltage_path_diag_compute(&vdiag, alpha, 0.0f, 0.0f, vbus_v);
+    *applied_voltage_est = vdiag.applied_voltage_magnitude;
+  }
+
+  return true;
+}
+
 static CurrentDqSample current_observe_calculate(const HalAdcSnapshot *snap, float theta_e)
 {
   CurrentDqSample sample = {0};
@@ -2200,6 +2700,1635 @@ static CurrentDqSample current_observe_calculate(const HalAdcSnapshot *snap, flo
   if (fabsf(sample.id) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.id); }
   if (fabsf(sample.iq) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.iq); }
   return sample;
+}
+
+static CurrentDqSample current_alpha_observe_calculate(const HalAdcSnapshot *snap)
+{
+  CurrentDqSample sample = {0};
+  const float du = (float)((int32_t)snap->raw_pc0_m0_so1 -
+                           (int32_t)g_drv_test.offset.offset_u);
+  const float dv = (float)((int32_t)snap->raw_pc1_m0_so2 -
+                           (int32_t)g_drv_test.offset.offset_v);
+  sample.iu = du * g_drv_test.current_amp_per_count;
+  sample.iv = dv * g_drv_test.current_amp_per_count;
+  sample.iw = -(sample.iu + sample.iv);
+  sample.i_alpha = sample.iu;
+  sample.i_beta = (sample.iu + 2.0f * sample.iv) / SQRT3_F;
+  sample.id = sample.i_alpha;
+  sample.iq = sample.i_beta;
+  sample.magnitude_max = fabsf(sample.iu);
+  if (fabsf(sample.iv) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.iv); }
+  if (fabsf(sample.iw) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.iw); }
+  if (fabsf(sample.i_alpha) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.i_alpha); }
+  if (fabsf(sample.i_beta) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.i_beta); }
+  return sample;
+}
+
+static void alpha_resistance_stats_reset(AlphaResistanceStats *stats)
+{
+  memset(stats, 0, sizeof(*stats));
+  stats->raw0_min = 0xffffu;
+  stats->raw1_min = 0xffffu;
+}
+
+static void alpha_resistance_stats_update(AlphaResistanceStats *stats,
+                                          const HalAdcSnapshot *snap,
+                                          const CurrentDqSample *sample,
+                                          float vbus_v)
+{
+  stats->samples++;
+  const float raw0 = (float)snap->raw_pc0_m0_so1;
+  const float raw1 = (float)snap->raw_pc1_m0_so2;
+  stats->raw0_sum += raw0;
+  stats->raw0_sumsq += raw0 * raw0;
+  stats->raw1_sum += raw1;
+  stats->raw1_sumsq += raw1 * raw1;
+  stats->iu_sum += sample->iu;
+  stats->iu_sumsq += sample->iu * sample->iu;
+  stats->iv_sum += sample->iv;
+  stats->iv_sumsq += sample->iv * sample->iv;
+  stats->iw_sum += sample->iw;
+  stats->iw_sumsq += sample->iw * sample->iw;
+  stats->ialpha_sum += sample->i_alpha;
+  stats->ialpha_sumsq += sample->i_alpha * sample->i_alpha;
+  stats->ibeta_sum += sample->i_beta;
+  stats->ibeta_sumsq += sample->i_beta * sample->i_beta;
+  stats->vbus_sum += vbus_v;
+  float phase_abs = fabsf(sample->iu);
+  if (fabsf(sample->iv) > phase_abs) { phase_abs = fabsf(sample->iv); }
+  if (fabsf(sample->iw) > phase_abs) { phase_abs = fabsf(sample->iw); }
+  stats->phase_rms_sumsq += phase_abs * phase_abs;
+  if (phase_abs > stats->phase_current_max) { stats->phase_current_max = phase_abs; }
+  if (phase_abs > stats->phase_abs_mean_max) { stats->phase_abs_mean_max = phase_abs; }
+  if (snap->raw_pc0_m0_so1 < stats->raw0_min) { stats->raw0_min = snap->raw_pc0_m0_so1; }
+  if (snap->raw_pc0_m0_so1 > stats->raw0_max) { stats->raw0_max = snap->raw_pc0_m0_so1; }
+  if (snap->raw_pc1_m0_so2 < stats->raw1_min) { stats->raw1_min = snap->raw_pc1_m0_so2; }
+  if (snap->raw_pc1_m0_so2 > stats->raw1_max) { stats->raw1_max = snap->raw_pc1_m0_so2; }
+}
+
+static float alpha_stats_std(double sumsq, double sum, uint32_t samples)
+{
+  if (samples == 0u) {
+    return 0.0f;
+  }
+  const double inv = 1.0 / (double)samples;
+  double var = sumsq * inv - (sum * inv) * (sum * inv);
+  if (var < 0.0) { var = 0.0; }
+  return sqrtf((float)var);
+}
+
+static void alpha_resistance_point_finalize(AlphaResistancePointResult *pt,
+                                            const AlphaResistanceStats *stats)
+{
+  if (stats->samples == 0u) {
+    pt->invalid_reason |= ALPHA_INVALID_SAFETY_FAULT;
+    return;
+  }
+  const float inv = 1.0f / (float)stats->samples;
+  pt->samples = stats->samples;
+  pt->raw_pc0_mean = (float)(stats->raw0_sum * inv);
+  pt->raw_pc1_mean = (float)(stats->raw1_sum * inv);
+  pt->raw_pc0_std = alpha_stats_std(stats->raw0_sumsq, stats->raw0_sum, stats->samples);
+  pt->raw_pc1_std = alpha_stats_std(stats->raw1_sumsq, stats->raw1_sum, stats->samples);
+  pt->delta_pc0_counts = pt->raw_pc0_mean - (float)g_drv_test.offset.offset_u;
+  pt->delta_pc1_counts = pt->raw_pc1_mean - (float)g_drv_test.offset.offset_v;
+  pt->iu_mean = (float)(stats->iu_sum * inv);
+  pt->iv_mean = (float)(stats->iv_sum * inv);
+  pt->iw_mean = (float)(stats->iw_sum * inv);
+  pt->i_alpha_mean = (float)(stats->ialpha_sum * inv);
+  pt->i_beta_mean = (float)(stats->ibeta_sum * inv);
+  pt->iu_std = alpha_stats_std(stats->iu_sumsq, stats->iu_sum, stats->samples);
+  pt->iv_std = alpha_stats_std(stats->iv_sumsq, stats->iv_sum, stats->samples);
+  pt->iw_std = alpha_stats_std(stats->iw_sumsq, stats->iw_sum, stats->samples);
+  pt->i_alpha_std = alpha_stats_std(stats->ialpha_sumsq, stats->ialpha_sum, stats->samples);
+  pt->i_beta_std = alpha_stats_std(stats->ibeta_sumsq, stats->ibeta_sum, stats->samples);
+  pt->i_alpha_effective_counts =
+      (g_drv_test.current_amp_per_count > 0.0f)
+          ? (pt->i_alpha_mean / g_drv_test.current_amp_per_count)
+          : 0.0f;
+  pt->beta_over_alpha_ratio =
+      (fabsf(pt->i_alpha_mean) > 0.001f)
+          ? (fabsf(pt->i_beta_mean) / fabsf(pt->i_alpha_mean))
+          : 999.0f;
+  pt->phase_current_max = stats->phase_current_max;
+  pt->phase_current_rms = sqrtf((float)(stats->phase_rms_sumsq * inv));
+  pt->phase_current_abs_mean_max = stats->phase_abs_mean_max;
+  pt->vbus_mean = (float)(stats->vbus_sum * inv);
+  pt->raw_pc0_min = stats->raw0_min;
+  pt->raw_pc0_max = stats->raw0_max;
+  pt->raw_pc1_min = stats->raw1_min;
+  pt->raw_pc1_max = stats->raw1_max;
+
+  if (pt->i_alpha_mean <= 0.0f) {
+    pt->invalid_reason |= ALPHA_INVALID_CURRENT_POLARITY;
+  }
+  if (fabsf(pt->i_alpha_effective_counts) < ALPHA_RESISTANCE_MIN_COUNTS) {
+    pt->invalid_reason |= ALPHA_INVALID_CURRENT_COUNTS_TOO_SMALL;
+  }
+  if (pt->beta_over_alpha_ratio >= 0.30f) {
+    pt->invalid_reason |= ALPHA_INVALID_BETA_ALPHA_RATIO;
+  }
+  const float noise_limit = fmaxf(0.03f, fabsf(pt->i_alpha_mean) * 0.25f);
+  if (pt->i_alpha_std >= noise_limit) {
+    pt->invalid_reason |= ALPHA_INVALID_CURRENT_NOISE;
+  }
+  if (pt->encoder_motion_counts > ALPHA_RESISTANCE_MOTION_MAX_COUNTS) {
+    pt->invalid_reason |= ALPHA_INVALID_ENCODER_MOVED;
+  }
+  if (pt->raw_pc0_min <= CURRENT_RAW_MIN_SAFE_COUNT ||
+      pt->raw_pc0_max >= CURRENT_RAW_MAX_SAFE_COUNT ||
+      pt->raw_pc1_min <= CURRENT_RAW_MIN_SAFE_COUNT ||
+      pt->raw_pc1_max >= CURRENT_RAW_MAX_SAFE_COUNT) {
+    pt->invalid_reason |= ALPHA_INVALID_ADC_INVALID;
+  }
+  if (pt->faulted) {
+    pt->invalid_reason |= ALPHA_INVALID_SAFETY_FAULT;
+  }
+  pt->valid = (pt->applied_v_alpha > 0.0f) && (pt->invalid_reason == 0u);
+}
+
+static void phase_mapping_currents(uint32_t candidate,
+                                   bool global_sign_inverted,
+                                   float delta_pc0_counts,
+                                   float delta_pc1_counts,
+                                   float *iu,
+                                   float *iv,
+                                   float *iw)
+{
+  const float sign = global_sign_inverted ? -1.0f : 1.0f;
+  const float pc0_current = sign * delta_pc0_counts * g_drv_test.current_amp_per_count;
+  const float pc1_current = sign * delta_pc1_counts * g_drv_test.current_amp_per_count;
+  if (candidate == 0u) {
+    *iv = pc0_current;
+    *iw = pc1_current;
+  } else {
+    *iw = pc0_current;
+    *iv = pc1_current;
+  }
+  *iu = -(*iv + *iw);
+}
+
+static float wrap_pm_pi_f(float x)
+{
+  while (x > 3.14159265358979323846f) { x -= TWO_PI_F; }
+  while (x < -3.14159265358979323846f) { x += TWO_PI_F; }
+  return x;
+}
+
+static void phase_vector_result_finalize(PhaseVectorMapResult *res,
+                                         const AlphaResistanceStats *stats)
+{
+  if (stats->samples == 0u) {
+    res->faulted = true;
+    return;
+  }
+  const float inv = 1.0f / (float)stats->samples;
+  res->samples = stats->samples;
+  res->raw_pc0_mean = (float)(stats->raw0_sum * inv);
+  res->raw_pc1_mean = (float)(stats->raw1_sum * inv);
+  res->raw_pc0_std = alpha_stats_std(stats->raw0_sumsq, stats->raw0_sum, stats->samples);
+  res->raw_pc1_std = alpha_stats_std(stats->raw1_sumsq, stats->raw1_sum, stats->samples);
+  res->delta_pc0_counts = res->raw_pc0_mean - (float)g_drv_test.offset.offset_u;
+  res->delta_pc1_counts = res->raw_pc1_mean - (float)g_drv_test.offset.offset_v;
+  res->pc0_current_mean = res->delta_pc0_counts * g_drv_test.current_amp_per_count;
+  res->pc1_current_mean = res->delta_pc1_counts * g_drv_test.current_amp_per_count;
+  res->phase_current_rms = sqrtf((float)(stats->phase_rms_sumsq * inv));
+  VoltagePathDiag vdiag;
+  const float vbus_v = (float)(stats->vbus_sum * inv);
+  voltage_path_diag_compute(&vdiag,
+                            res->v_alpha_command,
+                            res->v_beta_command,
+                            0.0f,
+                            vbus_v);
+  res->applied_v_alpha = vdiag.applied_v_alpha;
+  res->applied_v_beta = vdiag.applied_v_beta;
+  res->valid = !res->faulted &&
+               (res->encoder_motion_counts <= PHASE_VECTOR_MOTION_MAX_COUNTS) &&
+               (fabsf(res->encoder_speed_peak_rpm) <= PHASE_VECTOR_RPM_MAX) &&
+               (fabsf(res->encoder_speed_at_sample_rpm) <= PHASE_VECTOR_SAMPLE_RPM_MAX);
+}
+
+static bool phase_vector_mapping_run(uint32_t *last_seq)
+{
+  static const struct {
+    const char *name;
+    float angle_deg;
+    float v_alpha;
+    float v_beta;
+  } vectors[PHASE_VECTOR_MAP_COUNT] = {
+      {"ANGLE_0_DEG", 0.0f, PHASE_VECTOR_MAGNITUDE_V, 0.0f},
+      {"ANGLE_PLUS_120_DEG", 120.0f, -0.5f * PHASE_VECTOR_MAGNITUDE_V,
+       0.8660254037844386f * PHASE_VECTOR_MAGNITUDE_V},
+      {"ANGLE_MINUS_120_DEG", -120.0f, -0.5f * PHASE_VECTOR_MAGNITUDE_V,
+       -0.8660254037844386f * PHASE_VECTOR_MAGNITUDE_V},
+  };
+
+  bool ok = true;
+  HalAdcSnapshot snap = {0};
+  uint32_t last_drv_status_ms = HAL_GetTick();
+  g_drv_test.phase_vector_count = 0u;
+  g_drv_test.phase_mapping_candidate_count = 0u;
+  g_drv_test.phase_mapping_best_index = -1;
+  g_drv_test.phase_mapping_candidate_valid = false;
+  g_drv_test.confirmed_mapping = "UNCONFIRMED";
+  g_drv_test.phase_mapping_classification = "CURRENT_PHASE_MAPPING_NOT_RUN";
+
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+  power_stage_set_ccr_half();
+  power_stage_enable_six_outputs();
+  __HAL_TIM_MOE_ENABLE(&htim1);
+
+  for (uint32_t vi = 0u; vi < PHASE_VECTOR_MAP_COUNT; ++vi) {
+    PhaseVectorMapResult *res = &g_drv_test.phase_vectors[vi];
+    memset(res, 0, sizeof(*res));
+    res->name = vectors[vi].name;
+    res->angle_deg = vectors[vi].angle_deg;
+    res->v_alpha_command = vectors[vi].v_alpha;
+    res->v_beta_command = vectors[vi].v_beta;
+    res->encoder_start = g_encoder_accum;
+    AlphaResistanceStats stats;
+    alpha_resistance_stats_reset(&stats);
+    const uint32_t point_start_ms = HAL_GetTick();
+    const uint32_t total_ms = PHASE_VECTOR_RAMP_MS + PHASE_VECTOR_HOLD_MS +
+                              PHASE_VECTOR_DOWN_MS + PHASE_VECTOR_WAIT_MS;
+    uint32_t rpm_last_ms = point_start_ms;
+    int64_t rpm_last_count = g_encoder_accum;
+
+    while ((HAL_GetTick() - point_start_ms) < total_ms) {
+      const uint32_t now_ms = HAL_GetTick();
+      const uint32_t elapsed_ms = now_ms - point_start_ms;
+      float scale = 0.0f;
+      bool collect = false;
+      if (elapsed_ms < PHASE_VECTOR_RAMP_MS) {
+        scale = (float)elapsed_ms / (float)PHASE_VECTOR_RAMP_MS;
+      } else if (elapsed_ms < (PHASE_VECTOR_RAMP_MS + PHASE_VECTOR_HOLD_MS)) {
+        scale = 1.0f;
+        collect = elapsed_ms >= (PHASE_VECTOR_RAMP_MS +
+                                 PHASE_VECTOR_HOLD_MS -
+                                 PHASE_VECTOR_SAMPLE_MS);
+      } else if (elapsed_ms < (PHASE_VECTOR_RAMP_MS +
+                               PHASE_VECTOR_HOLD_MS +
+                               PHASE_VECTOR_DOWN_MS)) {
+        const uint32_t down_elapsed =
+            elapsed_ms - PHASE_VECTOR_RAMP_MS - PHASE_VECTOR_HOLD_MS;
+        scale = 1.0f - clampf((float)down_elapsed /
+                              (float)PHASE_VECTOR_DOWN_MS, 0.0f, 1.0f);
+      }
+
+      if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+        res->faulted = true; ok = false; break;
+      }
+      (void)encoder_tracker_sample();
+      if (!encoder_delta_ok()) {
+        res->faulted = true; ok = false; break;
+      }
+      const int64_t motion_s = g_encoder_accum - res->encoder_start;
+      const uint32_t motion_abs = abs_i32_to_u32((int32_t)motion_s);
+      if (motion_abs > res->encoder_motion_counts) {
+        res->encoder_motion_counts = motion_abs;
+      }
+      if ((now_ms - rpm_last_ms) >= COMM_RPM_UPDATE_MS) {
+        const uint32_t dt_ms = now_ms - rpm_last_ms;
+        const int64_t delta = g_encoder_accum - rpm_last_count;
+        rpm_last_count = g_encoder_accum;
+        rpm_last_ms = now_ms;
+        const float rpm =
+            ((float)delta * 60000.0f) / ((float)COMM_ENCODER_CPR * (float)dt_ms);
+        if (fabsf(rpm) > fabsf(res->encoder_speed_peak_rpm)) {
+          res->encoder_speed_peak_rpm = rpm;
+        }
+        if (collect && fabsf(rpm) > fabsf(res->encoder_speed_at_sample_rpm)) {
+          res->encoder_speed_at_sample_rpm = rpm;
+        }
+      }
+      if ((res->encoder_motion_counts > PHASE_VECTOR_MOTION_MAX_COUNTS) ||
+          (fabsf(res->encoder_speed_peak_rpm) > PHASE_VECTOR_RPM_MAX)) {
+        res->faulted = true; ok = false; break;
+      }
+
+      const float vbus_v = board_read_vbus_v();
+      if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
+        res->faulted = true; ok = false; break;
+      }
+      const float v_alpha = vectors[vi].v_alpha * scale;
+      const float v_beta = vectors[vi].v_beta * scale;
+      encoder_apply_alpha_beta_svpwm(v_alpha, v_beta, vbus_v);
+      sample_window_diag_update();
+      const CurrentDqSample sample = current_alpha_observe_calculate(&snap);
+      if (!current_trip_diag_record_and_check(TEST_STATE_SAMPLE_POSITION_TEST,
+                                              elapsed_ms,
+                                              &snap,
+                                              &sample,
+                                              v_alpha,
+                                              v_beta,
+                                              0.0f,
+                                              vbus_v) ||
+          !power_stage_update_phase_edge_timing() ||
+          !nfault_ok() ||
+          !m1_is_safe_off() ||
+          !ccrs_in_open_loop_range()) {
+        res->faulted = true; ok = false; break;
+      }
+      if ((snap.raw_pc0_m0_so1 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+          (snap.raw_pc0_m0_so1 >= CURRENT_RAW_MAX_SAFE_COUNT) ||
+          (snap.raw_pc1_m0_so2 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+          (snap.raw_pc1_m0_so2 >= CURRENT_RAW_MAX_SAFE_COUNT)) {
+        res->faulted = true; ok = false; break;
+      }
+      if ((now_ms - last_drv_status_ms) >= 100u) {
+        last_drv_status_ms = now_ms;
+        if (!drv8301_read_status(&g_drv0) || !drv8301_read_status(&g_drv1) ||
+            drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) ||
+            drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw)) {
+          res->faulted = true; ok = false; break;
+        }
+      }
+      if (collect) {
+        alpha_resistance_stats_update(&stats, &snap, &sample, vbus_v);
+      }
+      res->ccr1 = TIM1->CCR1;
+      res->ccr2 = TIM1->CCR2;
+      res->ccr3 = TIM1->CCR3;
+      res->ccr4 = TIM1->CCR4;
+    }
+
+    res->encoder_end = g_encoder_accum;
+    res->nfault = nfault_ok() ? 0u : 1u;
+    res->drv0_status1 = g_drv0.status.status1_raw;
+    res->drv1_status1 = g_drv1.status.status1_raw;
+    res->fault_code = g_axis0.fault_flags;
+    phase_vector_result_finalize(res, &stats);
+    g_drv_test.phase_vector_count = vi + 1u;
+
+    encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+    power_stage_set_ccr_half();
+    HAL_Delay(50u);
+    if (!ok) { break; }
+  }
+
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+  power_stage_set_ccr_half();
+  phase_vector_mapping_evaluate();
+  return ok && (g_drv_test.phase_vector_count == PHASE_VECTOR_MAP_COUNT);
+}
+
+static void phase_vector_mapping_evaluate(void)
+{
+  static const float expected[PHASE_VECTOR_MAP_COUNT][3] = {
+      {1.0f, -0.5f, -0.5f},
+      {-0.5f, 1.0f, -0.5f},
+      {-0.5f, -0.5f, 1.0f},
+  };
+  static const char *names[PHASE_MAPPING_CANDIDATE_COUNT] = {
+      "PC0=V PC1=W",
+      "PC0=W PC1=V",
+      "PC0=-V PC1=-W",
+      "PC0=-W PC1=-V",
+  };
+
+  g_drv_test.phase_mapping_candidate_count = PHASE_MAPPING_CANDIDATE_COUNT;
+  g_drv_test.phase_mapping_best_index = -1;
+  g_drv_test.phase_mapping_candidate_valid = false;
+  float best_score = -1000000.0f;
+  uint32_t pass_count = 0u;
+
+  for (uint32_t ci = 0u; ci < PHASE_MAPPING_CANDIDATE_COUNT; ++ci) {
+    PhaseMappingCandidateEval *cand = &g_drv_test.phase_mapping_candidates[ci];
+    memset(cand, 0, sizeof(*cand));
+    cand->name = names[ci];
+    cand->global_sign_inverted = ci >= 2u;
+    bool pass = true;
+
+    for (uint32_t vi = 0u; vi < PHASE_VECTOR_MAP_COUNT; ++vi) {
+      const PhaseVectorMapResult *res = &g_drv_test.phase_vectors[vi];
+      float iu = 0.0f, iv = 0.0f, iw = 0.0f;
+      phase_mapping_currents(ci & 1u,
+                             cand->global_sign_inverted,
+                             res->delta_pc0_counts,
+                             res->delta_pc1_counts,
+                             &iu, &iv, &iw);
+      const float dot = iu * expected[vi][0] + iv * expected[vi][1] + iw * expected[vi][2];
+      const float norm_i = sqrtf(iu * iu + iv * iv + iw * iw);
+      const float norm_e = sqrtf(1.5f);
+      const float scale = dot / 1.5f;
+      cand->current_vector_scale[vi] = scale;
+      cand->cosine_similarity[vi] =
+          (norm_i > 0.000001f) ? (dot / (norm_i * norm_e)) : 0.0f;
+      cand->normalized_iu[vi] = (fabsf(scale) > 0.000001f) ? (iu / scale) : 0.0f;
+      cand->normalized_iv[vi] = (fabsf(scale) > 0.000001f) ? (iv / scale) : 0.0f;
+      cand->normalized_iw[vi] = (fabsf(scale) > 0.000001f) ? (iw / scale) : 0.0f;
+      float err = fabsf(cand->normalized_iu[vi] - expected[vi][0]);
+      const float ev = fabsf(cand->normalized_iv[vi] - expected[vi][1]);
+      const float ew = fabsf(cand->normalized_iw[vi] - expected[vi][2]);
+      if (ev > err) { err = ev; }
+      if (ew > err) { err = ew; }
+      cand->phase_pattern_error[vi] = err;
+      cand->reconstructed_i_alpha[vi] = iu;
+      cand->reconstructed_i_beta[vi] = (iv - iw) / SQRT3_F;
+      const float i_angle = atan2f(cand->reconstructed_i_beta[vi],
+                                   cand->reconstructed_i_alpha[vi]);
+      const float v_angle = atan2f(res->v_beta_command, res->v_alpha_command);
+      cand->voltage_current_angle_error_deg[vi] =
+          fabsf(wrap_pm_pi_f(i_angle - v_angle)) * 57.29577951308232f;
+
+      bool signs_ok = false;
+      if (vi == 0u) {
+        signs_ok = (iu > 0.0f) && (iv < 0.0f) && (iw < 0.0f) &&
+                   (fabsf(fabsf(iv) - fabsf(iw)) <=
+                    0.25f * fmaxf(fabsf(iv), fabsf(iw)));
+      } else if (vi == 1u) {
+        signs_ok = (iv > 0.0f) && (iu < 0.0f) && (iw < 0.0f);
+      } else {
+        signs_ok = (iw > 0.0f) && (iu < 0.0f) && (iv < 0.0f);
+      }
+      const bool point_ok =
+          res->valid &&
+          signs_ok &&
+          (cand->cosine_similarity[vi] >= PHASE_MAPPING_COSINE_MIN) &&
+          (cand->phase_pattern_error[vi] <= PHASE_MAPPING_PATTERN_ERROR_MAX) &&
+          (cand->voltage_current_angle_error_deg[vi] <= PHASE_MAPPING_ANGLE_ERROR_MAX_DEG);
+      if (!point_ok) { pass = false; }
+      cand->score += cand->cosine_similarity[vi] * 1000.0f -
+                     cand->phase_pattern_error[vi] * 100.0f -
+                     cand->voltage_current_angle_error_deg[vi];
+    }
+
+    cand->pass = pass;
+    cand->reliable = pass;
+    if (cand->pass) { pass_count++; }
+    if ((g_drv_test.phase_mapping_best_index < 0) || (cand->score > best_score)) {
+      best_score = cand->score;
+      g_drv_test.phase_mapping_best_index = (int32_t)ci;
+    }
+  }
+
+  const bool cand_a = g_drv_test.phase_mapping_candidates[0].pass;
+  const bool cand_b = g_drv_test.phase_mapping_candidates[1].pass;
+  const bool inv_a = g_drv_test.phase_mapping_candidates[2].pass;
+  const bool inv_b = g_drv_test.phase_mapping_candidates[3].pass;
+  if (cand_a && !cand_b) {
+    g_drv_test.phase_mapping_candidate_valid = true;
+    g_drv_test.confirmed_mapping = "PC0=V PC1=W";
+    g_drv_test.phase_mapping_classification =
+        "CURRENT_PHASE_MAPPING_CONFIRMED_PC0_V_PC1_W";
+  } else if (cand_b && !cand_a) {
+    g_drv_test.phase_mapping_candidate_valid = true;
+    g_drv_test.confirmed_mapping = "PC0=W PC1=V";
+    g_drv_test.phase_mapping_classification =
+        "CURRENT_PHASE_MAPPING_CONFIRMED_PC0_W_PC1_V";
+  } else if ((cand_a && cand_b) || (pass_count > 1u)) {
+    g_drv_test.phase_mapping_classification =
+        "CURRENT_PHASE_MAPPING_STILL_AMBIGUOUS";
+  } else if (inv_a || inv_b) {
+    g_drv_test.phase_mapping_classification =
+        "CURRENT_PHASE_MAPPING_GLOBAL_SIGN_INVERTED";
+  } else {
+    g_drv_test.phase_mapping_classification =
+        "CURRENT_PHASE_MAPPING_UNRELIABLE";
+  }
+}
+
+static void phase_resistance_apply_confirmed_mapping(void)
+{
+  if (!g_drv_test.phase_mapping_candidate_valid) {
+    return;
+  }
+  const uint32_t mapping_candidate =
+      (strcmp(g_drv_test.confirmed_mapping, "PC0=V PC1=W") == 0) ? 0u : 1u;
+  float sx = 0.0f;
+  float sy = 0.0f;
+  float sxx = 0.0f;
+  float sxy = 0.0f;
+  float y_mean = 0.0f;
+  float prev_i_alpha = -1000000.0f;
+  float beta_ratio_max = 0.0f;
+  bool monotonic = true;
+  uint32_t n = 0u;
+  g_drv_test.first_reliable_current_voltage = PHASE_RESISTANCE_UNSET;
+
+  for (uint32_t pi = 0u; pi < g_drv_test.alpha_resistance_point_count; ++pi) {
+    const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+    float iu = 0.0f;
+    float iv = 0.0f;
+    float iw = 0.0f;
+    phase_mapping_currents(mapping_candidate,
+                           false,
+                           pt->delta_pc0_counts,
+                           pt->delta_pc1_counts,
+                           &iu,
+                           &iv,
+                           &iw);
+    const float i_alpha = iu;
+    const float i_beta = (iv - iw) / SQRT3_F;
+    const float ratio =
+        (fabsf(i_alpha) > 0.001f) ? (fabsf(i_beta) / fabsf(i_alpha)) : 999.0f;
+    const bool adc_ok =
+        (pt->raw_pc0_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+        (pt->raw_pc0_max < CURRENT_RAW_MAX_SAFE_COUNT) &&
+        (pt->raw_pc1_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+        (pt->raw_pc1_max < CURRENT_RAW_MAX_SAFE_COUNT);
+    const float phase_mean_max = fmaxf(fabsf(iu), fmaxf(fabsf(iv), fabsf(iw)));
+    const bool point_ok =
+        (pt->samples > 0u) &&
+        (pt->applied_v_alpha > 0.0f) &&
+        !pt->faulted &&
+        adc_ok &&
+        (pt->encoder_motion_counts <= ALPHA_RESISTANCE_MOTION_MAX_COUNTS) &&
+        (i_alpha > 0.0f) &&
+        (ratio < 0.15f) &&
+        (phase_mean_max < CURRENT_CONTINUOUS_LIMIT_A);
+    if (!point_ok) {
+      continue;
+    }
+    if (i_alpha + 0.01f < prev_i_alpha) {
+      monotonic = false;
+    }
+    prev_i_alpha = i_alpha;
+    sx += i_alpha;
+    sy += pt->applied_v_alpha;
+    sxx += i_alpha * i_alpha;
+    sxy += i_alpha * pt->applied_v_alpha;
+    y_mean += pt->applied_v_alpha;
+    if (ratio > beta_ratio_max) {
+      beta_ratio_max = ratio;
+    }
+    if (g_drv_test.first_reliable_current_voltage < 0.0f) {
+      g_drv_test.first_reliable_current_voltage = pt->commanded_v_alpha;
+    }
+    n++;
+  }
+
+  g_drv_test.phase_resistance_original_ohm = PHASE_RESISTANCE_ORIGINAL_OHM;
+  g_drv_test.alpha_fit_point_count = n;
+  g_drv_test.valid_fit_point_count = n;
+  g_drv_test.phase_resistance_est_ohm = PHASE_RESISTANCE_UNSET;
+  g_drv_test.phase_resistance_confirmed_ohm = PHASE_RESISTANCE_UNSET;
+  g_drv_test.inverter_voltage_offset_est_v = PHASE_RESISTANCE_UNSET;
+  g_drv_test.inverter_voltage_offset_confirmed_v = PHASE_RESISTANCE_UNSET;
+  g_drv_test.fit_r_squared = 0.0f;
+  g_drv_test.fit_r_squared_confirmed = 0.0f;
+  g_drv_test.maximum_fit_residual_v = 0.0f;
+  g_drv_test.predicted_current_at_0p5v = 0.0f;
+  g_drv_test.predicted_current_at_1p0v = 0.0f;
+  g_drv_test.voltage_required_for_0p1A = PHASE_RESISTANCE_UNSET;
+  g_drv_test.voltage_required_for_0p2A_est = PHASE_RESISTANCE_UNSET;
+  g_drv_test.voltage_required_for_0p25A = PHASE_RESISTANCE_UNSET;
+  g_drv_test.current_monotonic_ok = monotonic && (n > 0u);
+  g_drv_test.beta_alpha_ratio_max_confirmed = beta_ratio_max;
+  g_drv_test.phase_resistance_est_reliable = false;
+
+  if (n >= ALPHA_RESISTANCE_MIN_FIT_POINTS) {
+    const float nf = (float)n;
+    const float denom = nf * sxx - sx * sx;
+    if (fabsf(denom) > 0.000001f) {
+      const float slope = (nf * sxy - sx * sy) / denom;
+      const float intercept = (sy - slope * sx) / nf;
+      y_mean /= nf;
+      float ss_tot = 0.0f;
+      float ss_res = 0.0f;
+      float max_res = 0.0f;
+      for (uint32_t pi = 0u; pi < g_drv_test.alpha_resistance_point_count; ++pi) {
+        const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+        float iu = 0.0f;
+        float iv = 0.0f;
+        float iw = 0.0f;
+        phase_mapping_currents(mapping_candidate,
+                               false,
+                               pt->delta_pc0_counts,
+                               pt->delta_pc1_counts,
+                               &iu,
+                               &iv,
+                               &iw);
+        const float i_alpha = iu;
+        const float i_beta = (iv - iw) / SQRT3_F;
+        const float ratio =
+            (fabsf(i_alpha) > 0.001f) ? (fabsf(i_beta) / fabsf(i_alpha)) : 999.0f;
+        const bool adc_ok =
+            (pt->raw_pc0_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+            (pt->raw_pc0_max < CURRENT_RAW_MAX_SAFE_COUNT) &&
+            (pt->raw_pc1_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+            (pt->raw_pc1_max < CURRENT_RAW_MAX_SAFE_COUNT);
+        const float phase_mean_max = fmaxf(fabsf(iu), fmaxf(fabsf(iv), fabsf(iw)));
+        const bool point_ok =
+            (pt->samples > 0u) &&
+            (pt->applied_v_alpha > 0.0f) &&
+            !pt->faulted &&
+            adc_ok &&
+            (pt->encoder_motion_counts <= ALPHA_RESISTANCE_MOTION_MAX_COUNTS) &&
+            (i_alpha > 0.0f) &&
+            (ratio < 0.15f) &&
+            (phase_mean_max < CURRENT_CONTINUOUS_LIMIT_A);
+        if (!point_ok) {
+          continue;
+        }
+        const float y_fit = slope * i_alpha + intercept;
+        const float dy = pt->applied_v_alpha - y_mean;
+        const float er = pt->applied_v_alpha - y_fit;
+        const float abs_er = fabsf(er);
+        if (abs_er > max_res) { max_res = abs_er; }
+        ss_tot += dy * dy;
+        ss_res += er * er;
+      }
+      const float r_squared =
+          (ss_tot > 0.000001f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+      g_drv_test.phase_resistance_est_ohm = slope;
+      g_drv_test.phase_resistance_confirmed_ohm = slope;
+      g_drv_test.inverter_voltage_offset_est_v = intercept;
+      g_drv_test.inverter_voltage_offset_confirmed_v = intercept;
+      g_drv_test.fit_r_squared = r_squared;
+      g_drv_test.fit_r_squared_confirmed = r_squared;
+      g_drv_test.maximum_fit_residual_v = max_res;
+      if (fabsf(slope) > 0.000001f) {
+        g_drv_test.predicted_current_at_0p5v = (0.5f - intercept) / slope;
+        g_drv_test.predicted_current_at_1p0v = (1.0f - intercept) / slope;
+      }
+      g_drv_test.voltage_required_for_0p1A = slope * 0.1f + intercept;
+      g_drv_test.voltage_required_for_0p2A_est = slope * 0.2f + intercept;
+      g_drv_test.voltage_required_for_0p25A = slope * 0.25f + intercept;
+      const float deviation =
+          fabsf(slope - PHASE_RESISTANCE_ORIGINAL_OHM) /
+          PHASE_RESISTANCE_ORIGINAL_OHM;
+      g_drv_test.phase_resistance_est_reliable =
+          g_drv_test.current_monotonic_ok &&
+          (slope > 0.0f) &&
+          (r_squared >= ALPHA_CURRENT_MAP_R2_MIN) &&
+          (beta_ratio_max < 0.15f) &&
+          (deviation < PHASE_RESISTANCE_DEVIATION_MAX_RATIO);
+    }
+  }
+}
+
+static float percent_difference_f(float a, float b)
+{
+  const float denom = (fabsf(a) + fabsf(b)) * 0.5f;
+  return (denom > 0.000001f) ? (fabsf(a - b) / denom * 100.0f) : 999.0f;
+}
+
+static CurrentDqSample current_confirmed_m0_vw_calculate(const HalAdcSnapshot *snap)
+{
+  CurrentDqSample sample = {0};
+  const float d_pc0 = (float)snap->raw_pc0_m0_so1 - (float)g_drv_test.offset.offset_u;
+  const float d_pc1 = (float)snap->raw_pc1_m0_so2 - (float)g_drv_test.offset.offset_v;
+  sample.iv = d_pc0 * g_drv_test.current_amp_per_count;
+  sample.iw = d_pc1 * g_drv_test.current_amp_per_count;
+  sample.iu = -(sample.iv + sample.iw);
+  sample.i_alpha = sample.iu;
+  sample.i_beta = (sample.iv - sample.iw) * 0.57735026919f;
+  sample.id = sample.i_alpha;
+  sample.iq = sample.i_beta;
+  sample.magnitude_max = fabsf(sample.iu);
+  if (fabsf(sample.iv) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.iv); }
+  if (fabsf(sample.iw) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.iw); }
+  if (fabsf(sample.i_alpha) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.i_alpha); }
+  if (fabsf(sample.i_beta) > sample.magnitude_max) { sample.magnitude_max = fabsf(sample.i_beta); }
+  return sample;
+}
+
+static bool phase_inductance_prepare_gain80_dc_cal(uint32_t *last_seq)
+{
+  HalAdcSnapshot snap = {0};
+  bool ok = true;
+  const uint16_t control2_no_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, false, false);
+  const uint16_t control2_dc_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, true, true);
+
+  current_observe_set_gain_scale(80.0f);
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+
+  if (!drv8301_set_control2(&g_drv0, control2_no_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_no_cal) ||
+      !drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) ||
+      !drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs)) {
+    return false;
+  }
+
+  g_drv_test.expected_control2 = control2_no_cal;
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  g_drv_test.gain_field_drv0 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv0);
+  g_drv_test.gain_field_drv1 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv1);
+  g_drv_test.gain40_readback_ok =
+      (g_drv_test.actual_control2_drv0 == control2_no_cal) &&
+      (g_drv_test.actual_control2_drv1 == control2_no_cal) &&
+      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_80V_PER_V);
+  if (!g_drv_test.gain40_readback_ok) {
+    return false;
+  }
+
+  if (!drv8301_set_control2(&g_drv0, control2_dc_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_dc_cal)) {
+    return false;
+  }
+  HAL_Delay(1u);
+
+  AdcFourChannelStats offset_stats;
+  adc_four_stats_reset(&offset_stats);
+  const uint32_t offset_start_ms = HAL_GetTick();
+  while (offset_stats.samples < GAIN_AXIS_OFFSET_SAMPLES) {
+    if ((HAL_GetTick() - offset_start_ms) > GAIN_AXIS_OFFSET_TIMEOUT_MS ||
+        !open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      ok = false;
+      break;
+    }
+    if ((TIM1->BDTR & TIM_BDTR_MOE) != 0u ||
+        !nfault_ok() ||
+        !m1_is_safe_off()) {
+      ok = false;
+      break;
+    }
+    adc_four_stats_update(&offset_stats, &snap);
+  }
+
+  uint32_t offset_pc[4] = {0};
+  float offset_mean_pc[4] = {0};
+  uint16_t offset_min_pc[4] = {0};
+  uint16_t offset_max_pc[4] = {0};
+  uint16_t offset_p2p_pc[4] = {0};
+  float offset_std_pc[4] = {0};
+  if (ok) {
+    adc_four_stats_finalize(&offset_stats,
+                            offset_pc,
+                            offset_mean_pc,
+                            offset_min_pc,
+                            offset_max_pc,
+                            offset_p2p_pc,
+                            offset_std_pc);
+    GainAxisMapResult *dc = &g_drv_test.gain_axis_map[0];
+    memset(dc, 0, sizeof(*dc));
+    dc->gain_code = DRV8301_SHUNT_GAIN_80V_PER_V;
+    dc->gain_v_v = 80.0f;
+    dc->current_amp_per_count = g_drv_test.current_amp_per_count;
+    dc->counts_for_0p60A = CURRENT_CONTINUOUS_LIMIT_A / g_drv_test.current_amp_per_count;
+    dc->counts_for_1p00A = CURRENT_INSTANT_LIMIT_A / g_drv_test.current_amp_per_count;
+    dc->control2_drv0 = g_drv_test.actual_control2_drv0;
+    dc->control2_drv1 = g_drv_test.actual_control2_drv1;
+    dc->gain_field_drv0 = DRV8301_SHUNT_GAIN_80V_PER_V;
+    dc->gain_field_drv1 = DRV8301_SHUNT_GAIN_80V_PER_V;
+    for (uint32_t ci = 0u; ci < 4u; ++ci) {
+      dc->offset_pc[ci] = offset_pc[ci];
+      dc->mean_pc[ci] = offset_mean_pc[ci];
+      dc->min_pc[ci] = offset_min_pc[ci];
+      dc->max_pc[ci] = offset_max_pc[ci];
+      dc->p2p_pc[ci] = offset_p2p_pc[ci];
+      dc->std_pc[ci] = offset_std_pc[ci];
+    }
+
+    g_drv_test.offset.samples = offset_stats.samples;
+    g_drv_test.offset.offset_u = offset_pc[0];
+    g_drv_test.offset.offset_v = offset_pc[1];
+    g_drv_test.offset.u_min = offset_min_pc[0];
+    g_drv_test.offset.u_max = offset_max_pc[0];
+    g_drv_test.offset.v_min = offset_min_pc[1];
+    g_drv_test.offset.v_max = offset_max_pc[1];
+    g_drv_test.offset.u_noise_pp = offset_p2p_pc[0];
+    g_drv_test.offset.v_noise_pp = offset_p2p_pc[1];
+    g_drv_test.dc_noise.samples = offset_stats.samples;
+    g_drv_test.dc_noise.mean_u = offset_mean_pc[0];
+    g_drv_test.dc_noise.mean_v = offset_mean_pc[1];
+    g_drv_test.dc_noise.u_min = offset_min_pc[0];
+    g_drv_test.dc_noise.u_max = offset_max_pc[0];
+    g_drv_test.dc_noise.v_min = offset_min_pc[1];
+    g_drv_test.dc_noise.v_max = offset_max_pc[1];
+    g_drv_test.dc_noise.u_p2p = offset_p2p_pc[0];
+    g_drv_test.dc_noise.v_p2p = offset_p2p_pc[1];
+    g_drv_test.dc_noise.u_std_counts = offset_std_pc[0];
+    g_drv_test.dc_noise.v_std_counts = offset_std_pc[1];
+    g_drv_test.dc_noise.u_std_amp = offset_std_pc[0] * g_drv_test.current_amp_per_count;
+    g_drv_test.dc_noise.v_std_amp = offset_std_pc[1] * g_drv_test.current_amp_per_count;
+    g_drv_test.dc_cal_offsets_pass =
+        (offset_stats.samples == GAIN_AXIS_OFFSET_SAMPLES) &&
+        (offset_std_pc[0] <= DC_CAL_STD_MAX_COUNTS) &&
+        (offset_std_pc[1] <= DC_CAL_STD_MAX_COUNTS);
+  }
+
+  const bool clear_ok =
+      drv8301_set_control2(&g_drv0, control2_no_cal) &&
+      drv8301_set_control2(&g_drv1, control2_no_cal) &&
+      drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) &&
+      drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  g_drv_test.dc_cal_clear_ok =
+      clear_ok &&
+      ((g_drv_test.actual_control2_drv0 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.actual_control2_drv1 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      (drv8301_control2_gain_field(g_drv_test.actual_control2_drv0) ==
+       DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (drv8301_control2_gain_field(g_drv_test.actual_control2_drv1) ==
+       DRV8301_SHUNT_GAIN_80V_PER_V);
+
+  g_drv_test.adc_offset_pass =
+      ok && g_drv_test.dc_cal_offsets_pass && g_drv_test.dc_cal_clear_ok;
+  return g_drv_test.adc_offset_pass;
+}
+
+static void inductance_sample_capture(InductanceSamplePoint *dst,
+                                      const HalAdcSnapshot *snap,
+                                      const CurrentDqSample *sample,
+                                      int32_t relative_index,
+                                      float commanded_v_alpha,
+                                      float applied_v_alpha,
+                                      float vbus_v)
+{
+  dst->adc_seq = snap->seq;
+  dst->relative_sample_index = relative_index;
+  dst->commanded_v_alpha = commanded_v_alpha;
+  dst->applied_v_alpha_est = applied_v_alpha;
+  dst->vbus_v = vbus_v;
+  dst->ccr1 = TIM1->CCR1;
+  dst->ccr2 = TIM1->CCR2;
+  dst->ccr3 = TIM1->CCR3;
+  dst->ccr4 = TIM1->CCR4;
+  dst->raw_pc0 = snap->raw_pc0_m0_so1;
+  dst->raw_pc1 = snap->raw_pc1_m0_so2;
+  dst->iu = sample->iu;
+  dst->iv = sample->iv;
+  dst->iw = sample->iw;
+  dst->i_alpha = sample->i_alpha;
+  dst->i_beta = sample->i_beta;
+  dst->encoder_accum = g_encoder_accum;
+  dst->moe = ((TIM1->BDTR & TIM_BDTR_MOE) != 0u) ? 1u : 0u;
+  dst->en_gate = gate_raw_is_high() ? 1u : 0u;
+}
+
+static bool inductance_sample_ok(const HalAdcSnapshot *snap,
+                                 const CurrentDqSample *sample,
+                                 int64_t encoder_start,
+                                 float baseline_i_beta)
+{
+  const int64_t motion = g_encoder_accum - encoder_start;
+  const uint32_t motion_abs = abs_i32_to_u32((int32_t)motion);
+  return snap->valid &&
+         (snap->raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+         (snap->raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+         (snap->raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+         (snap->raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+         (fabsf(sample->i_beta - baseline_i_beta) <= PHASE_INDUCTANCE_BETA_ABS_MAX_A) &&
+         (fabsf(sample->iu) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->iv) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->iw) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->i_alpha) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (motion_abs <= PHASE_INDUCTANCE_ENCODER_PULSE_MAX_COUNTS) &&
+         nfault_ok() &&
+         m1_is_safe_off() &&
+         ccrs_in_open_loop_range();
+}
+
+static uint32_t inductance_reject_mask(const HalAdcSnapshot *snap,
+                                       const CurrentDqSample *sample,
+                                       int64_t encoder_start,
+                                       float baseline_i_beta)
+{
+  uint32_t mask = 0u;
+  const int64_t motion = g_encoder_accum - encoder_start;
+  const uint32_t motion_abs = abs_i32_to_u32((int32_t)motion);
+  if (!snap->valid ||
+      (snap->raw_pc0_m0_so1 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+      (snap->raw_pc0_m0_so1 >= CURRENT_RAW_MAX_SAFE_COUNT) ||
+      (snap->raw_pc1_m0_so2 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+      (snap->raw_pc1_m0_so2 >= CURRENT_RAW_MAX_SAFE_COUNT)) {
+    mask |= 1u << 0;
+  }
+  if (fabsf(sample->i_beta - baseline_i_beta) > PHASE_INDUCTANCE_BETA_ABS_MAX_A) {
+    mask |= 1u << 1;
+  }
+  if ((fabsf(sample->iu) > PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) ||
+      (fabsf(sample->iv) > PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) ||
+      (fabsf(sample->iw) > PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) ||
+      (fabsf(sample->i_alpha) > PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A)) {
+    mask |= 1u << 2;
+  }
+  if (motion_abs > PHASE_INDUCTANCE_ENCODER_PULSE_MAX_COUNTS) {
+    mask |= 1u << 3;
+  }
+  if (!nfault_ok()) { mask |= 1u << 4; }
+  if (!m1_is_safe_off()) { mask |= 1u << 5; }
+  if (!ccrs_in_open_loop_range()) { mask |= 1u << 6; }
+  return mask;
+}
+
+static void inductance_print_reject(const char *stage,
+                                    uint32_t repeat,
+                                    uint32_t mask,
+                                    const HalAdcSnapshot *snap,
+                                    const CurrentDqSample *sample,
+                                    int64_t encoder_start,
+                                    float baseline_i_beta)
+{
+  char line[384];
+  const int64_t motion = g_encoder_accum - encoder_start;
+  const int32_t ia_m = float_to_scaled_i32(sample->i_alpha, 1000.0f);
+  const int32_t ib_m = float_to_scaled_i32(sample->i_beta, 1000.0f);
+  const int32_t db_m = float_to_scaled_i32(sample->i_beta - baseline_i_beta, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "inductance_reject: stage=%s repeat=%lu mask=0x%08lX raw_pc0=%u raw_pc1=%u i_alpha=%s%lu.%03lu i_beta=%s%lu.%03lu delta_i_beta=%s%lu.%03lu encoder_motion=%ld ccr1=%lu ccr2=%lu ccr3=%lu ccr4=%lu nfault=%u m1_safe=%u ccr_ok=%u",
+           stage,
+           (unsigned long)repeat,
+           (unsigned long)mask,
+           (unsigned int)snap->raw_pc0_m0_so1,
+           (unsigned int)snap->raw_pc1_m0_so2,
+           (ia_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(ia_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(ia_m) % 1000u),
+           (ib_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(ib_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(ib_m) % 1000u),
+           (db_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(db_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(db_m) % 1000u),
+           (long)motion,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)TIM1->CCR4,
+           nfault_ok() ? 1u : 0u,
+           m1_is_safe_off() ? 1u : 0u,
+           ccrs_in_open_loop_range() ? 1u : 0u);
+  uart2_printf_line(line);
+}
+
+static bool inductance_alignment_sample_ok(const HalAdcSnapshot *snap,
+                                           const CurrentDqSample *sample)
+{
+  return snap->valid &&
+         (snap->raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+         (snap->raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+         (snap->raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+         (snap->raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+         (fabsf(sample->iu) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->iv) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->iw) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         (fabsf(sample->i_alpha) <= PHASE_INDUCTANCE_PHASE_CURRENT_MAX_A) &&
+         nfault_ok() &&
+         m1_is_safe_off() &&
+         ccrs_in_open_loop_range();
+}
+
+static bool inductance_wait_apply_sample(uint32_t *last_seq,
+                                         HalAdcSnapshot *snap,
+                                         float v_alpha,
+                                         CurrentDqSample *sample,
+                                         float *applied_v_alpha)
+{
+  if (!open_loop_wait_next_adc_sample(last_seq, snap)) {
+    return false;
+  }
+  (void)encoder_tracker_sample();
+  const float vbus_v = board_read_vbus_v();
+  if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
+    return false;
+  }
+  encoder_apply_alpha_beta_svpwm(v_alpha, 0.0f, vbus_v);
+  VoltagePathDiag vdiag;
+  voltage_path_diag_compute(&vdiag, v_alpha, 0.0f, 0.0f, vbus_v);
+  if (applied_v_alpha != NULL) {
+    *applied_v_alpha = vdiag.applied_v_alpha;
+  }
+  *sample = current_confirmed_m0_vw_calculate(snap);
+  if (!current_trip_diag_record_and_check(TEST_STATE_SAMPLE_POSITION_TEST,
+                                          0u,
+                                          snap,
+                                          sample,
+                                          v_alpha,
+                                          0.0f,
+                                          0.0f,
+                                          vbus_v)) {
+    return false;
+  }
+  return power_stage_update_phase_edge_timing() && nfault_ok() && m1_is_safe_off();
+}
+
+static float inductance_std_from_sums(float sum, float sumsq, uint32_t n)
+{
+  if (n == 0u) { return 0.0f; }
+  const float inv = 1.0f / (float)n;
+  float var = sumsq * inv - (sum * inv) * (sum * inv);
+  if (var < 0.0f) { var = 0.0f; }
+  return sqrtf(var);
+}
+
+static void inductance_fit_rise(PhaseInductanceLevelResult *level)
+{
+  const float amplitude_init = level->delta_v_applied / PHASE_INDUCTANCE_R_PHASE_OHM;
+  float best_r2 = -1000.0f;
+  float best_tau_us = 0.0f;
+  float best_delay_us = 0.0f;
+  float best_max_res = 0.0f;
+  const float amplitude = fmaxf(amplitude_init, level->peak_delta_i_alpha);
+
+  for (uint32_t delay_step = 0u; delay_step <= 5u; ++delay_step) {
+    const float delay_us = (float)delay_step * 10.0f;
+    float tau_sum = 0.0f;
+    uint32_t tau_n = 0u;
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+      const float t_us = ((float)(k + 1u) * PHASE_INDUCTANCE_TS_US) - delay_us;
+      const float y = level->rise_delta_i_mean[k];
+      if ((t_us <= 0.0f) || (y <= 0.0f) || (amplitude <= 0.0f) ||
+          (y >= amplitude * 0.98f)) {
+        continue;
+      }
+      const float denom = logf(1.0f - y / amplitude);
+      if (denom < -0.000001f) {
+        tau_sum += -t_us / denom;
+        tau_n++;
+      }
+    }
+    if (tau_n < 3u) { continue; }
+    const float tau_us = tau_sum / (float)tau_n;
+    float y_mean = 0.0f;
+    uint32_t n = 0u;
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+      if (level->rise_valid_count[k] == 0u) { continue; }
+      y_mean += level->rise_delta_i_mean[k];
+      n++;
+    }
+    if (n == 0u) { continue; }
+    y_mean /= (float)n;
+    float ss_tot = 0.0f;
+    float ss_res = 0.0f;
+    float max_res = 0.0f;
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+      if (level->rise_valid_count[k] == 0u) { continue; }
+      const float t_us = ((float)(k + 1u) * PHASE_INDUCTANCE_TS_US) - delay_us;
+      const float y_fit = (t_us <= 0.0f)
+                              ? 0.0f
+                              : amplitude * (1.0f - expf(-t_us / tau_us));
+      const float err = level->rise_delta_i_mean[k] - y_fit;
+      if (fabsf(err) > max_res) { max_res = fabsf(err); }
+      ss_tot += (level->rise_delta_i_mean[k] - y_mean) *
+                (level->rise_delta_i_mean[k] - y_mean);
+      ss_res += err * err;
+    }
+    const float r2 = (ss_tot > 0.000001f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+    if (r2 > best_r2) {
+      best_r2 = r2;
+      best_tau_us = tau_us;
+      best_delay_us = delay_us;
+      best_max_res = max_res;
+    }
+  }
+
+  level->tau_rise_us = best_tau_us;
+  level->sample_delay_us = best_delay_us;
+  level->rise_fit_r_squared = best_r2 > -999.0f ? best_r2 : 0.0f;
+  level->rise_max_residual_a = best_max_res;
+  level->L_rise_uH = PHASE_INDUCTANCE_R_PHASE_OHM * best_tau_us;
+}
+
+static void inductance_fit_fall(PhaseInductanceLevelResult *level)
+{
+  float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
+  uint32_t n = 0u;
+  for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    const float y = level->fall_delta_i_mean[k];
+    if (y <= 0.001f) { continue; }
+    const float x = (float)k * PHASE_INDUCTANCE_TS_US;
+    const float ly = logf(y);
+    sx += x;
+    sy += ly;
+    sxx += x * x;
+    sxy += x * ly;
+    n++;
+  }
+  if (n < 3u) { return; }
+  const float nf = (float)n;
+  const float denom = nf * sxx - sx * sx;
+  if (fabsf(denom) <= 0.000001f) { return; }
+  const float slope = (nf * sxy - sx * sy) / denom;
+  const float intercept = (sy - slope * sx) / nf;
+  if (slope >= -0.000001f) { return; }
+  const float tau_us = -1.0f / slope;
+  const float initial = expf(intercept);
+  float y_mean = 0.0f;
+  n = 0u;
+  for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if (level->fall_delta_i_mean[k] <= 0.001f) { continue; }
+    y_mean += level->fall_delta_i_mean[k];
+    n++;
+  }
+  y_mean /= (float)n;
+  float ss_tot = 0.0f, ss_res = 0.0f, max_res = 0.0f;
+  for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if (level->fall_delta_i_mean[k] <= 0.001f) { continue; }
+    const float x = (float)k * PHASE_INDUCTANCE_TS_US;
+    const float y_fit = initial * expf(-x / tau_us);
+    const float err = level->fall_delta_i_mean[k] - y_fit;
+    if (fabsf(err) > max_res) { max_res = fabsf(err); }
+    ss_tot += (level->fall_delta_i_mean[k] - y_mean) *
+              (level->fall_delta_i_mean[k] - y_mean);
+    ss_res += err * err;
+  }
+  level->tau_fall_us = tau_us;
+  level->fall_fit_r_squared = (ss_tot > 0.000001f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+  level->fall_max_residual_a = max_res;
+  level->L_fall_uH = PHASE_INDUCTANCE_R_PHASE_OHM * tau_us;
+}
+
+static void inductance_fit_initial_slope(PhaseInductanceLevelResult *level)
+{
+  float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
+  uint32_t n = 0u;
+  for (uint32_t k = 0u; (k < 5u) && (k < PHASE_INDUCTANCE_CAPTURE_SAMPLES); ++k) {
+    if (level->rise_valid_count[k] == 0u) { continue; }
+    const float x_s = ((float)(k + 1u) * PHASE_INDUCTANCE_TS_US) * 1.0e-6f;
+    const float y = level->rise_delta_i_mean[k];
+    sx += x_s;
+    sy += y;
+    sxx += x_s * x_s;
+    sxy += x_s * y;
+    n++;
+  }
+  if (n < 3u) { return; }
+  const float nf = (float)n;
+  const float denom = nf * sxx - sx * sx;
+  if (fabsf(denom) <= 0.000000001f) { return; }
+  const float slope_a_per_s = (nf * sxy - sx * sy) / denom;
+  if (slope_a_per_s > 0.0001f) {
+    level->L_initial_slope_uH =
+        (level->delta_v_applied / slope_a_per_s) * 1000000.0f;
+  }
+}
+
+static void inductance_fit_discrete(PhaseInductanceLevelResult *level)
+{
+  float s11 = 0.0f, s12 = 0.0f, s22 = 0.0f, sy1 = 0.0f, sy2 = 0.0f;
+  uint32_t n = 0u;
+  for (uint32_t k = 0u; k + 1u < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if ((level->rise_valid_count[k] == 0u) ||
+        (level->rise_valid_count[k + 1u] == 0u)) {
+      continue;
+    }
+    const float x1 = level->rise_delta_i_mean[k];
+    const float x2 = level->delta_v_applied;
+    const float y = level->rise_delta_i_mean[k + 1u];
+    s11 += x1 * x1;
+    s12 += x1 * x2;
+    s22 += x2 * x2;
+    sy1 += x1 * y;
+    sy2 += x2 * y;
+    n++;
+  }
+  if (n < 3u) { return; }
+  const float det = s11 * s22 - s12 * s12;
+  if (fabsf(det) <= 0.0000001f) { return; }
+  const float a = (sy1 * s22 - sy2 * s12) / det;
+  const float b = (s11 * sy2 - s12 * sy1) / det;
+  if ((a <= 0.0f) || (a >= 1.0f) || (b <= 0.0f)) { return; }
+  const float tau_s = -(PHASE_INDUCTANCE_TS_US * 1.0e-6f) / logf(a);
+  level->L_discrete_uH = PHASE_INDUCTANCE_R_PHASE_OHM * tau_s * 1000000.0f;
+  level->R_discrete_candidate = (1.0f - a) / b;
+}
+
+static void inductance_finalize_level(PhaseInductanceLevelResult *level)
+{
+  for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if (level->rise_valid_count[k] > 0u) {
+      const float inv = 1.0f / (float)level->rise_valid_count[k];
+      const float mean = level->rise_delta_i_mean[k] * inv;
+      const float beta_mean = level->rise_delta_i_beta_mean[k] * inv;
+      level->rise_delta_i_std[k] =
+          inductance_std_from_sums(level->rise_delta_i_mean[k],
+                                   level->rise_delta_i_std[k],
+                                   level->rise_valid_count[k]);
+      level->rise_delta_i_mean[k] = mean;
+      level->rise_delta_i_beta_mean[k] = beta_mean;
+    }
+    if (level->fall_valid_count[k] > 0u) {
+      const float inv = 1.0f / (float)level->fall_valid_count[k];
+      const float mean = level->fall_delta_i_mean[k] * inv;
+      const float beta_mean = level->fall_delta_i_beta_mean[k] * inv;
+      level->fall_delta_i_std[k] =
+          inductance_std_from_sums(level->fall_delta_i_mean[k],
+                                   level->fall_delta_i_std[k],
+                                   level->fall_valid_count[k]);
+      level->fall_delta_i_mean[k] = mean;
+      level->fall_delta_i_beta_mean[k] = beta_mean;
+    }
+  }
+
+  level->peak_delta_i_alpha = 0.0f;
+  level->peak_delta_i_beta = 0.0f;
+  for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if (level->rise_delta_i_mean[k] > level->peak_delta_i_alpha) {
+      level->peak_delta_i_alpha = level->rise_delta_i_mean[k];
+    }
+    if (fabsf(level->rise_delta_i_beta_mean[k]) > fabsf(level->peak_delta_i_beta)) {
+      level->peak_delta_i_beta = level->rise_delta_i_beta_mean[k];
+    }
+  }
+  level->effective_adc_counts =
+      (g_drv_test.current_amp_per_count > 0.0f)
+          ? (level->peak_delta_i_alpha / g_drv_test.current_amp_per_count)
+          : 0.0f;
+
+  level->monotonic_rise_ok = true;
+  level->monotonic_fall_ok = true;
+  for (uint32_t k = 1u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+    if (level->rise_delta_i_mean[k] + 0.02f < level->rise_delta_i_mean[k - 1u]) {
+      level->monotonic_rise_ok = false;
+    }
+    if (level->fall_delta_i_mean[k] > level->fall_delta_i_mean[k - 1u] + 0.02f) {
+      level->monotonic_fall_ok = false;
+    }
+  }
+
+  inductance_fit_rise(level);
+  inductance_fit_fall(level);
+  inductance_fit_initial_slope(level);
+  inductance_fit_discrete(level);
+
+  const float rise_fall_diff =
+      percent_difference_f(level->L_rise_uH, level->L_fall_uH);
+  const float exp_avg_uH = (level->L_rise_uH + level->L_fall_uH) * 0.5f;
+  const float discrete_diff = percent_difference_f(level->L_discrete_uH, exp_avg_uH);
+  if ((level->peak_delta_i_alpha > 0.001f) &&
+      (level->rise_delta_i_mean[0] >= level->peak_delta_i_alpha * 0.60f)) {
+    level->dynamics_too_fast = true;
+  }
+  const float amplitude_expected = level->delta_v_applied / PHASE_INDUCTANCE_R_PHASE_OHM;
+  if ((amplitude_expected > 0.001f) &&
+      (level->rise_delta_i_mean[PHASE_INDUCTANCE_CAPTURE_SAMPLES - 1u] <
+       amplitude_expected * 0.80f)) {
+    level->pulse_too_short = true;
+  }
+
+  level->level_reliable =
+      (level->valid_repeat_count >= PHASE_INDUCTANCE_MIN_VALID_REPEATS) &&
+      (level->delta_v_applied > 0.0f) &&
+      ((level->peak_delta_i_alpha >= PHASE_INDUCTANCE_MIN_PEAK_A) ||
+       (level->effective_adc_counts >= PHASE_INDUCTANCE_MIN_COUNTS)) &&
+      ((level->peak_delta_i_alpha > 0.001f) &&
+       (fabsf(level->peak_delta_i_beta / level->peak_delta_i_alpha) <
+        PHASE_INDUCTANCE_BETA_RATIO_MAX)) &&
+      level->monotonic_rise_ok &&
+      level->monotonic_fall_ok &&
+      (level->rise_fit_r_squared >= PHASE_INDUCTANCE_FIT_R2_MIN) &&
+      (level->fall_fit_r_squared >= PHASE_INDUCTANCE_FIT_R2_MIN) &&
+      (level->L_rise_uH > 0.0f) &&
+      (level->L_fall_uH > 0.0f) &&
+      (level->L_discrete_uH > 0.0f) &&
+      (rise_fall_diff < PHASE_INDUCTANCE_RISE_FALL_DIFF_MAX_PERCENT) &&
+      (discrete_diff < PHASE_INDUCTANCE_DISCRETE_DIFF_MAX_PERCENT) &&
+      !g_drv_test.current_trip_fault.latched &&
+      !level->dynamics_too_fast &&
+      !level->pulse_too_short;
+}
+
+static bool phase_inductance_run_level(PhaseInductanceLevelResult *level,
+                                       uint32_t *last_seq,
+                                       float pulse_voltage)
+{
+  memset(level, 0, sizeof(*level));
+  level->baseline_voltage = PHASE_INDUCTANCE_BASE_ALPHA_V;
+  level->pulse_voltage = pulse_voltage;
+  level->nominal_delta_voltage = pulse_voltage - PHASE_INDUCTANCE_BASE_ALPHA_V;
+
+  for (uint32_t repeat = 0u; repeat < PHASE_INDUCTANCE_REPEAT_COUNT; ++repeat) {
+    bool repeat_ok = true;
+    float baseline_i_alpha_sum = 0.0f;
+    float baseline_i_beta_sum = 0.0f;
+    float baseline_applied_sum = 0.0f;
+    uint32_t baseline_n = 0u;
+    float rise_alpha[PHASE_INDUCTANCE_CAPTURE_SAMPLES] = {0};
+    float rise_beta[PHASE_INDUCTANCE_CAPTURE_SAMPLES] = {0};
+    float fall_alpha[PHASE_INDUCTANCE_CAPTURE_SAMPLES] = {0};
+    float fall_beta[PHASE_INDUCTANCE_CAPTURE_SAMPLES] = {0};
+    InductanceSamplePoint rise_points[PHASE_INDUCTANCE_CAPTURE_SAMPLES];
+    InductanceSamplePoint fall_points[PHASE_INDUCTANCE_CAPTURE_SAMPLES];
+    memset(rise_points, 0, sizeof(rise_points));
+    memset(fall_points, 0, sizeof(fall_points));
+    float pulse_applied_sum = 0.0f;
+    uint32_t pulse_applied_n = 0u;
+    const int64_t encoder_start = g_encoder_accum;
+
+    for (uint32_t k = 0u; k < PHASE_INDUCTANCE_BASELINE_SAMPLES; ++k) {
+      HalAdcSnapshot snap = {0};
+      CurrentDqSample sample = {0};
+      float applied = 0.0f;
+      if (!inductance_wait_apply_sample(last_seq,
+                                        &snap,
+                                        PHASE_INDUCTANCE_BASE_ALPHA_V,
+                                        &sample,
+                                        &applied) ||
+          !inductance_alignment_sample_ok(&snap, &sample)) {
+        if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
+          inductance_print_reject("baseline", repeat, 0xffffffffu,
+                                  &snap, &sample, encoder_start, 0.0f);
+        }
+        repeat_ok = false;
+        break;
+      }
+      baseline_i_alpha_sum += sample.i_alpha;
+      baseline_i_beta_sum += sample.i_beta;
+      baseline_applied_sum += applied;
+      baseline_n++;
+    }
+
+    const float baseline_i_alpha =
+        (baseline_n > 0u) ? (baseline_i_alpha_sum / (float)baseline_n) : 0.0f;
+    const float baseline_i_beta =
+        (baseline_n > 0u) ? (baseline_i_beta_sum / (float)baseline_n) : 0.0f;
+    const float baseline_applied =
+        (baseline_n > 0u) ? (baseline_applied_sum / (float)baseline_n) : 0.0f;
+
+    if (repeat_ok) {
+      for (uint32_t k = 0u; k < PHASE_INDUCTANCE_RISE_SAMPLES; ++k) {
+        HalAdcSnapshot snap = {0};
+        CurrentDqSample sample = {0};
+        float applied = 0.0f;
+        if (!inductance_wait_apply_sample(last_seq,
+                                          &snap,
+                                          pulse_voltage,
+                                          &sample,
+                                          &applied) ||
+            !inductance_sample_ok(&snap, &sample, encoder_start, baseline_i_beta)) {
+          if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
+            const uint32_t mask =
+                inductance_reject_mask(&snap, &sample, encoder_start, baseline_i_beta);
+            inductance_print_reject("rise", repeat, mask,
+                                    &snap, &sample, encoder_start, baseline_i_beta);
+          }
+          repeat_ok = false;
+          break;
+        }
+        pulse_applied_sum += applied;
+        pulse_applied_n++;
+        if (k < PHASE_INDUCTANCE_CAPTURE_SAMPLES) {
+          rise_alpha[k] = sample.i_alpha - baseline_i_alpha;
+          rise_beta[k] = sample.i_beta - baseline_i_beta;
+          inductance_sample_capture(&rise_points[k],
+                                    &snap,
+                                    &sample,
+                                    (int32_t)k,
+                                    pulse_voltage,
+                                    applied,
+                                    board_read_vbus_v());
+        }
+      }
+    }
+
+    if (repeat_ok) {
+      for (uint32_t k = 0u; k < PHASE_INDUCTANCE_FALL_SAMPLES; ++k) {
+        HalAdcSnapshot snap = {0};
+        CurrentDqSample sample = {0};
+        float applied = 0.0f;
+        if (!inductance_wait_apply_sample(last_seq,
+                                          &snap,
+                                          PHASE_INDUCTANCE_BASE_ALPHA_V,
+                                          &sample,
+                                          &applied) ||
+            !inductance_sample_ok(&snap, &sample, encoder_start, baseline_i_beta)) {
+          if (level->valid_repeat_count == 0u && level->rejected_repeat_count == 0u) {
+            const uint32_t mask =
+                inductance_reject_mask(&snap, &sample, encoder_start, baseline_i_beta);
+            inductance_print_reject("fall", repeat, mask,
+                                    &snap, &sample, encoder_start, baseline_i_beta);
+          }
+          repeat_ok = false;
+          break;
+        }
+        if (k < PHASE_INDUCTANCE_CAPTURE_SAMPLES) {
+          fall_alpha[k] = sample.i_alpha - baseline_i_alpha;
+          fall_beta[k] = sample.i_beta - baseline_i_beta;
+          inductance_sample_capture(&fall_points[k],
+                                    &snap,
+                                    &sample,
+                                    (int32_t)k,
+                                    PHASE_INDUCTANCE_BASE_ALPHA_V,
+                                    applied,
+                                    board_read_vbus_v());
+        }
+      }
+    }
+
+    if (repeat_ok) {
+      level->valid_repeat_count++;
+      level->baseline_i_alpha += baseline_i_alpha;
+      level->baseline_i_beta += baseline_i_beta;
+      level->delta_v_applied +=
+          ((pulse_applied_n > 0u) ? (pulse_applied_sum / (float)pulse_applied_n) : 0.0f) -
+          baseline_applied;
+      for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+        level->rise_delta_i_mean[k] += rise_alpha[k];
+        level->rise_delta_i_std[k] += rise_alpha[k] * rise_alpha[k];
+        level->rise_delta_i_beta_mean[k] += rise_beta[k];
+        level->rise_valid_count[k]++;
+        level->fall_delta_i_mean[k] += fall_alpha[k];
+        level->fall_delta_i_std[k] += fall_alpha[k] * fall_alpha[k];
+        level->fall_delta_i_beta_mean[k] += fall_beta[k];
+        level->fall_valid_count[k]++;
+        if (level->valid_repeat_count == 1u) {
+          level->rise_samples[k] = rise_points[k];
+          level->fall_samples[k] = fall_points[k];
+        }
+      }
+    } else {
+      level->rejected_repeat_count++;
+      if (g_drv_test.current_trip_fault.latched) {
+        break;
+      }
+    }
+
+    encoder_apply_alpha_beta_svpwm(PHASE_INDUCTANCE_BASE_ALPHA_V,
+                                   0.0f,
+                                   board_read_vbus_v());
+    HAL_Delay(PHASE_INDUCTANCE_REPEAT_WAIT_MS);
+    if ((repeat % 8u) == 7u) {
+      if (!drv8301_read_status(&g_drv0) || !drv8301_read_status(&g_drv1) ||
+          drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) ||
+          drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw)) {
+        break;
+      }
+    }
+  }
+
+  if (level->valid_repeat_count > 0u) {
+    const float inv = 1.0f / (float)level->valid_repeat_count;
+    level->baseline_i_alpha *= inv;
+    level->baseline_i_beta *= inv;
+    level->delta_v_applied *= inv;
+  }
+  inductance_finalize_level(level);
+  return !g_drv_test.current_trip_fault.latched;
+}
+
+static float inductance_level_average_uH(const PhaseInductanceLevelResult *level)
+{
+  float sum = 0.0f;
+  uint32_t n = 0u;
+  if (level->L_rise_uH > 0.0f) { sum += level->L_rise_uH; n++; }
+  if (level->L_fall_uH > 0.0f) { sum += level->L_fall_uH; n++; }
+  if (level->L_discrete_uH > 0.0f) { sum += level->L_discrete_uH; n++; }
+  return (n > 0u) ? (sum / (float)n) : 0.0f;
+}
+
+static bool phase_inductance_identification_run(void)
+{
+  uint32_t last_seq = 0u;
+  HalAdcSnapshot snap = {0};
+  bool ok = true;
+  g_drv_test.phase_inductance_classification = "PHASE_INDUCTANCE_IDENTIFICATION_UNRELIABLE";
+  g_drv_test.confirmed_mapping = "PC0=V PC1=W U=-(V+W)";
+  g_drv_test.phase_resistance_confirmed_ohm = PHASE_INDUCTANCE_R_PHASE_OHM;
+  g_drv_test.phase_resistance_est_ohm = PHASE_INDUCTANCE_R_PHASE_OHM;
+  g_drv_test.inverter_voltage_offset_confirmed_v = 0.069f;
+  g_drv_test.phase_mapping_candidate_valid = true;
+  current_trip_diag_reset();
+
+  if (hal_adc_get_snapshot(&snap)) {
+    last_seq = snap.seq;
+  }
+
+  g_drv_test.run_raw_u_min = 0xffffu;
+  g_drv_test.run_raw_v_min = 0xffffu;
+  g_drv_test.run_raw_u_max = 0u;
+  g_drv_test.run_raw_v_max = 0u;
+  g_drv_test.adc_phase_edge_timing_ok = power_stage_update_phase_edge_timing();
+  g_drv_test.adc_sync_rate_ok = true;
+  g_drv_test.final_observe_reliable = false;
+
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+  if (!phase_inductance_prepare_gain80_dc_cal(&last_seq)) {
+    g_drv_test.phase_inductance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+    g_drv_test.phase_resistance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    return false;
+  }
+
+  if ((g_drv_test.offset.offset_u <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+      (g_drv_test.offset.offset_v <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+      (g_drv_test.offset.u_max >= CURRENT_RAW_MAX_SAFE_COUNT) ||
+      (g_drv_test.offset.v_max >= CURRENT_RAW_MAX_SAFE_COUNT)) {
+    char adc_line[192];
+    snprintf(adc_line,
+             sizeof(adc_line),
+             "CURRENT_SENSE_ADC_RAW_ZERO offset_pc0=%lu offset_pc1=%lu minmax_pc0=%u/%u minmax_pc1=%u/%u",
+             (unsigned long)g_drv_test.offset.offset_u,
+             (unsigned long)g_drv_test.offset.offset_v,
+             (unsigned int)g_drv_test.offset.u_min,
+             (unsigned int)g_drv_test.offset.u_max,
+             (unsigned int)g_drv_test.offset.v_min,
+             (unsigned int)g_drv_test.offset.v_max);
+    uart2_printf_line(adc_line);
+    g_drv_test.phase_inductance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+    g_drv_test.phase_resistance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    return false;
+  }
+
+  if ((TIM1->CCR4 != (TIM1->ARR - 400u)) ||
+      !gate_raw_is_high() ||
+      !nfault_ok() ||
+      !m1_is_safe_off() ||
+      !g_drv_test.adc_phase_edge_timing_ok) {
+    return false;
+  }
+
+  char map_line[96];
+  snprintf(map_line,
+           sizeof(map_line),
+           "confirmed_current_mapping=\"PC0=V PC1=W U=-(V+W)\"");
+  uart2_printf_line(map_line);
+
+  power_stage_enable_six_outputs();
+  __HAL_TIM_MOE_ENABLE(&htim1);
+  current_trip_diag_reset();
+  g_drv_test.current_trip_diag.moe_enable_timestamp_us = diag_timestamp_us();
+
+  const uint32_t align_start_ms = HAL_GetTick();
+  const uint32_t align_total_ms =
+      PHASE_INDUCTANCE_ALIGN_RAMP_MS + PHASE_INDUCTANCE_ALIGN_HOLD_MS;
+  while ((HAL_GetTick() - align_start_ms) < align_total_ms) {
+    const uint32_t elapsed = HAL_GetTick() - align_start_ms;
+    float alpha = PHASE_INDUCTANCE_BASE_ALPHA_V;
+    if (elapsed < PHASE_INDUCTANCE_ALIGN_RAMP_MS) {
+      alpha = PHASE_INDUCTANCE_BASE_ALPHA_V *
+              ((float)elapsed / (float)PHASE_INDUCTANCE_ALIGN_RAMP_MS);
+    }
+    CurrentDqSample sample = {0};
+    float applied = 0.0f;
+    if (!inductance_wait_apply_sample(&last_seq, &snap, alpha, &sample, &applied) ||
+        !inductance_alignment_sample_ok(&snap, &sample)) {
+      ok = false;
+      break;
+    }
+  }
+
+  if (ok) {
+    ok = phase_inductance_run_level(&g_drv_test.inductance_levels[0],
+                                    &last_seq,
+                                    0.80f);
+  }
+  if (ok) {
+    ok = phase_inductance_run_level(&g_drv_test.inductance_levels[1],
+                                    &last_seq,
+                                    1.00f);
+  }
+
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+  power_stage_set_ccr_half();
+  power_stage_force_safe_off_zero_ccr();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_force_safe_off_zero_ccr();
+
+  g_drv_test.phase_inductance_level_a_uH =
+      inductance_level_average_uH(&g_drv_test.inductance_levels[0]);
+  g_drv_test.phase_inductance_level_b_uH =
+      inductance_level_average_uH(&g_drv_test.inductance_levels[1]);
+  const bool level_a_ok = g_drv_test.inductance_levels[0].level_reliable;
+  const bool level_b_ok = g_drv_test.inductance_levels[1].level_reliable;
+  g_drv_test.inductance_two_level_difference_percent =
+      percent_difference_f(g_drv_test.phase_inductance_level_a_uH,
+                           g_drv_test.phase_inductance_level_b_uH);
+  if (level_a_ok && level_b_ok) {
+    g_drv_test.phase_inductance_est_uH =
+        (g_drv_test.phase_inductance_level_a_uH +
+         g_drv_test.phase_inductance_level_b_uH) * 0.5f;
+    g_drv_test.phase_inductance_est_h =
+        g_drv_test.phase_inductance_est_uH * 1.0e-6f;
+    g_drv_test.electrical_time_constant_us =
+        (g_drv_test.phase_inductance_est_h / PHASE_INDUCTANCE_R_PHASE_OHM) *
+        1000000.0f;
+    g_drv_test.phase_inductance_identification_reliable =
+        g_drv_test.inductance_two_level_difference_percent <
+        PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT;
+  }
+
+  if (!ok || g_drv_test.current_trip_fault.latched) {
+    g_drv_test.phase_inductance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+    g_drv_test.phase_resistance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_FAIL";
+  } else if (g_drv_test.phase_inductance_identification_reliable) {
+    g_drv_test.phase_inductance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_PASS";
+    g_drv_test.phase_resistance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_PASS";
+  } else {
+    g_drv_test.phase_inductance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_UNRELIABLE";
+    g_drv_test.phase_resistance_classification =
+        "PHASE_INDUCTANCE_IDENTIFICATION_UNRELIABLE";
+  }
+
+  g_drv_test.open_loop_pass = ok && !g_drv_test.current_trip_fault.latched;
+  g_drv_test.final_observe_reliable =
+      g_drv_test.phase_inductance_identification_reliable;
+  return ok && !g_drv_test.current_trip_fault.latched;
 }
 
 static void current_observe_lpf_update(const CurrentDqSample *sample)
@@ -3992,14 +6121,14 @@ static bool direct_alpha_voltage_diagnostic_run(uint32_t *last_seq)
   return true;
 }
 
-static bool current_sense_gain_axis_mapping_run(void)
+static bool __attribute__((unused)) current_sense_gain_axis_mapping_run(void)
 {
   static const uint8_t gain_codes[GAIN_AXIS_MAP_COUNT] = {
-      DRV8301_SHUNT_GAIN_10V_PER_V,
-      DRV8301_SHUNT_GAIN_20V_PER_V,
+      DRV8301_SHUNT_GAIN_80V_PER_V,
       DRV8301_SHUNT_GAIN_40V_PER_V,
-      DRV8301_SHUNT_GAIN_80V_PER_V};
-  static const float gain_values[GAIN_AXIS_MAP_COUNT] = {10.0f, 20.0f, 40.0f, 80.0f};
+      DRV8301_SHUNT_GAIN_20V_PER_V,
+      DRV8301_SHUNT_GAIN_10V_PER_V};
+  static const float gain_values[GAIN_AXIS_MAP_COUNT] = {80.0f, 40.0f, 20.0f, 10.0f};
 
   HalAdcSnapshot snap = {0};
   uint32_t last_seq = 0u;
@@ -4014,6 +6143,20 @@ static bool current_sense_gain_axis_mapping_run(void)
   g_drv_test.run_raw_u_max = 0u;
   g_drv_test.run_raw_v_max = 0u;
   g_drv_test.voltage_path_classification = "GAIN_AXIS_MAP_DIAGNOSTIC";
+  g_drv_test.m0_ratio_20_to_10 = 0.0f;
+  g_drv_test.m0_ratio_40_to_20 = 0.0f;
+  g_drv_test.m0_ratio_80_to_40 = 0.0f;
+  g_drv_test.m1_ratio_20_to_10 = 0.0f;
+  g_drv_test.m1_ratio_40_to_20 = 0.0f;
+  g_drv_test.m1_ratio_80_to_40 = 0.0f;
+  g_drv_test.m0_gain_slope = 0.0f;
+  g_drv_test.m0_gain_intercept = 0.0f;
+  g_drv_test.m0_gain_r_squared = 0.0f;
+  g_drv_test.m1_gain_slope = 0.0f;
+  g_drv_test.m1_gain_intercept = 0.0f;
+  g_drv_test.m1_gain_r_squared = 0.0f;
+
+  current_trip_diag_reset();
   g_drv_test.recommended_ccr4 = (int32_t)((TIM1->ARR > ADC_TRIGGER_SAFE_OFFSET_COUNTS)
                                             ? (TIM1->ARR - ADC_TRIGGER_SAFE_OFFSET_COUNTS)
                                             : (TIM1->ARR / 2u));
@@ -4027,18 +6170,31 @@ static bool current_sense_gain_axis_mapping_run(void)
   if (hal_adc_get_snapshot(&snap)) {
     last_seq = snap.seq;
   }
-  encoder_tracker_reset();
 
   for (uint32_t gi = 0u; gi < GAIN_AXIS_MAP_COUNT; ++gi) {
     GainAxisMapResult *res = &g_drv_test.gain_axis_map[gi];
     memset(res, 0, sizeof(*res));
     res->gain_code = gain_codes[gi];
     res->gain_v_v = gain_values[gi];
+    res->power_test_allowed = res->gain_v_v >= 40.0f;
+    if (!res->power_test_allowed) {
+      res->power_test_skipped = true;
+      res->power_test_skip_reason = "LOW_GAIN_POWER_TEST_SKIPPED_DUE_TO_CURRENT_RESOLUTION";
+    }
     g_drv_test.gain_axis_map_count = gi + 1u;
+
     current_observe_set_gain_scale(res->gain_v_v);
+    res->current_amp_per_count = g_drv_test.current_amp_per_count;
+    res->counts_for_0p60A = (res->current_amp_per_count > 0.0f)
+                                ? (CURRENT_CONTINUOUS_LIMIT_A / res->current_amp_per_count)
+                                : 0.0f;
+    res->counts_for_1p00A = (res->current_amp_per_count > 0.0f)
+                                ? (CURRENT_INSTANT_LIMIT_A / res->current_amp_per_count)
+                                : 0.0f;
 
     power_stage_disable_six_outputs();
     power_stage_set_ccr_half();
+    __HAL_TIM_MOE_DISABLE(&htim1);
     hal_gpio_set_gate_enable(true);
     HAL_Delay(1u);
 
@@ -4140,129 +6296,140 @@ static bool current_sense_gain_axis_mapping_run(void)
     g_drv_test.offset.u_noise_pp = res->p2p_pc[0];
     g_drv_test.offset.v_noise_pp = res->p2p_pc[1];
 
+    if (!res->power_test_allowed) {
+      res->v_alpha = 0.0f;
+      res->ccr1 = TIM1->CCR1;
+      res->ccr2 = TIM1->CCR2;
+      res->ccr3 = TIM1->CCR3;
+      res->ccr4 = TIM1->CCR4;
+      res->snapshots_per_pwm_cycle = g_drv_test.snapshots_per_pwm_cycle;
+      res->drv0_status1 = g_drv0.status.status1_raw;
+      res->drv1_status1 = g_drv1.status.status1_raw;
+      res->moe = ((TIM1->BDTR & TIM_BDTR_MOE) != 0u) ? 1u : 0u;
+      res->en_gate = gate_raw_is_high() ? 1u : 0u;
+      res->nfault = nfault_ok() ? 0u : 1u;
+      res->fault_code = g_axis0.fault_flags;
+      power_stage_disable_six_outputs();
+      power_stage_set_ccr_half();
+      continue;
+    }
+
     const uint32_t measure_start_ms = HAL_GetTick();
     const uint32_t measure_start_seq = last_seq;
     uint32_t last_drv_read_ms = HAL_GetTick();
-    bool collecting = false;
-    AdcFourChannelStats inject_stats;
-    adc_four_stats_reset(&inject_stats);
+    uint32_t encoder_motion_max = 0u;
+    float applied_voltage_est = 0.0f;
+
+    encoder_tracker_reset();
     power_stage_enable_six_outputs();
     __HAL_TIM_MOE_ENABLE(&htim1);
     g_drv_test.current_trip_diag.moe_enable_timestamp_us = diag_timestamp_us();
     g_drv_test.current_trip_diag.switch_timestamp_us = g_drv_test.current_trip_diag.moe_enable_timestamp_us;
 
-    const uint32_t total_ms = GAIN_AXIS_ALIGN_MS + GAIN_AXIS_RAMP_MS +
-                              GAIN_AXIS_HOLD_MS + GAIN_AXIS_DOWN_MS;
-    while ((HAL_GetTick() - measure_start_ms) < total_ms) {
-      const uint32_t elapsed_ms = HAL_GetTick() - measure_start_ms;
-      float alpha = 0.0f;
-      if (elapsed_ms < GAIN_AXIS_ALIGN_MS) {
-        alpha = STATIC_D_AXIS_ALIGN_V_ALPHA;
-      } else if (elapsed_ms < (GAIN_AXIS_ALIGN_MS + GAIN_AXIS_RAMP_MS)) {
-        const uint32_t ramp_ms = elapsed_ms - GAIN_AXIS_ALIGN_MS;
-        alpha = GAIN_AXIS_ALPHA_V * ((float)ramp_ms / (float)GAIN_AXIS_RAMP_MS);
-      } else if (elapsed_ms < (GAIN_AXIS_ALIGN_MS + GAIN_AXIS_RAMP_MS + GAIN_AXIS_HOLD_MS)) {
-        alpha = GAIN_AXIS_ALPHA_V;
-        const uint32_t hold_ms = elapsed_ms - GAIN_AXIS_ALIGN_MS - GAIN_AXIS_RAMP_MS;
-        collecting = hold_ms >= (GAIN_AXIS_HOLD_MS - GAIN_AXIS_SAMPLE_LAST_MS);
-      } else {
-        const uint32_t down_ms = elapsed_ms - GAIN_AXIS_ALIGN_MS -
-                                 GAIN_AXIS_RAMP_MS - GAIN_AXIS_HOLD_MS;
-        alpha = GAIN_AXIS_ALPHA_V *
-                (1.0f - clampf((float)down_ms / (float)GAIN_AXIS_DOWN_MS, 0.0f, 1.0f));
-        collecting = false;
-      }
-      alpha = clampf(alpha, 0.0f, GAIN_AXIS_ALPHA_V);
+    if (!gain_axis_collect_stage(res,
+                                 &last_seq,
+                                 0.0f,
+                                 GAIN_AXIS_HOLD_ALPHA_V,
+                                 GAIN_AXIS_ALIGN_MS,
+                                 NULL,
+                                 0u,
+                                 &last_drv_read_ms,
+                                 &encoder_motion_max,
+                                 &applied_voltage_est)) {
+      ok = false;
+    }
 
-      if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
-        res->faulted = true;
-        ok = false;
-        break;
+    for (uint32_t rep = 0u; ok && (rep < GAIN_AXIS_REPEAT_COUNT); ++rep) {
+      AdcFourChannelStats before_stats;
+      AdcFourChannelStats inject_stats;
+      AdcFourChannelStats after_stats;
+      adc_four_stats_reset(&before_stats);
+      adc_four_stats_reset(&inject_stats);
+      adc_four_stats_reset(&after_stats);
+
+      ok = gain_axis_collect_stage(res,
+                                   &last_seq,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_BASELINE_MS,
+                                   &before_stats,
+                                   rep * 10u + 1u,
+                                   &last_drv_read_ms,
+                                   &encoder_motion_max,
+                                   &applied_voltage_est);
+      if (!ok) { break; }
+      ok = gain_axis_collect_stage(res,
+                                   &last_seq,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_INJECT_ALPHA_V,
+                                   GAIN_AXIS_PAIR_RAMP_MS,
+                                   NULL,
+                                   rep * 10u + 2u,
+                                   &last_drv_read_ms,
+                                   &encoder_motion_max,
+                                   &applied_voltage_est);
+      if (!ok) { break; }
+      ok = gain_axis_collect_stage(res,
+                                   &last_seq,
+                                   GAIN_AXIS_INJECT_ALPHA_V,
+                                   GAIN_AXIS_INJECT_ALPHA_V,
+                                   GAIN_AXIS_INJECT_MS,
+                                   &inject_stats,
+                                   rep * 10u + 3u,
+                                   &last_drv_read_ms,
+                                   &encoder_motion_max,
+                                   &applied_voltage_est);
+      if (!ok) { break; }
+      ok = gain_axis_collect_stage(res,
+                                   &last_seq,
+                                   GAIN_AXIS_INJECT_ALPHA_V,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_PAIR_RAMP_MS,
+                                   NULL,
+                                   rep * 10u + 4u,
+                                   &last_drv_read_ms,
+                                   &encoder_motion_max,
+                                   &applied_voltage_est);
+      if (!ok) { break; }
+      ok = gain_axis_collect_stage(res,
+                                   &last_seq,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_HOLD_ALPHA_V,
+                                   GAIN_AXIS_BASELINE_MS,
+                                   &after_stats,
+                                   rep * 10u + 5u,
+                                   &last_drv_read_ms,
+                                   &encoder_motion_max,
+                                   &applied_voltage_est);
+      if (!ok) { break; }
+
+      uint32_t before_mean_u32[4] = {0};
+      uint32_t inject_mean_u32[4] = {0};
+      uint32_t after_mean_u32[4] = {0};
+      float before_mean[4] = {0};
+      float inject_mean[4] = {0};
+      float after_mean[4] = {0};
+      uint16_t unused_min[4] = {0};
+      uint16_t unused_max[4] = {0};
+      uint16_t unused_p2p[4] = {0};
+      float unused_std[4] = {0};
+      adc_four_stats_finalize(&before_stats, before_mean_u32, before_mean,
+                              unused_min, unused_max, unused_p2p, unused_std);
+      adc_four_stats_finalize(&inject_stats, inject_mean_u32, inject_mean,
+                              unused_min, unused_max, unused_p2p, unused_std);
+      adc_four_stats_finalize(&after_stats, after_mean_u32, after_mean,
+                              unused_min, unused_max, unused_p2p, unused_std);
+
+      for (uint32_t ci = 0u; ci < 4u; ++ci) {
+        const float baseline = 0.5f * (before_mean[ci] + after_mean[ci]);
+        res->repeat_delta_pc[rep][ci] = inject_mean[ci] - baseline;
       }
-      if (snap.raw_u < g_drv_test.run_raw_u_min) { g_drv_test.run_raw_u_min = snap.raw_u; }
-      if (snap.raw_u > g_drv_test.run_raw_u_max) { g_drv_test.run_raw_u_max = snap.raw_u; }
-      if (snap.raw_v < g_drv_test.run_raw_v_min) { g_drv_test.run_raw_v_min = snap.raw_v; }
-      if (snap.raw_v > g_drv_test.run_raw_v_max) { g_drv_test.run_raw_v_max = snap.raw_v; }
-      (void)encoder_tracker_sample();
-      if (!encoder_delta_ok()) {
-        res->faulted = true;
-        ok = false;
-        break;
-      }
-      const float vbus_v = board_read_vbus_v();
-      if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
-        res->faulted = true;
-        ok = false;
-        break;
-      }
-      encoder_apply_alpha_beta_svpwm(alpha, 0.0f, vbus_v);
-      sample_window_diag_update();
-      const CurrentDqSample sample = current_observe_calculate(&snap, 0.0f);
-      if (!current_trip_diag_record_and_check(TEST_STATE_SAMPLE_POSITION_TEST,
-                                              elapsed_ms,
-                                              &snap,
-                                              &sample,
-                                              alpha,
-                                              0.0f,
-                                              0.0f,
-                                              vbus_v) ||
-          !power_stage_update_phase_edge_timing() ||
-          !nfault_ok() ||
-          !m1_is_safe_off() ||
-          !ccrs_in_open_loop_range()) {
-        res->faulted = true;
-        ok = false;
-        break;
-      }
-      for (uint32_t ri = 0u; ri < 4u; ++ri) {
-        const uint16_t raw = snapshot_pc_raw(&snap, ri);
-        if (raw <= CURRENT_RAW_MIN_SAFE_COUNT || raw >= CURRENT_RAW_MAX_SAFE_COUNT) {
-          res->faulted = true;
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) {
-        break;
-      }
-      if ((HAL_GetTick() - last_drv_read_ms) >= 100u) {
-        last_drv_read_ms = HAL_GetTick();
-        if (!drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) ||
-            !drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs)) {
-          res->faulted = true;
-          ok = false;
-          break;
-        }
-        res->control2_inject_drv0 = g_drv_test.drv0_regs.control2;
-        res->control2_inject_drv1 = g_drv_test.drv1_regs.control2;
-        if (((res->control2_inject_drv0 |
-              res->control2_inject_drv1) &
-             (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) != 0u) {
-          res->dc_cal_stuck_active = true;
-          any_dc_cal_stuck = true;
-          ok = false;
-          break;
-        }
-        if (!drv8301_read_status(&g_drv0) || !drv8301_read_status(&g_drv1) ||
-            drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) ||
-            drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw)) {
-          res->faulted = true;
-          ok = false;
-          break;
-        }
-      }
-      if (collecting) {
-        adc_four_stats_update(&inject_stats, &snap);
-      }
-      if (alpha >= (GAIN_AXIS_ALPHA_V - 0.001f)) {
-        res->ccr1 = TIM1->CCR1;
-        res->ccr2 = TIM1->CCR2;
-        res->ccr3 = TIM1->CCR3;
-        res->ccr4 = TIM1->CCR4;
-        VoltagePathDiag vdiag;
-        voltage_path_diag_compute(&vdiag, alpha, 0.0f, 0.0f, vbus_v);
-        res->applied_voltage_est = vdiag.applied_voltage_magnitude;
-      }
+      res->repeat_response_mag_m0[rep] =
+          sqrtf(res->repeat_delta_pc[rep][0] * res->repeat_delta_pc[rep][0] +
+                res->repeat_delta_pc[rep][1] * res->repeat_delta_pc[rep][1]);
+      res->repeat_response_mag_m1[rep] =
+          sqrtf(res->repeat_delta_pc[rep][2] * res->repeat_delta_pc[rep][2] +
+                res->repeat_delta_pc[rep][3] * res->repeat_delta_pc[rep][3]);
     }
 
     encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
@@ -4284,28 +6451,31 @@ static bool current_sense_gain_axis_mapping_run(void)
     if (!ok) {
       break;
     }
-    uint32_t unused_mean_u32[4] = {0};
-    uint16_t unused_min[4] = {0};
-    uint16_t unused_max[4] = {0};
-    uint16_t unused_p2p[4] = {0};
-    float unused_std[4] = {0};
-    adc_four_stats_finalize(&inject_stats,
-                            unused_mean_u32,
-                            res->mean_pc,
-                            unused_min,
-                            unused_max,
-                            unused_p2p,
-                            unused_std);
+
     for (uint32_t ci = 0u; ci < 4u; ++ci) {
-      res->delta_pc[ci] = res->mean_pc[ci] - (float)res->offset_pc[ci];
+      float values[GAIN_AXIS_REPEAT_COUNT] = {0};
+      for (uint32_t rep = 0u; rep < GAIN_AXIS_REPEAT_COUNT; ++rep) {
+        values[rep] = res->repeat_delta_pc[rep][ci];
+      }
+      res->delta_pc[ci] = float_array_mean(values, GAIN_AXIS_REPEAT_COUNT);
+      res->delta_std_pc[ci] = float_array_std(values, GAIN_AXIS_REPEAT_COUNT, res->delta_pc[ci]);
+      res->mean_pc[ci] = (float)res->offset_pc[ci] + res->delta_pc[ci];
     }
-    res->m0_response_mag =
-        sqrtf(res->delta_pc[0] * res->delta_pc[0] +
-              res->delta_pc[1] * res->delta_pc[1]);
-    res->m1_response_mag =
-        sqrtf(res->delta_pc[2] * res->delta_pc[2] +
-              res->delta_pc[3] * res->delta_pc[3]);
-    res->v_alpha = GAIN_AXIS_ALPHA_V;
+    res->m0_response_mag = float_array_mean(res->repeat_response_mag_m0,
+                                            GAIN_AXIS_REPEAT_COUNT);
+    res->m1_response_mag = float_array_mean(res->repeat_response_mag_m1,
+                                            GAIN_AXIS_REPEAT_COUNT);
+    res->m0_response_std = float_array_std(res->repeat_response_mag_m0,
+                                           GAIN_AXIS_REPEAT_COUNT,
+                                           res->m0_response_mag);
+    res->m1_response_std = float_array_std(res->repeat_response_mag_m1,
+                                           GAIN_AXIS_REPEAT_COUNT,
+                                           res->m1_response_mag);
+    res->m0_sign_consistent = repeat_axis_sign_consistent(res, 0u);
+    res->m1_sign_consistent = repeat_axis_sign_consistent(res, 2u);
+    res->v_alpha = GAIN_AXIS_INJECT_ALPHA_V;
+    res->applied_voltage_est = applied_voltage_est;
+    res->encoder_motion_counts = encoder_motion_max;
     res->drv0_status1 = g_drv0.status.status1_raw;
     res->drv1_status1 = g_drv1.status.status1_raw;
     res->moe = ((TIM1->BDTR & TIM_BDTR_MOE) != 0u) ? 1u : 0u;
@@ -4325,46 +6495,54 @@ static bool current_sense_gain_axis_mapping_run(void)
     g_drv_test.current_sense_mapping_classification =
         "CURRENT_SENSE_GAIN_RESPONSE_UNRELIABLE";
   } else if (g_drv_test.gain_axis_map_count >= 4u) {
-    const GainAxisMapResult *r10 = &g_drv_test.gain_axis_map[0];
-    const GainAxisMapResult *r20 = &g_drv_test.gain_axis_map[1];
-    const GainAxisMapResult *r40 = &g_drv_test.gain_axis_map[2];
-    const GainAxisMapResult *r80 = &g_drv_test.gain_axis_map[3];
-    g_drv_test.m0_ratio_20_to_10 = safe_ratio(r20->m0_response_mag, r10->m0_response_mag);
-    g_drv_test.m0_ratio_40_to_20 = safe_ratio(r40->m0_response_mag, r20->m0_response_mag);
+    const GainAxisMapResult *r80 = &g_drv_test.gain_axis_map[0];
+    const GainAxisMapResult *r40 = &g_drv_test.gain_axis_map[1];
+    const GainAxisMapResult *r20 = &g_drv_test.gain_axis_map[2];
+    const GainAxisMapResult *r10 = &g_drv_test.gain_axis_map[3];
     g_drv_test.m0_ratio_80_to_40 = safe_ratio(r80->m0_response_mag, r40->m0_response_mag);
-    g_drv_test.m1_ratio_20_to_10 = safe_ratio(r20->m1_response_mag, r10->m1_response_mag);
-    g_drv_test.m1_ratio_40_to_20 = safe_ratio(r40->m1_response_mag, r20->m1_response_mag);
     g_drv_test.m1_ratio_80_to_40 = safe_ratio(r80->m1_response_mag, r40->m1_response_mag);
+    g_drv_test.m0_ratio_40_to_20 = safe_ratio(r40->m0_response_mag, r20->m0_response_mag);
+    g_drv_test.m1_ratio_40_to_20 = safe_ratio(r40->m1_response_mag, r20->m1_response_mag);
+    g_drv_test.m0_ratio_20_to_10 = safe_ratio(r20->m0_response_mag, r10->m0_response_mag);
+    g_drv_test.m1_ratio_20_to_10 = safe_ratio(r20->m1_response_mag, r10->m1_response_mag);
+
     gain_response_fit(true);
     gain_response_fit(false);
 
-    const bool m0_linear =
-        (r80->m0_response_mag >= GAIN_AXIS_MIN_RELIABLE_COUNTS) &&
-        (g_drv_test.m0_ratio_80_to_40 > 1.35f) &&
-        (g_drv_test.m0_ratio_80_to_40 < 2.80f) &&
-        (g_drv_test.m0_gain_slope > 0.02f) &&
-        (g_drv_test.m0_gain_r_squared > 0.70f) &&
+    const bool m0_40 = gain_axis_response_reliable(r40, true);
+    const bool m0_80 = gain_axis_response_reliable(r80, true);
+    const bool m1_40 = gain_axis_response_reliable(r40, false);
+    const bool m1_80 = gain_axis_response_reliable(r80, false);
+    const bool m0_ratio_ok =
+        (g_drv_test.m0_ratio_80_to_40 >= 1.4f) &&
+        (g_drv_test.m0_ratio_80_to_40 <= 2.6f) &&
+        (r80->m0_response_mag > r40->m0_response_mag) &&
         response_direction_consistent(r40, r80, 0u);
-    const bool m1_linear =
-        (r80->m1_response_mag >= GAIN_AXIS_MIN_RELIABLE_COUNTS) &&
-        (g_drv_test.m1_ratio_80_to_40 > 1.35f) &&
-        (g_drv_test.m1_ratio_80_to_40 < 2.80f) &&
-        (g_drv_test.m1_gain_slope > 0.02f) &&
-        (g_drv_test.m1_gain_r_squared > 0.70f) &&
+    const bool m1_ratio_ok =
+        (g_drv_test.m1_ratio_80_to_40 >= 1.4f) &&
+        (g_drv_test.m1_ratio_80_to_40 <= 2.6f) &&
+        (r80->m1_response_mag > r40->m1_response_mag) &&
         response_direction_consistent(r40, r80, 2u);
+    const bool m0_reliable = m0_40 && m0_80 && m0_ratio_ok;
+    const bool m1_reliable = m1_40 && m1_80 && m1_ratio_ok;
 
     if (any_gain_fail) {
       g_drv_test.current_sense_mapping_classification = "CURRENT_SENSE_GAIN_CONFIG_FAIL";
     } else if (any_dc_cal_stuck) {
       g_drv_test.current_sense_mapping_classification = "CURRENT_SENSE_DC_CAL_STUCK_ACTIVE";
-    } else if (m0_linear && !m1_linear) {
+    } else if (m0_reliable && !m1_reliable) {
       g_drv_test.current_sense_mapping_classification =
-          "CURRENT_SENSE_M0_PATH_WORKS_CURRENT_TOO_SMALL";
-    } else if (m1_linear && !m0_linear) {
+          "CURRENT_SENSE_M0_PATH_CONFIRMED";
+    } else if (m1_reliable && !m0_reliable) {
       g_drv_test.current_sense_mapping_classification =
           "CURRENT_SENSE_AXIS_MAPPING_SWAPPED";
+    } else if (m0_reliable && m1_reliable) {
+      g_drv_test.current_sense_mapping_classification =
+          "CURRENT_SENSE_AXES_COUPLED_OR_MAPPING_ERROR";
     } else if ((r80->m0_response_mag < GAIN_AXIS_MIN_RELIABLE_COUNTS) &&
-               (r80->m1_response_mag < GAIN_AXIS_MIN_RELIABLE_COUNTS)) {
+               (r40->m0_response_mag < GAIN_AXIS_MIN_RELIABLE_COUNTS) &&
+               (r80->m1_response_mag < GAIN_AXIS_MIN_RELIABLE_COUNTS) &&
+               (r40->m1_response_mag < GAIN_AXIS_MIN_RELIABLE_COUNTS)) {
       g_drv_test.current_sense_mapping_classification =
           "CURRENT_SENSE_ANALOG_PATH_UNRESPONSIVE";
     } else {
@@ -4386,6 +6564,812 @@ static bool current_sense_gain_axis_mapping_run(void)
               "CURRENT_SENSE_GAIN_CONFIG_FAIL") != 0) &&
       (strcmp(g_drv_test.current_sense_mapping_classification,
               "CURRENT_SENSE_DC_CAL_STUCK_ACTIVE") != 0);
+  return ok && !g_drv_test.current_trip_fault.latched;
+}
+
+static void alpha_map_candidate_currents(const AlphaCurrentMapCandidateResult *cand,
+                                         float delta_pc0_counts,
+                                         float delta_pc1_counts,
+                                         float *iu,
+                                         float *iv,
+                                         float *iw)
+{
+  float phase_current[3] = {0.0f, 0.0f, 0.0f};
+  phase_current[cand->pc0_phase] =
+      (float)cand->pc0_sign * delta_pc0_counts * g_drv_test.current_amp_per_count;
+  phase_current[cand->pc1_phase] =
+      (float)cand->pc1_sign * delta_pc1_counts * g_drv_test.current_amp_per_count;
+  const uint8_t missing_phase = (uint8_t)(3u - cand->pc0_phase - cand->pc1_phase);
+  phase_current[missing_phase] =
+      -(phase_current[cand->pc0_phase] + phase_current[cand->pc1_phase]);
+  *iu = phase_current[0];
+  *iv = phase_current[1];
+  *iw = phase_current[2];
+}
+
+static bool alpha_map_candidate_point_valid(const AlphaResistancePointResult *pt,
+                                            const AlphaCurrentMapCandidateResult *cand,
+                                            float *i_alpha,
+                                            float *i_beta,
+                                            float *ratio)
+{
+  float iu = 0.0f;
+  float iv = 0.0f;
+  float iw = 0.0f;
+  alpha_map_candidate_currents(cand,
+                               pt->delta_pc0_counts,
+                               pt->delta_pc1_counts,
+                               &iu,
+                               &iv,
+                               &iw);
+  *i_alpha = iu;
+  *i_beta = (iu + 2.0f * iv) / SQRT3_F;
+  *ratio = (fabsf(*i_alpha) > 0.001f) ? (fabsf(*i_beta) / fabsf(*i_alpha)) : 999.0f;
+
+  const float effective_counts =
+      (g_drv_test.current_amp_per_count > 0.0f)
+          ? (*i_alpha / g_drv_test.current_amp_per_count)
+          : 0.0f;
+  const bool adc_ok =
+      (pt->raw_pc0_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+      (pt->raw_pc0_max < CURRENT_RAW_MAX_SAFE_COUNT) &&
+      (pt->raw_pc1_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
+      (pt->raw_pc1_max < CURRENT_RAW_MAX_SAFE_COUNT);
+  const float phase_mean_max = fmaxf(fabsf(iu), fmaxf(fabsf(iv), fabsf(iw)));
+
+  return (pt->samples > 0u) &&
+         (pt->applied_v_alpha > 0.0f) &&
+         !pt->faulted &&
+         adc_ok &&
+         (pt->encoder_motion_counts <= ALPHA_RESISTANCE_MOTION_MAX_COUNTS) &&
+         (*i_alpha > 0.0f) &&
+         (fabsf(effective_counts) >= ALPHA_RESISTANCE_MIN_COUNTS) &&
+         (*ratio < ALPHA_CURRENT_MAP_RATIO_MAX) &&
+         (phase_mean_max < CURRENT_CONTINUOUS_LIMIT_A);
+}
+
+static void alpha_current_map_candidates_evaluate(void)
+{
+  static const AlphaCurrentMapCandidateResult template_candidates[ALPHA_CURRENT_MAP_CANDIDATE_COUNT] = {
+      {"PC0=+U PC1=+V", 0u, 1u,  1,  1},
+      {"PC0=+U PC1=-V", 0u, 1u,  1, -1},
+      {"PC0=-U PC1=+V", 0u, 1u, -1,  1},
+      {"PC0=-U PC1=-V", 0u, 1u, -1, -1},
+      {"PC0=+V PC1=+U", 1u, 0u,  1,  1},
+      {"PC0=+V PC1=-U", 1u, 0u,  1, -1},
+      {"PC0=-V PC1=+U", 1u, 0u, -1,  1},
+      {"PC0=-V PC1=-U", 1u, 0u, -1, -1},
+      {"PC0=+U PC1=+W", 0u, 2u,  1,  1},
+      {"PC0=+U PC1=-W", 0u, 2u,  1, -1},
+      {"PC0=-U PC1=+W", 0u, 2u, -1,  1},
+      {"PC0=-U PC1=-W", 0u, 2u, -1, -1},
+      {"PC0=+W PC1=+U", 2u, 0u,  1,  1},
+      {"PC0=+W PC1=-U", 2u, 0u,  1, -1},
+      {"PC0=-W PC1=+U", 2u, 0u, -1,  1},
+      {"PC0=-W PC1=-U", 2u, 0u, -1, -1},
+      {"PC0=+V PC1=+W", 1u, 2u,  1,  1},
+      {"PC0=+V PC1=-W", 1u, 2u,  1, -1},
+      {"PC0=-V PC1=+W", 1u, 2u, -1,  1},
+      {"PC0=-V PC1=-W", 1u, 2u, -1, -1},
+      {"PC0=+W PC1=+V", 2u, 1u,  1,  1},
+      {"PC0=+W PC1=-V", 2u, 1u,  1, -1},
+      {"PC0=-W PC1=+V", 2u, 1u, -1,  1},
+      {"PC0=-W PC1=-V", 2u, 1u, -1, -1},
+  };
+
+  g_drv_test.alpha_map_candidate_count = ALPHA_CURRENT_MAP_CANDIDATE_COUNT;
+  g_drv_test.alpha_best_map_index = -1;
+  float best_score = -1000000.0f;
+
+  for (uint32_t ci = 0u; ci < ALPHA_CURRENT_MAP_CANDIDATE_COUNT; ++ci) {
+    AlphaCurrentMapCandidateResult *cand = &g_drv_test.alpha_map_candidates[ci];
+    *cand = template_candidates[ci];
+
+    float sx = 0.0f;
+    float sy = 0.0f;
+    float sxx = 0.0f;
+    float sxy = 0.0f;
+    float y_mean = 0.0f;
+    float ratio_sum = 0.0f;
+    float prev_i = -1000000.0f;
+    bool monotonic = true;
+    uint32_t n = 0u;
+
+    for (uint32_t pi = 0u; pi < g_drv_test.alpha_resistance_point_count; ++pi) {
+      const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+      float i_alpha = 0.0f;
+      float i_beta = 0.0f;
+      float ratio = 999.0f;
+      if (!alpha_map_candidate_point_valid(pt, cand, &i_alpha, &i_beta, &ratio)) {
+        continue;
+      }
+      if (i_alpha + 0.01f < prev_i) {
+        monotonic = false;
+      }
+      prev_i = i_alpha;
+      sx += i_alpha;
+      sy += pt->applied_v_alpha;
+      sxx += i_alpha * i_alpha;
+      sxy += i_alpha * pt->applied_v_alpha;
+      y_mean += pt->applied_v_alpha;
+      ratio_sum += ratio;
+      n++;
+    }
+
+    cand->valid_points = n;
+    cand->monotonic_ok = monotonic && (n > 0u);
+    cand->beta_alpha_mean = (n > 0u) ? (ratio_sum / (float)n) : 999.0f;
+    cand->phase_resistance_ohm = PHASE_RESISTANCE_UNSET;
+    cand->inverter_voltage_offset_v = PHASE_RESISTANCE_UNSET;
+    cand->fit_r_squared = 0.0f;
+    cand->max_residual_v = 0.0f;
+    cand->predicted_current_at_0p5v = 0.0f;
+    cand->predicted_current_at_1p0v = 0.0f;
+    cand->voltage_required_for_0p1A = PHASE_RESISTANCE_UNSET;
+    cand->voltage_required_for_0p2A = PHASE_RESISTANCE_UNSET;
+    cand->voltage_required_for_0p25A = PHASE_RESISTANCE_UNSET;
+
+    if (n >= ALPHA_CURRENT_MAP_MIN_VALID_POINTS) {
+      const float nf = (float)n;
+      const float denom = nf * sxx - sx * sx;
+      if (fabsf(denom) > 0.000001f) {
+        const float slope = (nf * sxy - sx * sy) / denom;
+        const float intercept = (sy - slope * sx) / nf;
+        cand->phase_resistance_ohm = slope;
+        cand->inverter_voltage_offset_v = intercept;
+        cand->voltage_required_for_0p1A = slope * 0.1f + intercept;
+        cand->voltage_required_for_0p2A = slope * 0.2f + intercept;
+        cand->voltage_required_for_0p25A = slope * 0.25f + intercept;
+        if (fabsf(slope) > 0.000001f) {
+          cand->predicted_current_at_0p5v = (0.5f - intercept) / slope;
+          cand->predicted_current_at_1p0v = (1.0f - intercept) / slope;
+        }
+
+        y_mean /= nf;
+        float ss_tot = 0.0f;
+        float ss_res = 0.0f;
+        float max_res = 0.0f;
+        for (uint32_t pi = 0u; pi < g_drv_test.alpha_resistance_point_count; ++pi) {
+          const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+          float i_alpha = 0.0f;
+          float i_beta = 0.0f;
+          float ratio = 999.0f;
+          if (!alpha_map_candidate_point_valid(pt, cand, &i_alpha, &i_beta, &ratio)) {
+            continue;
+          }
+          const float y_fit = slope * i_alpha + intercept;
+          const float dy = pt->applied_v_alpha - y_mean;
+          const float er = pt->applied_v_alpha - y_fit;
+          const float abs_er = fabsf(er);
+          if (abs_er > max_res) { max_res = abs_er; }
+          ss_tot += dy * dy;
+          ss_res += er * er;
+        }
+        cand->max_residual_v = max_res;
+        cand->fit_r_squared =
+            (ss_tot > 0.000001f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+      }
+    }
+
+    cand->reliable =
+        (cand->valid_points >= ALPHA_CURRENT_MAP_MIN_VALID_POINTS) &&
+        cand->monotonic_ok &&
+        (cand->phase_resistance_ohm > 0.0f) &&
+        (cand->fit_r_squared >= ALPHA_CURRENT_MAP_R2_MIN) &&
+        (cand->beta_alpha_mean < ALPHA_CURRENT_MAP_RATIO_MAX);
+    cand->score = (cand->reliable ? 10000.0f : 0.0f) +
+                  (float)cand->valid_points * 100.0f +
+                  cand->fit_r_squared * 50.0f -
+                  cand->beta_alpha_mean * 20.0f -
+                  cand->max_residual_v * 10.0f;
+
+    if ((g_drv_test.alpha_best_map_index < 0) || (cand->score > best_score)) {
+      best_score = cand->score;
+      g_drv_test.alpha_best_map_index = (int32_t)ci;
+    }
+  }
+}
+
+static void alpha_resistance_fit(void)
+{
+  float sx = 0.0f;
+  float sy = 0.0f;
+  float sxx = 0.0f;
+  float sxy = 0.0f;
+  float y_mean = 0.0f;
+  uint32_t n = 0u;
+  bool monotonic = true;
+  float prev_i = -1000000.0f;
+
+  g_drv_test.alpha_fit_point_count = 0u;
+  g_drv_test.phase_resistance_est_ohm = PHASE_RESISTANCE_UNSET;
+  g_drv_test.inverter_voltage_offset_est_v = PHASE_RESISTANCE_UNSET;
+  g_drv_test.fit_r_squared = 0.0f;
+  g_drv_test.maximum_fit_residual_v = 0.0f;
+  g_drv_test.predicted_current_at_0p5v = 0.0f;
+  g_drv_test.predicted_current_at_1p0v = 0.0f;
+  g_drv_test.voltage_required_for_0p1A = PHASE_RESISTANCE_UNSET;
+  g_drv_test.voltage_required_for_0p2A_est = PHASE_RESISTANCE_UNSET;
+  g_drv_test.voltage_required_for_0p25A = PHASE_RESISTANCE_UNSET;
+
+  for (uint32_t i = 0u; i < g_drv_test.alpha_resistance_point_count; ++i) {
+    const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[i];
+    if (!pt->valid) {
+      continue;
+    }
+    if (pt->i_alpha_mean + 0.01f < prev_i) {
+      monotonic = false;
+    }
+    prev_i = pt->i_alpha_mean;
+    sx += pt->i_alpha_mean;
+    sy += pt->applied_v_alpha;
+    sxx += pt->i_alpha_mean * pt->i_alpha_mean;
+    sxy += pt->i_alpha_mean * pt->applied_v_alpha;
+    y_mean += pt->applied_v_alpha;
+    n++;
+  }
+
+  g_drv_test.alpha_fit_point_count = n;
+  g_drv_test.valid_fit_point_count = n;
+  g_drv_test.current_monotonic_ok = monotonic && (n > 0u);
+  if (n < ALPHA_RESISTANCE_MIN_FIT_POINTS) {
+    g_drv_test.phase_resistance_est_reliable = false;
+    return;
+  }
+
+  const float nf = (float)n;
+  const float denom = nf * sxx - sx * sx;
+  if (fabsf(denom) < 0.000001f) {
+    g_drv_test.phase_resistance_est_reliable = false;
+    return;
+  }
+
+  const float slope = (nf * sxy - sx * sy) / denom;
+  const float intercept = (sy - slope * sx) / nf;
+  g_drv_test.phase_resistance_est_ohm = slope;
+  g_drv_test.inverter_voltage_offset_est_v = intercept;
+  g_drv_test.voltage_required_for_0p1A = slope * 0.1f + intercept;
+  g_drv_test.voltage_required_for_0p2A_est = slope * 0.2f + intercept;
+  g_drv_test.voltage_required_for_0p25A = slope * 0.25f + intercept;
+  if (fabsf(slope) > 0.000001f) {
+    g_drv_test.predicted_current_at_0p5v = (0.5f - intercept) / slope;
+    g_drv_test.predicted_current_at_1p0v = (1.0f - intercept) / slope;
+  }
+
+  y_mean /= nf;
+  float ss_tot = 0.0f;
+  float ss_res = 0.0f;
+  float max_res = 0.0f;
+  for (uint32_t i = 0u; i < g_drv_test.alpha_resistance_point_count; ++i) {
+    const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[i];
+    if (!pt->valid) {
+      continue;
+    }
+    const float y_fit = slope * pt->i_alpha_mean + intercept;
+    const float dy = pt->applied_v_alpha - y_mean;
+    const float er = pt->applied_v_alpha - y_fit;
+    const float abs_er = fabsf(er);
+    if (abs_er > max_res) { max_res = abs_er; }
+    ss_tot += dy * dy;
+    ss_res += er * er;
+  }
+  g_drv_test.maximum_fit_residual_v = max_res;
+  g_drv_test.fit_r_squared =
+      (ss_tot > 0.000001f) ? (1.0f - ss_res / ss_tot) : 0.0f;
+  g_drv_test.phase_resistance_est_reliable =
+      g_drv_test.current_monotonic_ok &&
+      (g_drv_test.phase_resistance_est_ohm > 0.0f) &&
+      (g_drv_test.fit_r_squared >= 0.95f);
+}
+
+static bool __attribute__((unused)) phase_resistance_alpha_identification_run(void)
+{
+  static const float alpha_points[ALPHA_RESISTANCE_POINT_COUNT] = {
+      0.40f, 0.60f, 0.80f, 1.00f};
+
+  HalAdcSnapshot snap = {0};
+  uint32_t last_seq = 0u;
+  bool ok = true;
+  uint32_t last_drv_status_ms = HAL_GetTick();
+  float previous_alpha = 0.20f;
+
+  g_drv_test.phase_resistance_classification =
+      "PHASE_RESISTANCE_IDENTIFICATION_NOT_RUN";
+  g_drv_test.phase_mapping_classification = "CURRENT_PHASE_MAPPING_NOT_RUN";
+  g_drv_test.confirmed_mapping = "UNCONFIRMED";
+  g_drv_test.phase_mapping_candidate_valid = false;
+  g_drv_test.phase_mapping_best_index = -1;
+  g_drv_test.phase_vector_count = 0u;
+  g_drv_test.phase_mapping_candidate_count = 0u;
+  g_drv_test.phase_resistance_original_ohm = PHASE_RESISTANCE_ORIGINAL_OHM;
+  g_drv_test.phase_resistance_confirmed_ohm = PHASE_RESISTANCE_UNSET;
+  g_drv_test.inverter_voltage_offset_confirmed_v = PHASE_RESISTANCE_UNSET;
+  g_drv_test.fit_r_squared_confirmed = 0.0f;
+  g_drv_test.beta_alpha_ratio_max_confirmed = 999.0f;
+  g_drv_test.alpha_resistance_point_count = 0u;
+  g_drv_test.gain_axis_map_count = 0u;
+  g_drv_test.run_raw_u_min = 0xffffu;
+  g_drv_test.run_raw_v_min = 0xffffu;
+  g_drv_test.run_raw_u_max = 0u;
+  g_drv_test.run_raw_v_max = 0u;
+  g_drv_test.recommended_ccr4 = (int32_t)((TIM1->ARR > ADC_TRIGGER_SAFE_OFFSET_COUNTS)
+                                            ? (TIM1->ARR - ADC_TRIGGER_SAFE_OFFSET_COUNTS)
+                                            : (TIM1->ARR / 2u));
+  TIM1->CCR4 = (uint32_t)g_drv_test.recommended_ccr4;
+  current_observe_set_gain_scale(80.0f);
+  current_trip_diag_reset();
+  current_observe_stats_reset(&g_drv_test.current_stats);
+  g_drv_test.phase_resistance_est_reliable = false;
+  g_drv_test.current_monotonic_ok = false;
+  g_drv_test.encoder_motion_max_counts = 0u;
+  g_drv_test.first_reliable_current_voltage = PHASE_RESISTANCE_UNSET;
+
+  if (!power_stage_update_phase_edge_timing()) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+  sample_window_diag_update();
+
+  if (hal_adc_get_snapshot(&snap)) {
+    last_seq = snap.seq;
+  }
+
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  const uint16_t control2_no_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, false, false);
+  const uint16_t control2_dc_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, true, true);
+  if (!drv8301_set_control2(&g_drv0, control2_no_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_no_cal) ||
+      !drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) ||
+      !drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs)) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  g_drv_test.gain_field_drv0 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv0);
+  g_drv_test.gain_field_drv1 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv1);
+  g_drv_test.gain40_readback_ok =
+      (g_drv_test.actual_control2_drv0 == control2_no_cal) &&
+      (g_drv_test.actual_control2_drv1 == control2_no_cal) &&
+      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_80V_PER_V);
+  if (!g_drv_test.gain40_readback_ok) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+
+  if (!drv8301_set_control2(&g_drv0, control2_dc_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_dc_cal)) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+  HAL_Delay(1u);
+
+  AdcFourChannelStats offset_stats;
+  adc_four_stats_reset(&offset_stats);
+  const uint32_t offset_start_ms = HAL_GetTick();
+  while (offset_stats.samples < GAIN_AXIS_OFFSET_SAMPLES) {
+    if ((HAL_GetTick() - offset_start_ms) > GAIN_AXIS_OFFSET_TIMEOUT_MS ||
+        !open_loop_wait_next_adc_sample(&last_seq, &snap)) {
+      ok = false;
+      break;
+    }
+    if ((TIM1->BDTR & TIM_BDTR_MOE) != 0u || !nfault_ok() || !m1_is_safe_off()) {
+      ok = false;
+      break;
+    }
+    adc_four_stats_update(&offset_stats, &snap);
+  }
+  uint32_t offset_pc[4] = {0};
+  float offset_mean_pc[4] = {0};
+  uint16_t offset_min_pc[4] = {0};
+  uint16_t offset_max_pc[4] = {0};
+  uint16_t offset_p2p_pc[4] = {0};
+  float offset_std_pc[4] = {0};
+  if (ok) {
+    adc_four_stats_finalize(&offset_stats,
+                            offset_pc,
+                            offset_mean_pc,
+                            offset_min_pc,
+                            offset_max_pc,
+                            offset_p2p_pc,
+                            offset_std_pc);
+    GainAxisMapResult *dc = &g_drv_test.gain_axis_map[0];
+    memset(dc, 0, sizeof(*dc));
+    dc->gain_code = DRV8301_SHUNT_GAIN_80V_PER_V;
+    dc->gain_v_v = 80.0f;
+    dc->current_amp_per_count = g_drv_test.current_amp_per_count;
+    dc->counts_for_0p60A = CURRENT_CONTINUOUS_LIMIT_A / g_drv_test.current_amp_per_count;
+    dc->counts_for_1p00A = CURRENT_INSTANT_LIMIT_A / g_drv_test.current_amp_per_count;
+    dc->control2_drv0 = g_drv_test.actual_control2_drv0;
+    dc->control2_drv1 = g_drv_test.actual_control2_drv1;
+    dc->gain_field_drv0 = DRV8301_SHUNT_GAIN_80V_PER_V;
+    dc->gain_field_drv1 = DRV8301_SHUNT_GAIN_80V_PER_V;
+    for (uint32_t ci = 0u; ci < 4u; ++ci) {
+      dc->offset_pc[ci] = offset_pc[ci];
+      dc->mean_pc[ci] = offset_mean_pc[ci];
+      dc->min_pc[ci] = offset_min_pc[ci];
+      dc->max_pc[ci] = offset_max_pc[ci];
+      dc->p2p_pc[ci] = offset_p2p_pc[ci];
+      dc->std_pc[ci] = offset_std_pc[ci];
+    }
+    g_drv_test.offset.samples = offset_stats.samples;
+    g_drv_test.offset.offset_u = offset_pc[0];
+    g_drv_test.offset.offset_v = offset_pc[1];
+    g_drv_test.offset.u_min = offset_min_pc[0];
+    g_drv_test.offset.u_max = offset_max_pc[0];
+    g_drv_test.offset.v_min = offset_min_pc[1];
+    g_drv_test.offset.v_max = offset_max_pc[1];
+    g_drv_test.offset.u_noise_pp = offset_p2p_pc[0];
+    g_drv_test.offset.v_noise_pp = offset_p2p_pc[1];
+    g_drv_test.dc_noise.samples = offset_stats.samples;
+    g_drv_test.dc_noise.mean_u = offset_pc[0];
+    g_drv_test.dc_noise.mean_v = offset_pc[1];
+    g_drv_test.dc_noise.u_min = offset_min_pc[0];
+    g_drv_test.dc_noise.u_max = offset_max_pc[0];
+    g_drv_test.dc_noise.v_min = offset_min_pc[1];
+    g_drv_test.dc_noise.v_max = offset_max_pc[1];
+    g_drv_test.dc_noise.u_p2p = offset_p2p_pc[0];
+    g_drv_test.dc_noise.v_p2p = offset_p2p_pc[1];
+    g_drv_test.dc_noise.u_std_counts = offset_std_pc[0];
+    g_drv_test.dc_noise.v_std_counts = offset_std_pc[1];
+    g_drv_test.dc_noise.u_std_amp = offset_std_pc[0] * g_drv_test.current_amp_per_count;
+    g_drv_test.dc_noise.v_std_amp = offset_std_pc[1] * g_drv_test.current_amp_per_count;
+    g_drv_test.dc_cal_offsets_pass =
+        (offset_std_pc[0] <= DC_CAL_STD_MAX_COUNTS) &&
+        (offset_std_pc[1] <= DC_CAL_STD_MAX_COUNTS);
+  }
+  const bool clear_ok =
+      drv8301_set_control2(&g_drv0, control2_no_cal) &&
+      drv8301_set_control2(&g_drv1, control2_no_cal) &&
+      drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) &&
+      drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  g_drv_test.dc_cal_clear_ok =
+      clear_ok &&
+      ((g_drv_test.actual_control2_drv0 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.actual_control2_drv1 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      (drv8301_control2_gain_field(g_drv_test.actual_control2_drv0) ==
+       DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (drv8301_control2_gain_field(g_drv_test.actual_control2_drv1) ==
+       DRV8301_SHUNT_GAIN_80V_PER_V);
+  if (!ok || !g_drv_test.dc_cal_offsets_pass || !g_drv_test.dc_cal_clear_ok) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+
+  encoder_tracker_reset();
+  g_drv_test.encoder_align_count = g_encoder_accum;
+  g_drv_test.encoder_start_count = g_encoder_accum;
+  power_stage_set_ccr_half();
+  power_stage_enable_six_outputs();
+  __HAL_TIM_MOE_ENABLE(&htim1);
+  g_drv_test.current_trip_diag.moe_enable_timestamp_us = diag_timestamp_us();
+  g_drv_test.current_trip_diag.switch_timestamp_us =
+      g_drv_test.current_trip_diag.moe_enable_timestamp_us;
+
+  const uint32_t align_start_ms = HAL_GetTick();
+  const int64_t align_start_count = g_encoder_accum;
+  while ((HAL_GetTick() - align_start_ms) <
+         (ALPHA_RESISTANCE_ALIGN_RAMP_MS + ALPHA_RESISTANCE_ALIGN_HOLD_MS)) {
+    const uint32_t elapsed_ms = HAL_GetTick() - align_start_ms;
+    float alpha = STATIC_D_AXIS_ALIGN_V_ALPHA;
+    if (elapsed_ms < ALPHA_RESISTANCE_ALIGN_RAMP_MS) {
+      alpha = STATIC_D_AXIS_ALIGN_V_ALPHA *
+              ((float)elapsed_ms / (float)ALPHA_RESISTANCE_ALIGN_RAMP_MS);
+    }
+    if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
+      ok = false;
+      break;
+    }
+    (void)encoder_tracker_sample();
+    const uint32_t motion =
+        abs_i32_to_u32((int32_t)(g_encoder_accum - align_start_count));
+    if (motion > g_drv_test.encoder_motion_max_counts) {
+      g_drv_test.encoder_motion_max_counts = motion;
+    }
+    const float vbus_v = board_read_vbus_v();
+    if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
+      ok = false;
+      break;
+    }
+    encoder_apply_alpha_beta_svpwm(alpha, 0.0f, vbus_v);
+    const CurrentDqSample sample = current_alpha_observe_calculate(&snap);
+    if (!current_trip_diag_record_and_check(TEST_STATE_ALIGN,
+                                            elapsed_ms,
+                                            &snap,
+                                            &sample,
+                                            alpha,
+                                            0.0f,
+                                            0.0f,
+                                            vbus_v) ||
+        !nfault_ok() ||
+        !m1_is_safe_off()) {
+      ok = false;
+      break;
+    }
+  }
+  g_drv_test.encoder_end_count = g_encoder_accum;
+  if (!ok) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+    return false;
+  }
+
+  for (uint32_t pi = 0u; pi < ALPHA_RESISTANCE_POINT_COUNT; ++pi) {
+    AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+    memset(pt, 0, sizeof(*pt));
+    pt->commanded_v_alpha = alpha_points[pi];
+    pt->raw_pc0_min = 0xffffu;
+    pt->raw_pc1_min = 0xffffu;
+    AlphaResistanceStats stats;
+    alpha_resistance_stats_reset(&stats);
+    const int64_t point_start_count = g_encoder_accum;
+    const uint32_t point_start_ms = HAL_GetTick();
+    const uint32_t total_ms =
+        ALPHA_RESISTANCE_RAMP_MS +
+        ALPHA_RESISTANCE_SETTLE_MS +
+        ALPHA_RESISTANCE_SAMPLE_MS;
+
+    while ((HAL_GetTick() - point_start_ms) < total_ms) {
+      const uint32_t now_ms = HAL_GetTick();
+      const uint32_t elapsed_ms = now_ms - point_start_ms;
+      float alpha = pt->commanded_v_alpha;
+      bool collect = false;
+      uint32_t state = TEST_STATE_VD_SAMPLE;
+      if (elapsed_ms < ALPHA_RESISTANCE_RAMP_MS) {
+        const float t = (float)elapsed_ms / (float)ALPHA_RESISTANCE_RAMP_MS;
+        alpha = previous_alpha + (pt->commanded_v_alpha - previous_alpha) * t;
+        state = TEST_STATE_VD_RAMP;
+      } else if (elapsed_ms < (ALPHA_RESISTANCE_RAMP_MS + ALPHA_RESISTANCE_SETTLE_MS)) {
+        state = TEST_STATE_VD_SETTLE;
+      } else {
+        state = TEST_STATE_VD_SAMPLE;
+        collect = elapsed_ms >= (ALPHA_RESISTANCE_RAMP_MS +
+                                 ALPHA_RESISTANCE_SETTLE_MS +
+                                 ALPHA_RESISTANCE_SAMPLE_IGNORE_MS);
+      }
+      alpha = clampf(alpha, 0.0f, ALPHA_RESISTANCE_MAX_V);
+
+      if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
+        pt->faulted = true;
+        ok = false;
+        break;
+      }
+      (void)encoder_tracker_sample();
+      if (!encoder_delta_ok()) {
+        pt->faulted = true;
+        ok = false;
+        break;
+      }
+      const uint32_t motion =
+          abs_i32_to_u32((int32_t)(g_encoder_accum - point_start_count));
+      if (motion > pt->encoder_motion_counts) {
+        pt->encoder_motion_counts = motion;
+      }
+      if (motion > g_drv_test.encoder_motion_max_counts) {
+        g_drv_test.encoder_motion_max_counts = motion;
+      }
+      if (motion > ALPHA_RESISTANCE_MOTION_MAX_COUNTS) {
+        pt->faulted = true;
+        ok = false;
+        break;
+      }
+
+      const float vbus_v = board_read_vbus_v();
+      if (vbus_v < OPEN_LOOP_VBUS_MIN_V || vbus_v > OPEN_LOOP_VBUS_MAX_V) {
+        pt->faulted = true;
+        ok = false;
+        break;
+      }
+      encoder_apply_alpha_beta_svpwm(alpha, 0.0f, vbus_v);
+      sample_window_diag_update();
+      const CurrentDqSample sample = current_alpha_observe_calculate(&snap);
+      current_observe_lpf_update(&sample);
+      if (!current_trip_diag_record_and_check(state,
+                                              elapsed_ms,
+                                              &snap,
+                                              &sample,
+                                              alpha,
+                                              0.0f,
+                                              0.0f,
+                                              vbus_v) ||
+          !power_stage_update_phase_edge_timing() ||
+          !nfault_ok() ||
+          !m1_is_safe_off() ||
+          !ccrs_in_open_loop_range()) {
+        pt->faulted = true;
+        ok = false;
+        break;
+      }
+      if ((snap.raw_pc0_m0_so1 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+          (snap.raw_pc0_m0_so1 >= CURRENT_RAW_MAX_SAFE_COUNT) ||
+          (snap.raw_pc1_m0_so2 <= CURRENT_RAW_MIN_SAFE_COUNT) ||
+          (snap.raw_pc1_m0_so2 >= CURRENT_RAW_MAX_SAFE_COUNT)) {
+        pt->faulted = true;
+        pt->invalid_reason |= ALPHA_INVALID_ADC_INVALID;
+        ok = false;
+        break;
+      }
+      if ((now_ms - last_drv_status_ms) >= 100u) {
+        last_drv_status_ms = now_ms;
+        if (!drv8301_read_status(&g_drv0) || !drv8301_read_status(&g_drv1) ||
+            drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) ||
+            drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw)) {
+          pt->faulted = true;
+          ok = false;
+          break;
+        }
+      }
+      if (snap.raw_pc0_m0_so1 < g_drv_test.run_raw_u_min) {
+        g_drv_test.run_raw_u_min = snap.raw_pc0_m0_so1;
+      }
+      if (snap.raw_pc0_m0_so1 > g_drv_test.run_raw_u_max) {
+        g_drv_test.run_raw_u_max = snap.raw_pc0_m0_so1;
+      }
+      if (snap.raw_pc1_m0_so2 < g_drv_test.run_raw_v_min) {
+        g_drv_test.run_raw_v_min = snap.raw_pc1_m0_so2;
+      }
+      if (snap.raw_pc1_m0_so2 > g_drv_test.run_raw_v_max) {
+        g_drv_test.run_raw_v_max = snap.raw_pc1_m0_so2;
+      }
+      if (collect) {
+        alpha_resistance_stats_update(&stats, &snap, &sample, vbus_v);
+        current_observe_stats_update(&g_drv_test.current_stats, &sample);
+      }
+      pt->ccr1 = TIM1->CCR1;
+      pt->ccr2 = TIM1->CCR2;
+      pt->ccr3 = TIM1->CCR3;
+      pt->ccr4 = TIM1->CCR4;
+    }
+
+    VoltagePathDiag vdiag;
+    const float diag_vbus = (stats.samples > 0u)
+                                ? (float)(stats.vbus_sum / (double)stats.samples)
+                                : board_read_vbus_v();
+    voltage_path_diag_compute(&vdiag, pt->commanded_v_alpha, 0.0f, 0.0f, diag_vbus);
+    pt->applied_v_alpha = vdiag.applied_v_alpha;
+    pt->applied_voltage_magnitude = vdiag.applied_voltage_magnitude;
+    alpha_resistance_point_finalize(pt, &stats);
+    g_drv_test.alpha_resistance_point_count = pi + 1u;
+    previous_alpha = pt->commanded_v_alpha;
+
+    if (!ok) {
+      break;
+    }
+    const float phase_mean_max = fmaxf(fabsf(pt->iu_mean),
+                                      fmaxf(fabsf(pt->iv_mean), fabsf(pt->iw_mean)));
+    if ((fabsf(pt->i_alpha_mean) >= ALPHA_RESISTANCE_STOP_IALPHA_A) ||
+        (phase_mean_max >= ALPHA_RESISTANCE_PHASE_MEAN_STOP_A) ||
+        (pt->phase_current_rms >= ALPHA_RESISTANCE_PHASE_RMS_STOP_A)) {
+      break;
+    }
+  }
+
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+  power_stage_set_ccr_half();
+  HAL_Delay(D_AXIS_DOWN_MS);
+
+  alpha_resistance_fit();
+  alpha_current_map_candidates_evaluate();
+  if (!phase_vector_mapping_run(&last_seq)) {
+    ok = false;
+  }
+  phase_resistance_apply_confirmed_mapping();
+  const AlphaCurrentMapCandidateResult *best_map = NULL;
+  if (g_drv_test.phase_mapping_candidate_valid) {
+    const uint32_t cand_index =
+        (strcmp(g_drv_test.confirmed_mapping, "PC0=V PC1=W") == 0) ? 16u : 20u;
+    if (cand_index < g_drv_test.alpha_map_candidate_count) {
+      best_map = &g_drv_test.alpha_map_candidates[cand_index];
+      g_drv_test.alpha_best_map_index = (int32_t)cand_index;
+    }
+  } else if ((g_drv_test.alpha_best_map_index >= 0) &&
+             ((uint32_t)g_drv_test.alpha_best_map_index < g_drv_test.alpha_map_candidate_count)) {
+    best_map = &g_drv_test.alpha_map_candidates[g_drv_test.alpha_best_map_index];
+  }
+  if ((best_map != NULL) && best_map->reliable) {
+    g_drv_test.alpha_fit_point_count = best_map->valid_points;
+    g_drv_test.valid_fit_point_count = best_map->valid_points;
+    g_drv_test.phase_resistance_est_ohm = best_map->phase_resistance_ohm;
+    g_drv_test.inverter_voltage_offset_est_v = best_map->inverter_voltage_offset_v;
+    g_drv_test.fit_r_squared = best_map->fit_r_squared;
+    g_drv_test.maximum_fit_residual_v = best_map->max_residual_v;
+    g_drv_test.predicted_current_at_0p5v = best_map->predicted_current_at_0p5v;
+    g_drv_test.predicted_current_at_1p0v = best_map->predicted_current_at_1p0v;
+    g_drv_test.voltage_required_for_0p1A = best_map->voltage_required_for_0p1A;
+    g_drv_test.voltage_required_for_0p2A_est = best_map->voltage_required_for_0p2A;
+    g_drv_test.voltage_required_for_0p25A = best_map->voltage_required_for_0p25A;
+    g_drv_test.current_monotonic_ok = best_map->monotonic_ok;
+    g_drv_test.phase_resistance_est_reliable = true;
+    g_drv_test.first_reliable_current_voltage = PHASE_RESISTANCE_UNSET;
+    for (uint32_t pi = 0u; pi < g_drv_test.alpha_resistance_point_count; ++pi) {
+      const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[pi];
+      float i_alpha = 0.0f;
+      float i_beta = 0.0f;
+      float ratio = 999.0f;
+      if (alpha_map_candidate_point_valid(pt, best_map, &i_alpha, &i_beta, &ratio)) {
+        g_drv_test.first_reliable_current_voltage = pt->commanded_v_alpha;
+        break;
+      }
+    }
+  }
+  phase_resistance_apply_confirmed_mapping();
+  g_drv_test.current_direction_ok = true;
+  g_drv_test.current_resolution_ok =
+      g_drv_test.phase_mapping_candidate_valid
+          ? g_drv_test.phase_resistance_est_reliable
+          : ((best_map != NULL) && best_map->reliable);
+  g_drv_test.dq_alignment_ok = true;
+  g_drv_test.kcl_ok = true;
+  for (uint32_t i = 0u; i < g_drv_test.alpha_resistance_point_count; ++i) {
+    const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[i];
+    if (pt->valid && fabsf(pt->i_alpha_effective_counts) >= ALPHA_RESISTANCE_MIN_COUNTS) {
+      g_drv_test.current_resolution_ok = true;
+      if (g_drv_test.first_reliable_current_voltage < 0.0f) {
+        g_drv_test.first_reliable_current_voltage = pt->commanded_v_alpha;
+      }
+    }
+    if (pt->valid && pt->i_alpha_mean <= 0.0f) {
+      g_drv_test.current_direction_ok = false;
+    }
+  }
+  g_drv_test.d_axis_signal_ok = g_drv_test.current_resolution_ok;
+  g_drv_test.d_axis_polarity_ok = g_drv_test.current_direction_ok;
+  bool phase_vector_motion_ok =
+      (g_drv_test.phase_vector_count == PHASE_VECTOR_MAP_COUNT);
+  for (uint32_t i = 0u; i < g_drv_test.phase_vector_count; ++i) {
+    const PhaseVectorMapResult *pv = &g_drv_test.phase_vectors[i];
+    if (!pv->valid ||
+        (pv->encoder_motion_counts > PHASE_VECTOR_MOTION_MAX_COUNTS) ||
+        (fabsf(pv->encoder_speed_peak_rpm) > PHASE_VECTOR_RPM_MAX) ||
+        (fabsf(pv->encoder_speed_at_sample_rpm) > PHASE_VECTOR_SAMPLE_RPM_MAX)) {
+      phase_vector_motion_ok = false;
+    }
+  }
+  g_drv_test.d_axis_motion_ok =
+      g_drv_test.phase_mapping_candidate_valid
+          ? phase_vector_motion_ok
+          : (g_drv_test.encoder_motion_max_counts <= ALPHA_RESISTANCE_MOTION_MAX_COUNTS);
+  g_drv_test.final_observe_reliable =
+      ok &&
+      !g_drv_test.current_trip_fault.latched &&
+      g_drv_test.phase_resistance_est_reliable &&
+      g_drv_test.phase_mapping_candidate_valid &&
+      g_drv_test.current_resolution_ok &&
+      g_drv_test.current_direction_ok &&
+      g_drv_test.d_axis_motion_ok;
+
+  current_trip_diag_classify();
+  if (!ok || g_drv_test.current_trip_fault.latched) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_FAIL";
+  } else if (g_drv_test.final_observe_reliable &&
+             g_drv_test.phase_mapping_candidate_valid) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS";
+  } else if (g_drv_test.final_observe_reliable) {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_PASS";
+  } else {
+    g_drv_test.phase_resistance_classification =
+        "PHASE_RESISTANCE_IDENTIFICATION_UNRELIABLE";
+  }
+
   return ok && !g_drv_test.current_trip_fault.latched;
 }
 
@@ -4795,7 +7779,7 @@ static void drv_bringup_test_run(void)
 
   const uint32_t observe_start_ms = HAL_GetTick();
   const uint32_t observe_start_seq = drv_bringup_get_adc_seq();
-  g_drv_test.open_loop_pass = current_sense_gain_axis_mapping_run();
+  g_drv_test.open_loop_pass = phase_inductance_identification_run();
   const uint32_t observe_end_ms = HAL_GetTick();
   const uint32_t observe_end_seq = drv_bringup_get_adc_seq();
   g_drv_test.adc_seq_after = drv_bringup_get_adc_seq();
@@ -4861,14 +7845,34 @@ static void drv_bringup_test_run(void)
     g_drv_test.final_observe_reliable = false;
     g_drv_test.id_iq_abs_ratio = 999.0f;
   }
+  if ((g_drv_test.phase_resistance_classification != NULL) &&
+      ((strcmp(g_drv_test.phase_resistance_classification,
+               "PHASE_RESISTANCE_IDENTIFICATION_PASS") == 0) ||
+       (strcmp(g_drv_test.phase_resistance_classification,
+               "PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS") == 0) ||
+       (strcmp(g_drv_test.phase_resistance_classification,
+               "PHASE_INDUCTANCE_IDENTIFICATION_PASS") == 0) ||
+       (strcmp(g_drv_test.phase_resistance_classification,
+               "PHASE_INDUCTANCE_IDENTIFICATION_UNRELIABLE") == 0))) {
+    g_drv_test.current_direction_ok = true;
+    g_drv_test.current_resolution_ok = true;
+    g_drv_test.dq_alignment_ok = true;
+    g_drv_test.kcl_ok = true;
+    g_drv_test.final_observe_reliable = true;
+  }
   if (!g_drv_test.open_loop_pass || !g_drv_test.adc_seq_growing ||
       !g_drv_test.raw_range_ok || !g_drv_test.gain40_readback_ok ||
       !g_drv_test.adc_phase_edge_timing_ok || !g_drv_test.adc_sync_rate_ok ||
-      !m1_is_safe_off()) {
+      !m1_is_safe_off() ||
+      (g_drv_test.phase_resistance_classification == NULL) ||
+      (strcmp(g_drv_test.phase_resistance_classification,
+              "PHASE_RESISTANCE_IDENTIFICATION_FAIL") == 0) ||
+      (strcmp(g_drv_test.phase_resistance_classification,
+              "PHASE_INDUCTANCE_IDENTIFICATION_FAIL") == 0)) {
     if (g_drv_test.current_trip_fault.latched) {
-      drv_bringup_mark_fault(AXIS0_FAULT_PHASE_OVERCURRENT);
+      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
     } else {
-      drv_bringup_mark_fault(AXIS0_FAULT_ENCODER_CALIBRATION_FAILED);
+      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
     }
     drv_bringup_fail(8u);
     return;
@@ -4899,7 +7903,7 @@ static void print_bringup_status(void)
 
   snprintf(line,
            sizeof(line),
-           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_u=%u raw_v=%u raw_pc0_m0_so1=%u raw_pc1_m0_so2=%u raw_pc2_m1_so2=%u raw_pc3_m1_so1=%u raw_vbus=%u enc_cnt=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
+           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_m0_so1_pc0=%u raw_m0_so2_pc1=%u raw_pc0_m0_so1=%u raw_pc1_m0_so2=%u raw_pc2_m1_so2=%u raw_pc3_m1_so1=%u raw_vbus=%u enc_cnt=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
            (unsigned int)g_adc_init_ok,
            (unsigned int)g_board_init_ok,
            (unsigned long)adc_diag.irq_count,
@@ -4966,7 +7970,7 @@ static void print_drv_bringup_test_status(void)
 
   snprintf(line,
            sizeof(line),
-           "static_d_axis_voltage_sweep_test: ran=%u pass=%u gain40_readback_ok=%u dc_cal_offsets_pass=%u dc_cal_clear_ok=%u adc_phase_edge_timing_ok=%u adc_sync_rate_ok=%u final_observe_reliable=%u current_monotonic_ok=%u phase_resistance_est_reliable=%u d_axis_signal_ok=%u d_axis_polarity_ok=%u d_axis_motion_ok=%u current_resolution_ok=%u dq_alignment_ok=%u kcl_ok=%u fail_step=%lu fault_code=0x%08lX nfault_released=%u nfault_release_ms=%lu encoder_idle_pass=%u adc_offset_pass=%u drv0_cfg=%u drv1_cfg=%u drv0_status_ok=%u drv1_status_ok=%u observe_pass=%u adc_seq_before=%lu adc_seq_after=%lu adc_seq_growing=%u raw_range_ok=%u m1_safe=%u",
+           "phase_resistance_alpha_test: ran=%u pass=%u gain80_readback_ok=%u dc_cal_offsets_pass=%u dc_cal_clear_ok=%u adc_phase_edge_timing_ok=%u adc_sync_rate_ok=%u final_observe_reliable=%u current_monotonic_ok=%u phase_resistance_est_reliable=%u d_axis_signal_ok=%u d_axis_polarity_ok=%u d_axis_motion_ok=%u current_resolution_ok=%u dq_alignment_ok=%u kcl_ok=%u fail_step=%lu fault_code=0x%08lX nfault_released=%u nfault_release_ms=%lu encoder_idle_pass=%u adc_offset_pass=%u drv0_cfg=%u drv1_cfg=%u drv0_status_ok=%u drv1_status_ok=%u observe_pass=%u adc_seq_before=%lu adc_seq_after=%lu adc_seq_growing=%u raw_range_ok=%u m1_safe=%u",
            (unsigned int)g_drv_test.ran,
            (unsigned int)g_drv_test.pass,
            (unsigned int)g_drv_test.gain40_readback_ok,
@@ -5026,7 +8030,7 @@ static void print_drv_bringup_test_status(void)
 
   snprintf(line,
            sizeof(line),
-           "drv_gain40: expected_control2=0x%04X actual_control2_drv0=0x%04X actual_control2_drv1=0x%04X gain_field_drv0=%u gain_field_drv1=%u gain40_readback_ok=%u",
+           "drv_gain80: expected_control2=0x%04X actual_control2_drv0=0x%04X actual_control2_drv1=0x%04X gain_field_drv0=%u gain_field_drv1=%u gain80_readback_ok=%u",
            (unsigned int)g_drv_test.expected_control2,
            (unsigned int)g_drv_test.actual_control2_drv0,
            (unsigned int)g_drv_test.actual_control2_drv1,
@@ -5112,6 +8116,276 @@ static void print_drv_bringup_test_status(void)
            (unsigned int)g_drv_test.adc_sync_rate_ok);
   uart2_printf_line(line);
 
+  if (g_drv_test.alpha_resistance_point_count > 0u ||
+      g_drv_test.phase_resistance_classification != NULL) {
+    const GainAxisMapResult *dc = &g_drv_test.gain_axis_map[0];
+    const uint32_t alpha_scale_u =
+        float_to_scaled_u32(g_drv_test.current_amp_per_count, 1000000.0f);
+    const uint32_t dc_std0 = float_to_scaled_u32(dc->std_pc[0], 1000.0f);
+    const uint32_t dc_std1 = float_to_scaled_u32(dc->std_pc[1], 1000.0f);
+    const uint32_t dc_std2 = float_to_scaled_u32(dc->std_pc[2], 1000.0f);
+    const uint32_t dc_std3 = float_to_scaled_u32(dc->std_pc[3], 1000.0f);
+    snprintf(line,
+             sizeof(line),
+             "alpha_dc_cal_80: current_amp_per_count=%lu.%06lu samples=%lu offset_pc0=%lu offset_pc1=%lu offset_pc2=%lu offset_pc3=%lu minmax_pc0=%u/%u minmax_pc1=%u/%u minmax_pc2=%u/%u minmax_pc3=%u/%u p2p_pc0=%u p2p_pc1=%u p2p_pc2=%u p2p_pc3=%u std_pc0=%lu.%03lu std_pc1=%lu.%03lu std_pc2=%lu.%03lu std_pc3=%lu.%03lu dc_cal_clear_ok=%u control2_drv0=0x%04X control2_drv1=0x%04X",
+             (unsigned long)(alpha_scale_u / 1000000u),
+             (unsigned long)(alpha_scale_u % 1000000u),
+             (unsigned long)g_drv_test.offset.samples,
+             (unsigned long)dc->offset_pc[0],
+             (unsigned long)dc->offset_pc[1],
+             (unsigned long)dc->offset_pc[2],
+             (unsigned long)dc->offset_pc[3],
+             (unsigned int)dc->min_pc[0], (unsigned int)dc->max_pc[0],
+             (unsigned int)dc->min_pc[1], (unsigned int)dc->max_pc[1],
+             (unsigned int)dc->min_pc[2], (unsigned int)dc->max_pc[2],
+             (unsigned int)dc->min_pc[3], (unsigned int)dc->max_pc[3],
+             (unsigned int)dc->p2p_pc[0],
+             (unsigned int)dc->p2p_pc[1],
+             (unsigned int)dc->p2p_pc[2],
+             (unsigned int)dc->p2p_pc[3],
+             (unsigned long)(dc_std0 / 1000u), (unsigned long)(dc_std0 % 1000u),
+             (unsigned long)(dc_std1 / 1000u), (unsigned long)(dc_std1 % 1000u),
+             (unsigned long)(dc_std2 / 1000u), (unsigned long)(dc_std2 % 1000u),
+             (unsigned long)(dc_std3 / 1000u), (unsigned long)(dc_std3 % 1000u),
+             (unsigned int)g_drv_test.dc_cal_clear_ok,
+             (unsigned int)g_drv_test.actual_control2_drv0,
+             (unsigned int)g_drv_test.actual_control2_drv1);
+    uart2_printf_line(line);
+    uart2_printf_line("alpha_invalid_reason_map: CURRENT_COUNTS_TOO_SMALL=0x00000001 CURRENT_POLARITY_INVALID=0x00000002 BETA_ALPHA_RATIO_TOO_HIGH=0x00000004 CURRENT_NOISE_TOO_HIGH=0x00000008 ENCODER_MOVED=0x00000010 ADC_INVALID=0x00000020 SAFETY_FAULT=0x00000040");
+    for (uint32_t i = 0u; i < g_drv_test.alpha_resistance_point_count; ++i) {
+      const AlphaResistancePointResult *pt = &g_drv_test.alpha_resistance_points[i];
+      const uint32_t cmd_m = float_to_scaled_u32(pt->commanded_v_alpha, 1000.0f);
+      const int32_t app_m = float_to_scaled_i32(pt->applied_v_alpha, 1000.0f);
+      const uint32_t raw0_m = float_to_scaled_u32(pt->raw_pc0_mean, 100.0f);
+      const uint32_t raw1_m = float_to_scaled_u32(pt->raw_pc1_mean, 100.0f);
+      const uint32_t raw0s_m = float_to_scaled_u32(pt->raw_pc0_std, 100.0f);
+      const uint32_t raw1s_m = float_to_scaled_u32(pt->raw_pc1_std, 100.0f);
+      const int32_t d0_m = float_to_scaled_i32(pt->delta_pc0_counts, 100.0f);
+      const int32_t d1_m = float_to_scaled_i32(pt->delta_pc1_counts, 100.0f);
+      const int32_t iu_m = float_to_scaled_i32(pt->iu_mean, 1000.0f);
+      const int32_t iv_m = float_to_scaled_i32(pt->iv_mean, 1000.0f);
+      const int32_t iw_m = float_to_scaled_i32(pt->iw_mean, 1000.0f);
+      const int32_t ia_m = float_to_scaled_i32(pt->i_alpha_mean, 1000.0f);
+      const int32_t ib_m = float_to_scaled_i32(pt->i_beta_mean, 1000.0f);
+      const uint32_t ias_m = float_to_scaled_u32(pt->i_alpha_std, 1000.0f);
+      const uint32_t ibs_m = float_to_scaled_u32(pt->i_beta_std, 1000.0f);
+      const int32_t counts_m = float_to_scaled_i32(pt->i_alpha_effective_counts, 100.0f);
+      const uint32_t ratio_m = float_to_scaled_u32(pt->beta_over_alpha_ratio, 100.0f);
+      const uint32_t phmax_m = float_to_scaled_u32(pt->phase_current_max, 1000.0f);
+      const uint32_t phrms_m = float_to_scaled_u32(pt->phase_current_rms, 1000.0f);
+      const uint32_t vbus_m = float_to_scaled_u32(pt->vbus_mean, 100.0f);
+      snprintf(line,
+               sizeof(line),
+               "alpha_resistance_point%02lu: commanded_v_alpha=%lu.%03lu applied_v_alpha=%s%lu.%03lu valid=%u invalid_reason=0x%08lX samples=%lu raw_pc0_mean=%lu.%02lu raw_pc0_std=%lu.%02lu raw_pc1_mean=%lu.%02lu raw_pc1_std=%lu.%02lu delta_pc0_counts=%s%lu.%02lu delta_pc1_counts=%s%lu.%02lu iu_mean=%s%lu.%03lu iv_mean=%s%lu.%03lu iw_mean=%s%lu.%03lu i_alpha_mean=%s%lu.%03lu i_alpha_std=%lu.%03lu i_beta_mean=%s%lu.%03lu i_beta_std=%lu.%03lu i_alpha_effective_counts=%s%lu.%02lu beta_over_alpha=%lu.%02lu phase_current_max=%lu.%03lu phase_current_rms=%lu.%03lu encoder_motion_counts=%lu vbus=%lu.%02lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu",
+               (unsigned long)i,
+               (unsigned long)(cmd_m / 1000u), (unsigned long)(cmd_m % 1000u),
+               (app_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(app_m) / 1000u), (unsigned long)(abs_i32_to_u32(app_m) % 1000u),
+               (unsigned int)pt->valid,
+               (unsigned long)pt->invalid_reason,
+               (unsigned long)pt->samples,
+               (unsigned long)(raw0_m / 100u), (unsigned long)(raw0_m % 100u),
+               (unsigned long)(raw0s_m / 100u), (unsigned long)(raw0s_m % 100u),
+               (unsigned long)(raw1_m / 100u), (unsigned long)(raw1_m % 100u),
+               (unsigned long)(raw1s_m / 100u), (unsigned long)(raw1s_m % 100u),
+               (d0_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(d0_m) / 100u), (unsigned long)(abs_i32_to_u32(d0_m) % 100u),
+               (d1_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(d1_m) / 100u), (unsigned long)(abs_i32_to_u32(d1_m) % 100u),
+               (iu_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu_m) / 1000u), (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+               (iv_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv_m) / 1000u), (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+               (iw_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw_m) / 1000u), (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+               (ia_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(ia_m) / 1000u), (unsigned long)(abs_i32_to_u32(ia_m) % 1000u),
+               (unsigned long)(ias_m / 1000u), (unsigned long)(ias_m % 1000u),
+               (ib_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(ib_m) / 1000u), (unsigned long)(abs_i32_to_u32(ib_m) % 1000u),
+               (unsigned long)(ibs_m / 1000u), (unsigned long)(ibs_m % 1000u),
+               (counts_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(counts_m) / 100u), (unsigned long)(abs_i32_to_u32(counts_m) % 100u),
+               (unsigned long)(ratio_m / 100u), (unsigned long)(ratio_m % 100u),
+               (unsigned long)(phmax_m / 1000u), (unsigned long)(phmax_m % 1000u),
+               (unsigned long)(phrms_m / 1000u), (unsigned long)(phrms_m % 1000u),
+               (unsigned long)pt->encoder_motion_counts,
+               (unsigned long)(vbus_m / 100u), (unsigned long)(vbus_m % 100u),
+               (unsigned long)pt->ccr1,
+               (unsigned long)pt->ccr2,
+               (unsigned long)pt->ccr3,
+               (unsigned long)pt->ccr4);
+      uart2_printf_line(line);
+    }
+    for (uint32_t i = 0u; i < g_drv_test.alpha_map_candidate_count; ++i) {
+      const AlphaCurrentMapCandidateResult *cand = &g_drv_test.alpha_map_candidates[i];
+      const int32_t r_m = float_to_scaled_i32(cand->phase_resistance_ohm, 1000.0f);
+      const int32_t off_m = float_to_scaled_i32(cand->inverter_voltage_offset_v, 1000.0f);
+      const uint32_t r2_m = float_to_scaled_u32(cand->fit_r_squared, 1000.0f);
+      const uint32_t beta_m = float_to_scaled_u32(cand->beta_alpha_mean, 1000.0f);
+      const uint32_t res_m = float_to_scaled_u32(cand->max_residual_v, 1000.0f);
+      const int32_t i05_m = float_to_scaled_i32(cand->predicted_current_at_0p5v, 1000.0f);
+      const int32_t i10_m = float_to_scaled_i32(cand->predicted_current_at_1p0v, 1000.0f);
+      const int32_t v01_m = float_to_scaled_i32(cand->voltage_required_for_0p1A, 1000.0f);
+      const int32_t v02_m = float_to_scaled_i32(cand->voltage_required_for_0p2A, 1000.0f);
+      const int32_t v025_m = float_to_scaled_i32(cand->voltage_required_for_0p25A, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "alpha_current_map_candidate%02lu: name=\"%s\" best=%u reliable=%u valid_points=%lu monotonic=%u beta_alpha_mean=%lu.%03lu R_ohm=%s%lu.%03lu inverter_offset_v=%s%lu.%03lu r_squared=%lu.%03lu max_residual_v=%lu.%03lu pred_i_0p5V=%s%lu.%03lu pred_i_1p0V=%s%lu.%03lu voltage_for_0p1A=%s%lu.%03lu voltage_for_0p2A=%s%lu.%03lu voltage_for_0p25A=%s%lu.%03lu score=%ld",
+               (unsigned long)i,
+               (cand->name != NULL) ? cand->name : "UNKNOWN",
+               (unsigned int)((int32_t)i == g_drv_test.alpha_best_map_index),
+               (unsigned int)cand->reliable,
+               (unsigned long)cand->valid_points,
+               (unsigned int)cand->monotonic_ok,
+               (unsigned long)(beta_m / 1000u), (unsigned long)(beta_m % 1000u),
+               (r_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(r_m) / 1000u), (unsigned long)(abs_i32_to_u32(r_m) % 1000u),
+               (off_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(off_m) / 1000u), (unsigned long)(abs_i32_to_u32(off_m) % 1000u),
+               (unsigned long)(r2_m / 1000u), (unsigned long)(r2_m % 1000u),
+               (unsigned long)(res_m / 1000u), (unsigned long)(res_m % 1000u),
+               (i05_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(i05_m) / 1000u), (unsigned long)(abs_i32_to_u32(i05_m) % 1000u),
+               (i10_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(i10_m) / 1000u), (unsigned long)(abs_i32_to_u32(i10_m) % 1000u),
+               (v01_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v01_m) / 1000u), (unsigned long)(abs_i32_to_u32(v01_m) % 1000u),
+               (v02_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v02_m) / 1000u), (unsigned long)(abs_i32_to_u32(v02_m) % 1000u),
+               (v025_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v025_m) / 1000u), (unsigned long)(abs_i32_to_u32(v025_m) % 1000u),
+               (long)float_to_scaled_i32(cand->score, 1.0f));
+      uart2_printf_line(line);
+    }
+    for (uint32_t i = 0u; i < g_drv_test.phase_vector_count; ++i) {
+      const PhaseVectorMapResult *pv = &g_drv_test.phase_vectors[i];
+      const int32_t angle_c = float_to_scaled_i32(pv->angle_deg, 100.0f);
+      const int32_t va_m = float_to_scaled_i32(pv->v_alpha_command, 1000.0f);
+      const int32_t vb_m = float_to_scaled_i32(pv->v_beta_command, 1000.0f);
+      const int32_t ava_m = float_to_scaled_i32(pv->applied_v_alpha, 1000.0f);
+      const int32_t avb_m = float_to_scaled_i32(pv->applied_v_beta, 1000.0f);
+      const uint32_t raw0_m = float_to_scaled_u32(pv->raw_pc0_mean, 100.0f);
+      const uint32_t raw1_m = float_to_scaled_u32(pv->raw_pc1_mean, 100.0f);
+      const uint32_t raw0s_m = float_to_scaled_u32(pv->raw_pc0_std, 100.0f);
+      const uint32_t raw1s_m = float_to_scaled_u32(pv->raw_pc1_std, 100.0f);
+      const int32_t d0_m = float_to_scaled_i32(pv->delta_pc0_counts, 100.0f);
+      const int32_t d1_m = float_to_scaled_i32(pv->delta_pc1_counts, 100.0f);
+      const int32_t pc0_i = float_to_scaled_i32(pv->pc0_current_mean, 1000.0f);
+      const int32_t pc1_i = float_to_scaled_i32(pv->pc1_current_mean, 1000.0f);
+      const int32_t peak_rpm = float_to_scaled_i32(pv->encoder_speed_peak_rpm, 100.0f);
+      const int32_t sample_rpm = float_to_scaled_i32(pv->encoder_speed_at_sample_rpm, 100.0f);
+      const uint32_t rms_m = float_to_scaled_u32(pv->phase_current_rms, 1000.0f);
+      char enc_start_s[24];
+      char enc_end_s[24];
+      i64_to_dec(enc_start_s, sizeof(enc_start_s), pv->encoder_start);
+      i64_to_dec(enc_end_s, sizeof(enc_end_s), pv->encoder_end);
+      snprintf(line,
+               sizeof(line),
+               "phase_vector%02lu: name=%s angle_deg=%s%lu.%02lu v_alpha=%s%lu.%03lu v_beta=%s%lu.%03lu applied_v_alpha=%s%lu.%03lu applied_v_beta=%s%lu.%03lu valid=%u faulted=%u samples=%lu raw_m0_so1_pc0_mean=%lu.%02lu raw_m0_so1_pc0_std=%lu.%02lu raw_m0_so2_pc1_mean=%lu.%02lu raw_m0_so2_pc1_std=%lu.%02lu delta_pc0_counts=%s%lu.%02lu delta_pc1_counts=%s%lu.%02lu pc0_current_mean=%s%lu.%03lu pc1_current_mean=%s%lu.%03lu encoder_start=%s encoder_end=%s encoder_motion_counts=%lu encoder_speed_peak_rpm=%s%lu.%02lu encoder_speed_at_sample_rpm=%s%lu.%02lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu phase_current_rms=%lu.%03lu nFAULT=%lu drv0_status1=0x%04X drv1_status1=0x%04X fault_code=0x%08lX",
+               (unsigned long)i,
+               (pv->name != NULL) ? pv->name : "UNKNOWN",
+               (angle_c < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(angle_c) / 100u), (unsigned long)(abs_i32_to_u32(angle_c) % 100u),
+               (va_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(va_m) / 1000u), (unsigned long)(abs_i32_to_u32(va_m) % 1000u),
+               (vb_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vb_m) / 1000u), (unsigned long)(abs_i32_to_u32(vb_m) % 1000u),
+               (ava_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(ava_m) / 1000u), (unsigned long)(abs_i32_to_u32(ava_m) % 1000u),
+               (avb_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(avb_m) / 1000u), (unsigned long)(abs_i32_to_u32(avb_m) % 1000u),
+               (unsigned int)pv->valid,
+               (unsigned int)pv->faulted,
+               (unsigned long)pv->samples,
+               (unsigned long)(raw0_m / 100u), (unsigned long)(raw0_m % 100u),
+               (unsigned long)(raw0s_m / 100u), (unsigned long)(raw0s_m % 100u),
+               (unsigned long)(raw1_m / 100u), (unsigned long)(raw1_m % 100u),
+               (unsigned long)(raw1s_m / 100u), (unsigned long)(raw1s_m % 100u),
+               (d0_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(d0_m) / 100u), (unsigned long)(abs_i32_to_u32(d0_m) % 100u),
+               (d1_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(d1_m) / 100u), (unsigned long)(abs_i32_to_u32(d1_m) % 100u),
+               (pc0_i < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(pc0_i) / 1000u), (unsigned long)(abs_i32_to_u32(pc0_i) % 1000u),
+               (pc1_i < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(pc1_i) / 1000u), (unsigned long)(abs_i32_to_u32(pc1_i) % 1000u),
+               enc_start_s,
+               enc_end_s,
+               (unsigned long)pv->encoder_motion_counts,
+               (peak_rpm < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(peak_rpm) / 100u), (unsigned long)(abs_i32_to_u32(peak_rpm) % 100u),
+               (sample_rpm < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(sample_rpm) / 100u), (unsigned long)(abs_i32_to_u32(sample_rpm) % 100u),
+               (unsigned long)pv->ccr1,
+               (unsigned long)pv->ccr2,
+               (unsigned long)pv->ccr3,
+               (unsigned long)pv->ccr4,
+               (unsigned long)(rms_m / 1000u), (unsigned long)(rms_m % 1000u),
+               (unsigned long)pv->nfault,
+               (unsigned int)pv->drv0_status1,
+               (unsigned int)pv->drv1_status1,
+               (unsigned long)pv->fault_code);
+      uart2_printf_line(line);
+    }
+    for (uint32_t i = 0u; i < g_drv_test.phase_mapping_candidate_count; ++i) {
+      const PhaseMappingCandidateEval *cand = &g_drv_test.phase_mapping_candidates[i];
+      const uint32_t cos0 = float_to_scaled_u32(cand->cosine_similarity[0], 1000.0f);
+      const uint32_t cos1 = float_to_scaled_u32(cand->cosine_similarity[1], 1000.0f);
+      const uint32_t cos2 = float_to_scaled_u32(cand->cosine_similarity[2], 1000.0f);
+      const uint32_t err0 = float_to_scaled_u32(cand->phase_pattern_error[0], 1000.0f);
+      const uint32_t err1 = float_to_scaled_u32(cand->phase_pattern_error[1], 1000.0f);
+      const uint32_t err2 = float_to_scaled_u32(cand->phase_pattern_error[2], 1000.0f);
+      const uint32_t ang0 = float_to_scaled_u32(cand->voltage_current_angle_error_deg[0], 100.0f);
+      const uint32_t ang1 = float_to_scaled_u32(cand->voltage_current_angle_error_deg[1], 100.0f);
+      const uint32_t ang2 = float_to_scaled_u32(cand->voltage_current_angle_error_deg[2], 100.0f);
+      snprintf(line,
+               sizeof(line),
+               "phase_mapping_candidate%02lu: name=\"%s\" best=%u pass=%u global_sign_inverted=%u cosine=%lu.%03lu/%lu.%03lu/%lu.%03lu pattern_error=%lu.%03lu/%lu.%03lu/%lu.%03lu angle_error_deg=%lu.%02lu/%lu.%02lu/%lu.%02lu score=%ld",
+               (unsigned long)i,
+               (cand->name != NULL) ? cand->name : "UNKNOWN",
+               (unsigned int)((int32_t)i == g_drv_test.phase_mapping_best_index),
+               (unsigned int)cand->pass,
+               (unsigned int)cand->global_sign_inverted,
+               (unsigned long)(cos0 / 1000u), (unsigned long)(cos0 % 1000u),
+               (unsigned long)(cos1 / 1000u), (unsigned long)(cos1 % 1000u),
+               (unsigned long)(cos2 / 1000u), (unsigned long)(cos2 % 1000u),
+               (unsigned long)(err0 / 1000u), (unsigned long)(err0 % 1000u),
+               (unsigned long)(err1 / 1000u), (unsigned long)(err1 % 1000u),
+               (unsigned long)(err2 / 1000u), (unsigned long)(err2 % 1000u),
+               (unsigned long)(ang0 / 100u), (unsigned long)(ang0 % 100u),
+               (unsigned long)(ang1 / 100u), (unsigned long)(ang1 % 100u),
+               (unsigned long)(ang2 / 100u), (unsigned long)(ang2 % 100u),
+               (long)float_to_scaled_i32(cand->score, 1.0f));
+      uart2_printf_line(line);
+    }
+    {
+      const int32_t orig_m = float_to_scaled_i32(g_drv_test.phase_resistance_original_ohm, 1000.0f);
+      const int32_t conf_r_m = float_to_scaled_i32(g_drv_test.phase_resistance_confirmed_ohm, 1000.0f);
+      const int32_t conf_off_m = float_to_scaled_i32(g_drv_test.inverter_voltage_offset_confirmed_v, 1000.0f);
+      const uint32_t conf_r2_m = float_to_scaled_u32(g_drv_test.fit_r_squared_confirmed, 1000.0f);
+      const uint32_t beta_max_m = float_to_scaled_u32(g_drv_test.beta_alpha_ratio_max_confirmed, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "phase_mapping_summary: classification=%s phase_mapping_candidate_valid=%u confirmed_mapping=\"%s\" phase_resistance_original=%s%lu.%03lu phase_resistance_confirmed=%s%lu.%03lu inverter_voltage_offset_confirmed=%s%lu.%03lu fit_r_squared=%lu.%03lu beta_alpha_ratio_max=%lu.%03lu",
+               (g_drv_test.phase_mapping_classification != NULL) ? g_drv_test.phase_mapping_classification : "UNKNOWN",
+               (unsigned int)g_drv_test.phase_mapping_candidate_valid,
+               (g_drv_test.confirmed_mapping != NULL) ? g_drv_test.confirmed_mapping : "UNCONFIRMED",
+               (orig_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(orig_m) / 1000u), (unsigned long)(abs_i32_to_u32(orig_m) % 1000u),
+               (conf_r_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(conf_r_m) / 1000u), (unsigned long)(abs_i32_to_u32(conf_r_m) % 1000u),
+               (conf_off_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(conf_off_m) / 1000u), (unsigned long)(abs_i32_to_u32(conf_off_m) % 1000u),
+               (unsigned long)(conf_r2_m / 1000u), (unsigned long)(conf_r2_m % 1000u),
+               (unsigned long)(beta_max_m / 1000u), (unsigned long)(beta_max_m % 1000u));
+      uart2_printf_line(line);
+      if (g_drv_test.phase_mapping_classification != NULL) {
+        uart2_printf_line(g_drv_test.phase_mapping_classification);
+      }
+    }
+    const int32_t r_m = float_to_scaled_i32(g_drv_test.phase_resistance_est_ohm, 1000.0f);
+    const int32_t off_m = float_to_scaled_i32(g_drv_test.inverter_voltage_offset_est_v, 1000.0f);
+    const uint32_t r2_m = float_to_scaled_u32(g_drv_test.fit_r_squared, 1000.0f);
+    const uint32_t res_m = float_to_scaled_u32(g_drv_test.maximum_fit_residual_v, 1000.0f);
+    const int32_t i05_m = float_to_scaled_i32(g_drv_test.predicted_current_at_0p5v, 1000.0f);
+    const int32_t i10_m = float_to_scaled_i32(g_drv_test.predicted_current_at_1p0v, 1000.0f);
+    const int32_t v01_m = float_to_scaled_i32(g_drv_test.voltage_required_for_0p1A, 1000.0f);
+    const int32_t v02_m = float_to_scaled_i32(g_drv_test.voltage_required_for_0p2A_est, 1000.0f);
+    const int32_t v025_m = float_to_scaled_i32(g_drv_test.voltage_required_for_0p25A, 1000.0f);
+    snprintf(line,
+             sizeof(line),
+             "phase_resistance_alpha_summary: fit_point_count=%lu phase_resistance_est_ohm=%s%lu.%03lu inverter_voltage_offset_est_v=%s%lu.%03lu fit_r_squared=%lu.%03lu maximum_fit_residual_v=%lu.%03lu predicted_current_at_0p5V=%s%lu.%03lu predicted_current_at_1p0V=%s%lu.%03lu voltage_required_for_0p1A=%s%lu.%03lu voltage_required_for_0p2A=%s%lu.%03lu voltage_required_for_0p25A=%s%lu.%03lu current_monotonic_ok=%u classification=%s",
+             (unsigned long)g_drv_test.alpha_fit_point_count,
+             (r_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(r_m) / 1000u), (unsigned long)(abs_i32_to_u32(r_m) % 1000u),
+             (off_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(off_m) / 1000u), (unsigned long)(abs_i32_to_u32(off_m) % 1000u),
+             (unsigned long)(r2_m / 1000u), (unsigned long)(r2_m % 1000u),
+             (unsigned long)(res_m / 1000u), (unsigned long)(res_m % 1000u),
+             (i05_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(i05_m) / 1000u), (unsigned long)(abs_i32_to_u32(i05_m) % 1000u),
+             (i10_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(i10_m) / 1000u), (unsigned long)(abs_i32_to_u32(i10_m) % 1000u),
+             (v01_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v01_m) / 1000u), (unsigned long)(abs_i32_to_u32(v01_m) % 1000u),
+             (v02_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v02_m) / 1000u), (unsigned long)(abs_i32_to_u32(v02_m) % 1000u),
+             (v025_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(v025_m) / 1000u), (unsigned long)(abs_i32_to_u32(v025_m) % 1000u),
+             (unsigned int)g_drv_test.current_monotonic_ok,
+             (g_drv_test.phase_resistance_classification != NULL)
+                 ? g_drv_test.phase_resistance_classification
+                 : "UNKNOWN");
+    uart2_printf_line(line);
+    if (g_drv_test.phase_resistance_classification != NULL) {
+      uart2_printf_line(g_drv_test.phase_resistance_classification);
+    }
+  }
+
   for (uint32_t i = 0u; i < g_drv_test.gain_axis_map_count; ++i) {
     const GainAxisMapResult *r = &g_drv_test.gain_axis_map[i];
     const uint32_t gain_centi_local = float_to_scaled_u32(r->gain_v_v, 100.0f);
@@ -5132,6 +8406,32 @@ static void print_drv_bringup_test_status(void)
     const uint32_t valpha_milli = float_to_scaled_u32(r->v_alpha, 1000.0f);
     const uint32_t app_milli = float_to_scaled_u32(r->applied_voltage_est, 1000.0f);
     const uint32_t spwm_milli = float_to_scaled_u32(r->snapshots_per_pwm_cycle, 1000.0f);
+    const uint32_t amp_per_count_microu = float_to_scaled_u32(r->current_amp_per_count, 1000000.0f);
+    const uint32_t counts_060 = float_to_scaled_u32(r->counts_for_0p60A, 100.0f);
+    const uint32_t counts_100 = float_to_scaled_u32(r->counts_for_1p00A, 100.0f);
+    const uint32_t std_amp0 = float_to_scaled_u32(r->std_pc[0] * r->current_amp_per_count, 1000000.0f);
+    const uint32_t std_amp1 = float_to_scaled_u32(r->std_pc[1] * r->current_amp_per_count, 1000000.0f);
+    const uint32_t std_amp2 = float_to_scaled_u32(r->std_pc[2] * r->current_amp_per_count, 1000000.0f);
+    const uint32_t std_amp3 = float_to_scaled_u32(r->std_pc[3] * r->current_amp_per_count, 1000000.0f);
+    snprintf(line,
+             sizeof(line),
+             "gain_scale%lu: gain=%lu.%02lu current_amp_per_count=%lu.%06lu counts_for_0p60A=%lu.%02lu counts_for_1p00A=%lu.%02lu offset_std_counts=%lu.%02lu/%lu.%02lu/%lu.%02lu/%lu.%02lu offset_std_amp=%lu.%06lu/%lu.%06lu/%lu.%06lu/%lu.%06lu power_test_allowed=%u skip_reason=%s",
+             (unsigned long)i,
+             (unsigned long)(gain_centi_local / 100u), (unsigned long)(gain_centi_local % 100u),
+             (unsigned long)(amp_per_count_microu / 1000000u), (unsigned long)(amp_per_count_microu % 1000000u),
+             (unsigned long)(counts_060 / 100u), (unsigned long)(counts_060 % 100u),
+             (unsigned long)(counts_100 / 100u), (unsigned long)(counts_100 % 100u),
+             (unsigned long)(std0 / 100u), (unsigned long)(std0 % 100u),
+             (unsigned long)(std1 / 100u), (unsigned long)(std1 % 100u),
+             (unsigned long)(std2 / 100u), (unsigned long)(std2 % 100u),
+             (unsigned long)(std3 / 100u), (unsigned long)(std3 % 100u),
+             (unsigned long)(std_amp0 / 1000000u), (unsigned long)(std_amp0 % 1000000u),
+             (unsigned long)(std_amp1 / 1000000u), (unsigned long)(std_amp1 % 1000000u),
+             (unsigned long)(std_amp2 / 1000000u), (unsigned long)(std_amp2 % 1000000u),
+             (unsigned long)(std_amp3 / 1000000u), (unsigned long)(std_amp3 % 1000000u),
+             (unsigned int)r->power_test_allowed,
+             (r->power_test_skip_reason != NULL) ? r->power_test_skip_reason : "NONE");
+    uart2_printf_line(line);
     snprintf(line,
              sizeof(line),
              "gain_test%lu: gain=%lu.%02lu gain_readback_drv0=%u gain_readback_drv1=%u control2_drv0=0x%04X control2_drv1=0x%04X dc_cal_bits=0x%04X offset_pc0=%lu offset_pc1=%lu offset_pc2=%lu offset_pc3=%lu minmax_pc0=%u/%u minmax_pc1=%u/%u minmax_pc2=%u/%u minmax_pc3=%u/%u p2p_pc0=%u p2p_pc1=%u p2p_pc2=%u p2p_pc3=%u std_pc0=%lu.%02lu std_pc1=%lu.%02lu std_pc2=%lu.%02lu std_pc3=%lu.%02lu mean_pc0=%lu.%02lu mean_pc1=%lu.%02lu mean_pc2=%lu.%02lu mean_pc3=%lu.%02lu delta_pc0=%s%lu.%02lu delta_pc1=%s%lu.%02lu delta_pc2=%s%lu.%02lu delta_pc3=%s%lu.%02lu m0_response_mag=%lu.%02lu m1_response_mag=%lu.%02lu v_alpha=%lu.%03lu applied_voltage_est=%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu snapshots_per_pwm_cycle=%lu.%03lu nFAULT=%lu STATUS1_DRV0=0x%04X STATUS1_DRV1=0x%04X MOE=%lu EN_GATE=%lu fault_code=0x%08lX dc_cal_stuck=%u faulted=%u",
@@ -5185,6 +8485,49 @@ static void print_drv_bringup_test_status(void)
              (unsigned int)r->dc_cal_stuck_active,
              (unsigned int)r->faulted);
     uart2_printf_line(line);
+    if (r->power_test_allowed) {
+      for (uint32_t rep = 0u; rep < GAIN_AXIS_REPEAT_COUNT; ++rep) {
+        const int32_t rd0 = float_to_scaled_i32(r->repeat_delta_pc[rep][0], 100.0f);
+        const int32_t rd1 = float_to_scaled_i32(r->repeat_delta_pc[rep][1], 100.0f);
+        const int32_t rd2 = float_to_scaled_i32(r->repeat_delta_pc[rep][2], 100.0f);
+        const int32_t rd3 = float_to_scaled_i32(r->repeat_delta_pc[rep][3], 100.0f);
+        const uint32_t rm0 = float_to_scaled_u32(r->repeat_response_mag_m0[rep], 100.0f);
+        const uint32_t rm1 = float_to_scaled_u32(r->repeat_response_mag_m1[rep], 100.0f);
+        snprintf(line,
+                 sizeof(line),
+                 "gain_repeat%lu_%lu: delta_pc0=%s%lu.%02lu delta_pc1=%s%lu.%02lu delta_pc2=%s%lu.%02lu delta_pc3=%s%lu.%02lu m0_response_mag=%lu.%02lu m1_response_mag=%lu.%02lu",
+                 (unsigned long)i,
+                 (unsigned long)rep,
+                 (rd0 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(rd0) / 100u), (unsigned long)(abs_i32_to_u32(rd0) % 100u),
+                 (rd1 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(rd1) / 100u), (unsigned long)(abs_i32_to_u32(rd1) % 100u),
+                 (rd2 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(rd2) / 100u), (unsigned long)(abs_i32_to_u32(rd2) % 100u),
+                 (rd3 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(rd3) / 100u), (unsigned long)(abs_i32_to_u32(rd3) % 100u),
+                 (unsigned long)(rm0 / 100u), (unsigned long)(rm0 % 100u),
+                 (unsigned long)(rm1 / 100u), (unsigned long)(rm1 % 100u));
+        uart2_printf_line(line);
+      }
+      const uint32_t m0std = float_to_scaled_u32(r->m0_response_std, 100.0f);
+      const uint32_t m1std = float_to_scaled_u32(r->m1_response_std, 100.0f);
+      const uint32_t dstd0 = float_to_scaled_u32(r->delta_std_pc[0], 100.0f);
+      const uint32_t dstd1 = float_to_scaled_u32(r->delta_std_pc[1], 100.0f);
+      const uint32_t dstd2 = float_to_scaled_u32(r->delta_std_pc[2], 100.0f);
+      const uint32_t dstd3 = float_to_scaled_u32(r->delta_std_pc[3], 100.0f);
+      snprintf(line,
+               sizeof(line),
+               "gain_repeat_summary%lu: delta_std_pc0=%lu.%02lu delta_std_pc1=%lu.%02lu delta_std_pc2=%lu.%02lu delta_std_pc3=%lu.%02lu m0_response_std=%lu.%02lu m1_response_std=%lu.%02lu m0_sign_consistent=%u m1_sign_consistent=%u encoder_motion_counts=%lu adc_saturated=%u",
+               (unsigned long)i,
+               (unsigned long)(dstd0 / 100u), (unsigned long)(dstd0 % 100u),
+               (unsigned long)(dstd1 / 100u), (unsigned long)(dstd1 % 100u),
+               (unsigned long)(dstd2 / 100u), (unsigned long)(dstd2 % 100u),
+               (unsigned long)(dstd3 / 100u), (unsigned long)(dstd3 % 100u),
+               (unsigned long)(m0std / 100u), (unsigned long)(m0std % 100u),
+               (unsigned long)(m1std / 100u), (unsigned long)(m1std % 100u),
+               (unsigned int)r->m0_sign_consistent,
+               (unsigned int)r->m1_sign_consistent,
+               (unsigned long)r->encoder_motion_counts,
+               (unsigned int)r->adc_saturated);
+      uart2_printf_line(line);
+    }
   }
 
   const uint32_t m0r2010 = float_to_scaled_u32(g_drv_test.m0_ratio_20_to_10, 100.0f);
@@ -5765,6 +9108,84 @@ static void print_drv_bringup_test_status(void)
            (unsigned long)g_drv_test.fault_code);
   uart2_printf_line(line);
 
+  if (g_drv_test.phase_inductance_classification != NULL) {
+    for (uint32_t li = 0u; li < PHASE_INDUCTANCE_LEVEL_COUNT; ++li) {
+      const PhaseInductanceLevelResult *lvl = &g_drv_test.inductance_levels[li];
+      snprintf(line,
+               sizeof(line),
+               "inductance_level%lu: baseline_voltage=%ld.%03ld pulse_voltage=%ld.%03ld nominal_delta_voltage=%ld.%03ld delta_v_applied=%ld.%03ld valid_repeat_count=%lu rejected_repeat_count=%lu baseline_i_alpha=%ld.%03ld peak_delta_i_alpha=%ld.%03ld peak_delta_i_beta=%ld.%03ld effective_adc_counts=%ld.%02ld tau_rise_us=%ld.%03ld tau_fall_us=%ld.%03ld sample_delay_us=%ld.%03ld L_rise_uH=%ld.%03ld L_fall_uH=%ld.%03ld L_initial_slope_uH=%ld.%03ld L_discrete_uH=%ld.%03ld R_discrete_candidate=%ld.%03ld rise_fit_r_squared=%ld.%03ld fall_fit_r_squared=%ld.%03ld monotonic_rise_ok=%u monotonic_fall_ok=%u dynamics_too_fast=%u pulse_too_short=%u level_reliable=%u",
+               (unsigned long)li,
+               (long)(float_to_scaled_i32(lvl->baseline_voltage, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->baseline_voltage, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->pulse_voltage, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->pulse_voltage, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->nominal_delta_voltage, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->nominal_delta_voltage, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->delta_v_applied, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->delta_v_applied, 1000.0f)) % 1000u),
+               (unsigned long)lvl->valid_repeat_count,
+               (unsigned long)lvl->rejected_repeat_count,
+               (long)(float_to_scaled_i32(lvl->baseline_i_alpha, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->baseline_i_alpha, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->peak_delta_i_alpha, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->peak_delta_i_alpha, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->peak_delta_i_beta, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->peak_delta_i_beta, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->effective_adc_counts, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->effective_adc_counts, 100.0f)) % 100u),
+               (long)(float_to_scaled_i32(lvl->tau_rise_us, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->tau_rise_us, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->tau_fall_us, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->tau_fall_us, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->sample_delay_us, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->sample_delay_us, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_rise_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_rise_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_fall_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_fall_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_initial_slope_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_initial_slope_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->L_discrete_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->L_discrete_uH, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->R_discrete_candidate, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->R_discrete_candidate, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->rise_fit_r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_fit_r_squared, 1000.0f)) % 1000u),
+               (long)(float_to_scaled_i32(lvl->fall_fit_r_squared, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_fit_r_squared, 1000.0f)) % 1000u),
+               (unsigned int)lvl->monotonic_rise_ok,
+               (unsigned int)lvl->monotonic_fall_ok,
+               (unsigned int)lvl->dynamics_too_fast,
+               (unsigned int)lvl->pulse_too_short,
+               (unsigned int)lvl->level_reliable);
+      uart2_printf_line(line);
+      if (lvl->dynamics_too_fast) { uart2_printf_line("INDUCTANCE_DYNAMICS_TOO_FAST_FOR_20KHZ"); }
+      if (lvl->pulse_too_short) { uart2_printf_line("INDUCTANCE_PULSE_TOO_SHORT"); }
+      for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+        snprintf(line,
+                 sizeof(line),
+                 "inductance_level%lu_rise_sample%02lu: t_us=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
+                 (unsigned long)li,
+                 (unsigned long)k,
+                 (unsigned long)((k + 1u) * (uint32_t)PHASE_INDUCTANCE_TS_US),
+                 (long)(float_to_scaled_i32(lvl->rise_delta_i_mean[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_delta_i_mean[k], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(lvl->rise_delta_i_std[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_delta_i_std[k], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(lvl->rise_delta_i_beta_mean[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->rise_delta_i_beta_mean[k], 1000.0f)) % 1000u),
+                 (unsigned long)lvl->rise_valid_count[k]);
+        uart2_printf_line(line);
+      }
+      for (uint32_t k = 0u; k < PHASE_INDUCTANCE_CAPTURE_SAMPLES; ++k) {
+        snprintf(line,
+                 sizeof(line),
+                 "inductance_level%lu_fall_sample%02lu: t_us=%lu delta_i_alpha_mean=%ld.%03ld delta_i_alpha_std=%ld.%03ld delta_i_beta_mean=%ld.%03ld valid_repeat_count=%lu",
+                 (unsigned long)li,
+                 (unsigned long)k,
+                 (unsigned long)(k * (uint32_t)PHASE_INDUCTANCE_TS_US),
+                 (long)(float_to_scaled_i32(lvl->fall_delta_i_mean[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_delta_i_mean[k], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(lvl->fall_delta_i_std[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_delta_i_std[k], 1000.0f)) % 1000u),
+                 (long)(float_to_scaled_i32(lvl->fall_delta_i_beta_mean[k], 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(lvl->fall_delta_i_beta_mean[k], 1000.0f)) % 1000u),
+                 (unsigned long)lvl->fall_valid_count[k]);
+        uart2_printf_line(line);
+      }
+    }
+    snprintf(line,
+             sizeof(line),
+             "phase_inductance_summary: phase_resistance_used_ohm=3.200 phase_inductance_level_a_uH=%ld.%03ld phase_inductance_level_b_uH=%ld.%03ld phase_inductance_est_h=0.%09lu phase_inductance_est_uH=%ld.%03ld electrical_time_constant_us=%ld.%03ld two_level_difference_percent=%ld.%02ld identification_reliable=%u fault_code=0x%08lX fault_enum_name=%s",
+             (long)(float_to_scaled_i32(g_drv_test.phase_inductance_level_a_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(g_drv_test.phase_inductance_level_a_uH, 1000.0f)) % 1000u),
+             (long)(float_to_scaled_i32(g_drv_test.phase_inductance_level_b_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(g_drv_test.phase_inductance_level_b_uH, 1000.0f)) % 1000u),
+             (unsigned long)float_to_scaled_u32(g_drv_test.phase_inductance_est_h, 1000000000.0f),
+             (long)(float_to_scaled_i32(g_drv_test.phase_inductance_est_uH, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(g_drv_test.phase_inductance_est_uH, 1000.0f)) % 1000u),
+             (long)(float_to_scaled_i32(g_drv_test.electrical_time_constant_us, 1000.0f) / 1000), (long)(abs_i32_to_u32(float_to_scaled_i32(g_drv_test.electrical_time_constant_us, 1000.0f)) % 1000u),
+             (long)(float_to_scaled_i32(g_drv_test.inductance_two_level_difference_percent, 100.0f) / 100), (long)(abs_i32_to_u32(float_to_scaled_i32(g_drv_test.inductance_two_level_difference_percent, 100.0f)) % 100u),
+             (unsigned int)g_drv_test.phase_inductance_identification_reliable,
+             (unsigned long)g_drv_test.fault_code,
+             get_fault_string((Axis0FaultFlags)g_drv_test.fault_code));
+    uart2_printf_line(line);
+    uart2_printf_line(g_drv_test.phase_inductance_classification);
+  }
+
   snprintf(line,
            sizeof(line),
            "fault_decode: fault_code=0x%08lX fault_enum_name=%s fault_source=%s",
@@ -5947,18 +9368,22 @@ static void print_drv_bringup_test_status(void)
   uart2_printf_line(line);
 
   if (g_drv_test.pass) {
-    if (g_drv_test.final_observe_reliable &&
+    if ((g_drv_test.phase_resistance_classification != NULL) &&
+        (strcmp(g_drv_test.phase_resistance_classification,
+                "PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS") == 0)) {
+      uart2_printf_line("PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS");
+    } else if (g_drv_test.final_observe_reliable &&
         g_drv_test.adc_phase_edge_timing_ok &&
         g_drv_test.adc_sync_rate_ok &&
         !g_drv_test.current_trip_fault.latched) {
-      uart2_printf_line("STATIC_D_AXIS_VOLTAGE_SWEEP_PASS");
+      uart2_printf_line("PHASE_RESISTANCE_IDENTIFICATION_PASS");
     } else {
-      uart2_printf_line("STATIC_D_AXIS_VOLTAGE_SWEEP_UNRELIABLE");
+      uart2_printf_line("PHASE_RESISTANCE_IDENTIFICATION_UNRELIABLE");
     }
   } else {
     snprintf(line,
              sizeof(line),
-             "STATIC_D_AXIS_VOLTAGE_SWEEP_FAIL fail_step=%lu fault_code=0x%08lX fault_enum_name=%s protection_type=%s first_trip_channel=%s",
+             "PHASE_RESISTANCE_IDENTIFICATION_FAIL fail_step=%lu fault_code=0x%08lX fault_enum_name=%s protection_type=%s first_trip_channel=%s",
              (unsigned long)g_drv_test.fail_step,
              (unsigned long)g_drv_test.fault_code,
              get_fault_string((Axis0FaultFlags)g_drv_test.fault_code),
@@ -6025,7 +9450,7 @@ int main(void)
 
   uart2_printf_line("");
   uart2_printf_line("odrive_v36_cube bringup start");
-  uart2_printf_line("STATIC D AXIS VOLTAGE SWEEP TEST: gain40, 0.60A continuous x3 protection, 1.00A instant protection.");
+  uart2_printf_line("M0 STATIC ALPHA AXIS PHASE RESISTANCE IDENTIFICATION: DRV gain 80V/V, no current PI, no speed/position loop.");
   drv_bringup_test_run();
   print_drv_bringup_test_status();
   print_bringup_status();

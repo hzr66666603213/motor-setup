@@ -86,6 +86,20 @@ static float drv8301_gain_from_code(uint8_t gain_code)
     }
 }
 
+static uint8_t drv8301_gain_code_from_value(float gain_v_v)
+{
+    if (gain_v_v >= 70.0f) {
+        return DRV8301_SHUNT_GAIN_80V_PER_V;
+    }
+    if (gain_v_v >= 30.0f) {
+        return DRV8301_SHUNT_GAIN_40V_PER_V;
+    }
+    if (gain_v_v >= 15.0f) {
+        return DRV8301_SHUNT_GAIN_20V_PER_V;
+    }
+    return DRV8301_SHUNT_GAIN_10V_PER_V;
+}
+
 static uint16_t drv8301_make_read(uint8_t addr)
 {
     return DRV8301_SPI_READ | ((uint16_t)addr << DRV8301_ADDR_SHIFT);
@@ -452,7 +466,8 @@ bool drv8301_set_dc_cal(Drv8301 *drv, bool ch1, bool ch2)
         return false;
     }
 
-    const uint8_t gain_code = DRV8301_SHUNT_GAIN_40V_PER_V;
+    const uint8_t gain_code =
+        drv8301_gain_code_from_value(drv->shunt_amp_gain_v_v);
     return drv8301_set_control2(drv, drv8301_make_control2(gain_code, ch1, ch2));
 }
 
