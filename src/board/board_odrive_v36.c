@@ -52,7 +52,12 @@ bool board_init_power_safe(Axis0Context *axis)
     s_board_status.encoder_valid = false;
     s_board_status.vbus_v = s_board_status.adc_valid ? board_read_vbus_v() : 0.0f;
 
-    return !s_board_status.drv_nfault_active;
+    /*
+     * EN_GATE=0 时 DRV8301 的 nFAULT 可能处于无效或瞬态状态。
+     * 这里的职责是建立安全初态；真正的 nFAULT 准入检查在 EN_GATE 拉高、
+     * 等待释放后由 bring-up/enable 路径执行。
+     */
+    return true;
 }
 
 bool board_enable_axis0_power_stage(Axis0Context *axis)

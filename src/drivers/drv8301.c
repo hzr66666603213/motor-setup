@@ -45,7 +45,6 @@
 #define DRV8301_CTRL1_GATE_RESET         (1u << 2)
 #define DRV8301_CTRL1_OCP_MODE_SHIFT     4u
 #define DRV8301_CTRL1_OC_ADJ_SHIFT       6u
-#define DRV8301_CTRL2_GAIN_SHIFT         2u
 
 uint16_t drv8301_default_control1(void)
 {
@@ -56,7 +55,25 @@ uint16_t drv8301_default_control1(void)
 
 uint16_t drv8301_default_control2(void)
 {
-    return (0u << DRV8301_CTRL2_GAIN_SHIFT);
+    return drv8301_make_control2(DRV8301_SHUNT_GAIN_10V_PER_V, false, false);
+}
+
+uint16_t drv8301_make_control2(uint8_t gain_code, bool dc_cal_ch1, bool dc_cal_ch2)
+{
+    uint16_t control2 = ((uint16_t)(gain_code & 0x03u) << DRV8301_CONTROL2_GAIN_SHIFT);
+    if (dc_cal_ch1) {
+        control2 |= DRV8301_CONTROL2_DC_CAL_CH1;
+    }
+    if (dc_cal_ch2) {
+        control2 |= DRV8301_CONTROL2_DC_CAL_CH2;
+    }
+    return control2;
+}
+
+uint8_t drv8301_control2_gain_field(uint16_t control2)
+{
+    return (uint8_t)((control2 & DRV8301_CONTROL2_GAIN_MASK) >>
+                     DRV8301_CONTROL2_GAIN_SHIFT);
 }
 
 static float drv8301_gain_from_code(uint8_t gain_code)
@@ -400,10 +417,9 @@ bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code)
 
 bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code)
 {
-    const uint16_t code = (uint16_t)(gain_code & 0x03u);
-    const uint16_t control2 = code << DRV8301_CTRL2_GAIN_SHIFT;
+    const uint16_t control2 = drv8301_make_control2(gain_code, false, false);
 
-    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL2, control2)) {
+    if (!drv8301_set_control2(drv, control2)) {
         drv->status.spi_error = true;
         return false;
     }
@@ -411,6 +427,33 @@ bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code)
     drv->shunt_amp_gain_v_v = drv8301_gain_from_code(gain_code);
     drv->status.spi_error = false;
     return true;
+}
+
+bool drv8301_set_control2(Drv8301 *drv, uint16_t control2)
+{
+    if (drv == 0) {
+        return false;
+    }
+
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL2, control2)) {
+        drv->status.spi_error = true;
+        return false;
+    }
+
+    drv->shunt_amp_gain_v_v =
+        drv8301_gain_from_code(drv8301_control2_gain_field(control2));
+    drv->status.spi_error = false;
+    return true;
+}
+
+bool drv8301_set_dc_cal(Drv8301 *drv, bool ch1, bool ch2)
+{
+    if (drv == 0) {
+        return false;
+    }
+
+    const uint8_t gain_code = DRV8301_SHUNT_GAIN_40V_PER_V;
+    return drv8301_set_control2(drv, drv8301_make_control2(gain_code, ch1, ch2));
 }
 
 bool drv8301_has_fault(const Drv8301 *drv)

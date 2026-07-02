@@ -67,6 +67,16 @@ typedef struct {
 #define DRV8301_OCP_MODE_REPORT_ONLY    2u
 #define DRV8301_OCP_MODE_DISABLED       3u
 
+#define DRV8301_SHUNT_GAIN_10V_PER_V    0u
+#define DRV8301_SHUNT_GAIN_20V_PER_V    1u
+#define DRV8301_SHUNT_GAIN_40V_PER_V    2u
+#define DRV8301_SHUNT_GAIN_80V_PER_V    3u
+
+#define DRV8301_CONTROL2_DC_CAL_CH1     (1u << 0)
+#define DRV8301_CONTROL2_DC_CAL_CH2     (1u << 1)
+#define DRV8301_CONTROL2_GAIN_SHIFT     2u
+#define DRV8301_CONTROL2_GAIN_MASK      (3u << DRV8301_CONTROL2_GAIN_SHIFT)
+
 bool drv8301_init(Drv8301 *drv);
 bool drv8301_init_axis(Drv8301 *drv, uint8_t axis_index);
 void drv8301_prepare_axis(Drv8301 *drv, uint8_t axis_index);
@@ -81,9 +91,13 @@ bool drv8301_read_registers(Drv8301 *drv, Drv8301Registers *regs);
 bool drv8301_configure_and_verify(Drv8301 *drv, Drv8301Registers *regs);
 uint16_t drv8301_default_control1(void);
 uint16_t drv8301_default_control2(void);
+uint16_t drv8301_make_control2(uint8_t gain_code, bool dc_cal_ch1, bool dc_cal_ch2);
+uint8_t drv8301_control2_gain_field(uint16_t control2);
 bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code);
 bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code);
 bool drv8301_set_shunt_amp_gain(Drv8301 *drv, uint8_t gain_code);
+bool drv8301_set_control2(Drv8301 *drv, uint16_t control2);
+bool drv8301_set_dc_cal(Drv8301 *drv, bool ch1, bool ch2);
 bool drv8301_has_fault(const Drv8301 *drv);
 
 #ifdef __cplusplus

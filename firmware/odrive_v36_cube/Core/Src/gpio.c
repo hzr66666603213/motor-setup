@@ -74,7 +74,7 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin : DRV_NFAULT_Pin */
   GPIO_InitStruct.Pin = DRV_NFAULT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(DRV_NFAULT_GPIO_Port, &GPIO_InitStruct);
 
 }
