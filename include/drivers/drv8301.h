@@ -39,6 +39,8 @@ typedef struct {
     uint8_t axis_index;       /* 0=M0/Axis0 DRV8301，1=M1/Axis1 DRV8301 */
     uint8_t spi_device_id;    /* SPI 片选设备 ID，HAL 后端据此选择 PC13/PC14 */
     float shunt_amp_gain_v_v; /* DRV8301 内部电流放大器增益，V/V，必须和 current_sensor 绑定 */
+    uint16_t control1_config; /* Last successful CONTROL1 config without temporary GATE_RESET */
+    uint16_t control2_config; /* Last successful CONTROL2 config */
     Drv8301Status status;     /* 最近一次状态 */
 } Drv8301;
 
@@ -91,6 +93,7 @@ bool drv8301_read_registers(Drv8301 *drv, Drv8301Registers *regs);
 bool drv8301_configure_and_verify(Drv8301 *drv, Drv8301Registers *regs);
 uint16_t drv8301_default_control1(void);
 uint16_t drv8301_default_control2(void);
+uint16_t drv8301_control1_with_gate_reset(uint16_t control1_config);
 uint16_t drv8301_make_control2(uint8_t gain_code, bool dc_cal_ch1, bool dc_cal_ch2);
 uint8_t drv8301_control2_gain_field(uint16_t control2);
 bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code);

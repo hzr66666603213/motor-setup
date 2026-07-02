@@ -61,6 +61,17 @@ bool hal_adc_samples_valid(void)
     return true;
 }
 
+bool hal_adc_set_m0_rank_order(HalAdcM0RankOrder order)
+{
+    return order == HAL_ADC_M0_ORDER_PC0_PC1 ||
+           order == HAL_ADC_M0_ORDER_PC1_PC0;
+}
+
+HalAdcM0RankOrder hal_adc_get_m0_rank_order(void)
+{
+    return HAL_ADC_M0_ORDER_PC0_PC1;
+}
+
 void hal_adc_stm32f405_on_injected_complete(void *hadc)
 {
     (void)hadc;

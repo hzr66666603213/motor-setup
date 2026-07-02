@@ -13,6 +13,36 @@
  */
 
 static HalAdcSnapshot s_mock_snapshot;
+static uint32_t s_mock_seqlock;
+static HalAdcM0RankOrder s_mock_rank_order = HAL_ADC_M0_ORDER_PC0_PC1;
+
+static void hal_adc_mock_publish(const HalAdcSnapshot *snapshot)
+{
+    s_mock_seqlock++;
+    s_mock_snapshot = *snapshot;
+    s_mock_seqlock++;
+}
+
+static void hal_adc_mock_demux(HalAdcM0RankOrder order,
+                               uint16_t rank1,
+                               uint16_t rank2,
+                               uint16_t rank3,
+                               uint16_t rank4,
+                               HalAdcSnapshot *snapshot)
+{
+    if (order == HAL_ADC_M0_ORDER_PC1_PC0) {
+        snapshot->raw_pc0_m0_so1 = rank2;
+        snapshot->raw_pc1_m0_so2 = rank1;
+    } else {
+        snapshot->raw_pc0_m0_so1 = rank1;
+        snapshot->raw_pc1_m0_so2 = rank2;
+    }
+    snapshot->raw_pc2_m1_so2 = rank3;
+    snapshot->raw_pc3_m1_so1 = rank4;
+    snapshot->raw_u = snapshot->raw_pc0_m0_so1;
+    snapshot->raw_v = snapshot->raw_pc1_m0_so2;
+    snapshot->raw_w = 0u;
+}
 
 bool hal_adc_init(void)
 {
@@ -27,6 +57,8 @@ bool hal_adc_init(void)
     s_mock_snapshot.raw_mos_temp = 1200u;
     s_mock_snapshot.seq = 0u;
     s_mock_snapshot.valid = false;
+    s_mock_seqlock = 0u;
+    s_mock_rank_order = HAL_ADC_M0_ORDER_PC0_PC1;
     return true;
 }
 
@@ -48,7 +80,13 @@ bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot)
         return false;
     }
 
-    *snapshot = s_mock_snapshot;
+    uint32_t before = 0u;
+    uint32_t after = 0u;
+    do {
+        before = s_mock_seqlock;
+        *snapshot = s_mock_snapshot;
+        after = s_mock_seqlock;
+    } while ((before != after) || ((after & 1u) != 0u));
     return true;
 }
 
@@ -80,15 +118,31 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
      * 功率级是否使能不影响 ADC seq；只要 TIM1/ADC trigger 在运行，真实后端也应由
      * HAL_ADCEx_InjectedConvCpltCallback() 调用对应函数递增 seq。
      */
-    s_mock_snapshot.raw_u = 2048u;
-    s_mock_snapshot.raw_v = 2048u;
-    s_mock_snapshot.raw_w = 0u;
-    s_mock_snapshot.raw_pc0_m0_so1 = 2048u;
-    s_mock_snapshot.raw_pc1_m0_so2 = 2048u;
-    s_mock_snapshot.raw_pc2_m1_so2 = 2048u;
-    s_mock_snapshot.raw_pc3_m1_so1 = 2048u;
-    s_mock_snapshot.raw_vbus = 2048u;
-    s_mock_snapshot.raw_mos_temp = 1200u;
-    s_mock_snapshot.seq += 1u;
-    s_mock_snapshot.valid = true;
+    HalAdcSnapshot next = s_mock_snapshot;
+    hal_adc_mock_demux(s_mock_rank_order,
+                       2048u,
+                       2048u,
+                       2048u,
+                       2048u,
+                       &next);
+    next.raw_vbus = 2048u;
+    next.raw_mos_temp = 1200u;
+    next.seq += 1u;
+    next.valid = true;
+    hal_adc_mock_publish(&next);
+}
+
+bool hal_adc_set_m0_rank_order(HalAdcM0RankOrder order)
+{
+    if (order != HAL_ADC_M0_ORDER_PC0_PC1 &&
+        order != HAL_ADC_M0_ORDER_PC1_PC0) {
+        return false;
+    }
+    s_mock_rank_order = order;
+    return true;
+}
+
+HalAdcM0RankOrder hal_adc_get_m0_rank_order(void)
+{
+    return s_mock_rank_order;
 }

@@ -60,6 +60,11 @@ typedef struct {
     uint32_t snapshot_count;
 } HalAdcDiagnostics;
 
+typedef enum {
+    HAL_ADC_M0_ORDER_PC0_PC1 = 0,
+    HAL_ADC_M0_ORDER_PC1_PC0 = 1
+} HalAdcM0RankOrder;
+
 bool hal_adc_init(void);
 bool hal_adc_get_phase_current_raw(HalAdcPhaseRaw *raw);
 bool hal_adc_get_snapshot(HalAdcSnapshot *snapshot);
@@ -68,6 +73,8 @@ uint16_t hal_adc_get_mos_temperature_raw(void);
 uint16_t hal_adc_get_motor_temperature_raw(void);
 bool hal_adc_samples_valid(void);
 void hal_adc_get_diagnostics(HalAdcDiagnostics *diagnostics);
+bool hal_adc_set_m0_rank_order(HalAdcM0RankOrder order);
+HalAdcM0RankOrder hal_adc_get_m0_rank_order(void);
 
 /*
  * STM32F405 真实后端的 ADC injected conversion 完成通知。

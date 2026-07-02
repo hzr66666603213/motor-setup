@@ -58,6 +58,11 @@ uint16_t drv8301_default_control2(void)
     return drv8301_make_control2(DRV8301_SHUNT_GAIN_10V_PER_V, false, false);
 }
 
+uint16_t drv8301_control1_with_gate_reset(uint16_t control1_config)
+{
+    return (control1_config | DRV8301_CTRL1_GATE_RESET) & DRV8301_DATA_MASK;
+}
+
 uint16_t drv8301_make_control2(uint8_t gain_code, bool dc_cal_ch1, bool dc_cal_ch2)
 {
     uint16_t control2 = ((uint16_t)(gain_code & 0x03u) << DRV8301_CONTROL2_GAIN_SHIFT);
@@ -188,6 +193,8 @@ void drv8301_prepare_axis(Drv8301 *drv, uint8_t axis_index)
     drv->axis_index = axis_index;
     drv->spi_device_id = axis_index;
     drv->shunt_amp_gain_v_v = 10.0f;
+    drv->control1_config = drv8301_default_control1();
+    drv->control2_config = drv8301_default_control2();
 }
 
 bool drv8301_init_axis(Drv8301 *drv, uint8_t axis_index)
@@ -292,10 +299,13 @@ bool drv8301_clear_faults(Drv8301 *drv)
      * 清故障应在功率级关闭状态下执行。
      * 如果 nFAULT 持续存在，清故障不会成功，状态机应保持 FAULT。
      */
+    if (drv == 0) {
+        return false;
+    }
+
     drv->status.unknown_fault = false;
     drv->status.spi_error = false;
-    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, DRV8301_CTRL1_GATE_RESET)) {
-        drv->status.spi_error = true;
+    if (!drv8301_gate_reset(drv)) {
         return false;
     }
     return drv8301_read_status(drv);
@@ -307,7 +317,20 @@ bool drv8301_gate_reset(Drv8301 *drv)
         return false;
     }
 
-    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, DRV8301_CTRL1_GATE_RESET)) {
+    const uint16_t reset_word = drv8301_control1_with_gate_reset(drv->control1_config);
+    if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, reset_word) ||
+        !drv8301_write_reg(drv, DRV8301_REG_CONTROL1, drv->control1_config)) {
+        drv->status.spi_error = true;
+        return false;
+    }
+
+    uint16_t readback = 0u;
+    if (!drv8301_read_reg(drv, DRV8301_REG_CONTROL1, &readback)) {
+        drv->status.spi_error = true;
+        return false;
+    }
+    if ((readback & (uint16_t)~DRV8301_CTRL1_GATE_RESET) !=
+        (drv->control1_config & (uint16_t)~DRV8301_CTRL1_GATE_RESET)) {
         drv->status.spi_error = true;
         return false;
     }
@@ -336,6 +359,8 @@ bool drv8301_configure_for_6pwm(Drv8301 *drv)
     }
     drv->status.spi_error = false;
     drv->shunt_amp_gain_v_v = 10.0f;
+    drv->control1_config = control1;
+    drv->control2_config = control2;
     return true;
 }
 
@@ -395,10 +420,14 @@ bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code)
      * OCP 阈值越低越安全，但过低可能导致启动/校准误报。
      * 第一阶段建议使用保守低电流，并让 MCU 侧 overcurrent 阈值先发挥保护作用。
      */
+    if (drv == 0) {
+        return false;
+    }
+
     const uint16_t code = (uint16_t)(threshold_code & 0x1fu);
     const uint16_t control1 =
-        ((uint16_t)DRV8301_GATE_CURRENT_0P25A << DRV8301_CTRL1_GATE_CURRENT_SHIFT) |
-        ((uint16_t)DRV8301_OCP_MODE_CURRENT_LIMIT << DRV8301_CTRL1_OCP_MODE_SHIFT) |
+        (drv->control1_config &
+         (uint16_t)~(0x1fu << DRV8301_CTRL1_OC_ADJ_SHIFT)) |
         (code << DRV8301_CTRL1_OC_ADJ_SHIFT);
 
     if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, control1)) {
@@ -406,6 +435,7 @@ bool drv8301_set_ocp_threshold(Drv8301 *drv, uint8_t threshold_code)
         return false;
     }
     drv->status.spi_error = false;
+    drv->control1_config = control1;
     return true;
 }
 
@@ -415,17 +445,22 @@ bool drv8301_set_gate_current(Drv8301 *drv, uint8_t gate_current_code)
      * gate current 影响 MOSFET 开关速度、损耗和 EMI。
      * 第一阶段不追求性能，应选择保守配置，避免过快开关带来尖峰。
      */
+    if (drv == 0) {
+        return false;
+    }
+
     const uint16_t code = (uint16_t)(gate_current_code & 0x03u);
     const uint16_t control1 =
-        (code << DRV8301_CTRL1_GATE_CURRENT_SHIFT) |
-        ((uint16_t)DRV8301_OCP_MODE_CURRENT_LIMIT << DRV8301_CTRL1_OCP_MODE_SHIFT) |
-        ((uint16_t)8u << DRV8301_CTRL1_OC_ADJ_SHIFT);
+        (drv->control1_config &
+         (uint16_t)~(0x03u << DRV8301_CTRL1_GATE_CURRENT_SHIFT)) |
+        (code << DRV8301_CTRL1_GATE_CURRENT_SHIFT);
 
     if (!drv8301_write_reg(drv, DRV8301_REG_CONTROL1, control1)) {
         drv->status.spi_error = true;
         return false;
     }
     drv->status.spi_error = false;
+    drv->control1_config = control1;
     return true;
 }
 
@@ -457,6 +492,7 @@ bool drv8301_set_control2(Drv8301 *drv, uint16_t control2)
     drv->shunt_amp_gain_v_v =
         drv8301_gain_from_code(drv8301_control2_gain_field(control2));
     drv->status.spi_error = false;
+    drv->control2_config = control2 & DRV8301_DATA_MASK;
     return true;
 }
 

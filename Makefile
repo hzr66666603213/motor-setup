@@ -9,8 +9,12 @@ endif
 
 ifeq ($(OS),Windows_NT)
 EXE := .exe
+MKDIR_BUILD := if not exist build mkdir build
+CLEAN_BUILD := if exist build rmdir /S /Q build
 else
 EXE :=
+MKDIR_BUILD := mkdir -p build
+CLEAN_BUILD := rm -rf build
 endif
 
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc -Isrc/control -Isrc/foc -Isrc/sim
@@ -39,9 +43,19 @@ BOARD_ADC_SAMPLING_TEST_SRCS := tests/board_adc_sampling_test.c \
 	src/hal/mock/hal_gpio_mock.c \
 	src/hal/mock/hal_pwm_mock.c
 
+IDENTIFICATION_PIPELINE_TEST_SRCS := tests/identification_pipeline_test.c \
+	src/current_sample_pipeline.c \
+	src/motor_identification.c \
+	src/drivers/drv8301.c \
+	src/hal/mock/hal_spi_mock.c \
+	src/hal/mock/hal_gpio_mock.c \
+	src/hal/mock/hal_pwm_mock.c \
+	src/board/board_odrive_v36.c \
+	src/hal/mock/hal_adc_mock.c
+
 .PHONY: test math_test sim_test pc_test clean build
 
-test: math_test sim_test pc_test board_adc_sampling_test
+test: math_test sim_test pc_test board_adc_sampling_test identification_pipeline_test
 
 math_test: build/foc_math_test$(EXE)
 	./build/foc_math_test$(EXE)
@@ -55,8 +69,11 @@ pc_test: build/foc_pc_unit_test$(EXE)
 board_adc_sampling_test: build/board_adc_sampling_test$(EXE)
 	./build/board_adc_sampling_test$(EXE)
 
+identification_pipeline_test: build/identification_pipeline_test$(EXE)
+	./build/identification_pipeline_test$(EXE)
+
 build:
-	mkdir -p build
+	$(MKDIR_BUILD)
 
 build/foc_math_test$(EXE): $(FOC_MATH_TEST_SRCS) | build
 	$(CC) $(CFLAGS) $(FOC_MATH_TEST_SRCS) $(LDFLAGS) -o $@
@@ -70,5 +87,8 @@ build/foc_pc_unit_test$(EXE): $(FOC_PC_UNIT_TEST_SRCS) | build
 build/board_adc_sampling_test$(EXE): $(BOARD_ADC_SAMPLING_TEST_SRCS) | build
 	$(CC) $(CFLAGS) $(BOARD_ADC_SAMPLING_TEST_SRCS) $(LDFLAGS) -o $@
 
+build/identification_pipeline_test$(EXE): $(IDENTIFICATION_PIPELINE_TEST_SRCS) | build
+	$(CC) $(CFLAGS) $(IDENTIFICATION_PIPELINE_TEST_SRCS) $(LDFLAGS) -o $@
+
 clean:
-	rm -rf build
+	$(CLEAN_BUILD)

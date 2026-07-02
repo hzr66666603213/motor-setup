@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "board/board_odrive_v36.h"
 #include "hal/hal_adc.h"
@@ -18,11 +19,12 @@ static void check_true(int cond, const char *name)
 
 int main(void)
 {
-    Axis0Context axis = {0};
+    Axis0Context axis;
     uint16_t raw_a = 0u;
     uint16_t raw_b = 0u;
     uint16_t raw_c = 0u;
 
+    memset(&axis, 0, sizeof(axis));
     axis.config.protection.vbus_min_v = 0.0f;
     axis.config.protection.vbus_max_v = 60.0f;
 
