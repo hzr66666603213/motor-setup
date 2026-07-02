@@ -37,6 +37,7 @@
 #include "app/axis0_types.h"
 #include "board/board_odrive_v36.h"
 #include "config/axis0_default_config.h"
+#include "control/fixed_rotor_current_test.h"
 #include "drivers/drv8301.h"
 #include "foc/svpwm.h"
 #include "hal/hal_adc.h"
@@ -585,7 +586,7 @@ typedef struct {
   uint32_t fall_valid_count[80];
   InductanceSamplePoint rise_samples[30];
   InductanceSamplePoint fall_samples[80];
-  InductanceRepeatDiag repeat_diag[64];
+  InductanceRepeatDiag repeat_diag[128];
 } PhaseInductanceLevelResult;
 
 typedef struct {
@@ -1126,14 +1127,11 @@ typedef struct {
 #define PHASE_RESISTANCE_ORIGINAL_OHM 3.170f
 #define PHASE_RESISTANCE_DEVIATION_MAX_RATIO 0.15f
 #define PHASE_INDUCTANCE_LEVEL_COUNT 2u
-#ifndef PHASE_INDUCTANCE_REPEAT_COUNT
-#define PHASE_INDUCTANCE_REPEAT_COUNT 32u
+#ifndef PHASE_INDUCTANCE_REPEAT_COUNT_PER_RANK
+#define PHASE_INDUCTANCE_REPEAT_COUNT_PER_RANK 64u
 #endif
-#if (PHASE_INDUCTANCE_REPEAT_COUNT == 64u)
-#define PHASE_INDUCTANCE_MIN_VALID_REPEATS 48u
-#else
-#define PHASE_INDUCTANCE_MIN_VALID_REPEATS 24u
-#endif
+#define PHASE_INDUCTANCE_REPEAT_COUNT (PHASE_INDUCTANCE_REPEAT_COUNT_PER_RANK * 2u)
+#define PHASE_INDUCTANCE_MIN_VALID_REPEATS ((PHASE_INDUCTANCE_REPEAT_COUNT_PER_RANK * 3u) / 2u)
 #define PHASE_INDUCTANCE_BASE_ALPHA_V 0.20f
 #define PHASE_INDUCTANCE_ALIGN_RAMP_MS 300u
 #define PHASE_INDUCTANCE_ALIGN_HOLD_MS 500u
@@ -1153,6 +1151,17 @@ typedef struct {
 #define PHASE_INDUCTANCE_RISE_FALL_DIFF_MAX_PERCENT 25.0f
 #define PHASE_INDUCTANCE_DISCRETE_DIFF_MAX_PERCENT 30.0f
 #define PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT 20.0f
+#define M0_BRINGUP_MODE_PHASE_INDUCTANCE 1u
+#define M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI 2u
+#ifndef M0_BRINGUP_MODE
+#define M0_BRINGUP_MODE M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI
+#endif
+#define FIXED_CURRENT_PI_R_PHASE_OHM 3.20f
+#define FIXED_CURRENT_PI_L_PHASE_H 0.00066f
+#define FIXED_CURRENT_PI_BANDWIDTH_HZ 100.0f
+#define FIXED_CURRENT_PI_VOLTAGE_LIMIT_V 1.00f
+#define FIXED_CURRENT_PI_KAW (TWO_PI_F * FIXED_CURRENT_PI_BANDWIDTH_HZ)
+#define FIXED_CURRENT_PI_INTEGRATOR_LIMIT_V 1.00f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -1202,7 +1211,8 @@ static bool alpha_map_candidate_point_valid(const AlphaResistancePointResult *pt
 static bool phase_vector_mapping_run(uint32_t *last_seq);
 static void phase_vector_mapping_evaluate(void);
 static void phase_resistance_apply_confirmed_mapping(void);
-static bool phase_inductance_identification_run(void);
+static bool phase_inductance_identification_run(void) __attribute__((unused));
+static bool fixed_rotor_current_pi_run(void);
 static void current_observe_stats_finalize(const CurrentObserveStats *stats,
                                            float *id_mean,
                                            float *iq_mean,
@@ -8230,6 +8240,371 @@ static bool __attribute__((unused)) static_d_axis_current_trip_diagnostic_run(vo
   return ok && !g_drv_test.current_trip_fault.latched;
 }
 
+static float fixed_current_encoder_theta_from_tim3(void)
+{
+  const uint32_t cnt = (uint32_t)__HAL_TIM_GET_COUNTER(&htim3);
+  const float theta_m = TWO_PI_F * (float)(cnt % COMM_ENCODER_CPR) / (float)COMM_ENCODER_CPR;
+  return wrap_0_2pi_f((float)COMM_ENCODER_DIRECTION *
+                      (float)COMM_POLE_PAIRS *
+                      theta_m);
+}
+
+static void fixed_current_safe_shutdown(FixedRotorCurrentTest *test)
+{
+  if (test != NULL) {
+    test->id_ref_a = 0.0f;
+    current_controller_reset(&test->controller);
+  }
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, OPEN_LOOP_VBUS_MIN_V);
+  power_stage_set_ccr_half();
+  power_stage_disable_six_outputs();
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  m1_force_safe_off();
+  hal_gpio_set_gate_enable(false);
+  (void)drv8301_set_dc_cal(&g_drv0, false, false);
+  (void)drv8301_set_dc_cal(&g_drv1, false, false);
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+}
+
+static void fixed_current_enable_cycle_counter(void)
+{
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0u;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static float fixed_current_cycles_to_us(uint32_t cycles)
+{
+  const uint32_t cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+  return ((float)cycles * 1000000.0f) / (float)cpu_hz;
+}
+
+static void fixed_current_force_safe_output(FixedRotorCurrentTestOutput *out,
+                                            const FixedRotorCurrentTest *test)
+{
+  if (out == NULL || test == NULL) {
+    return;
+  }
+  out->state = FIXED_ROTOR_STATE_FAIL;
+  out->result = FIXED_ROTOR_RESULT_FAIL;
+  out->fault_code = test->fault_code;
+  out->id_ref_a = 0.0f;
+  out->iq_ref_a = 0.0f;
+  out->vd_v = 0.0f;
+  out->vq_v = 0.0f;
+  out->v_alpha_v = 0.0f;
+  out->v_beta_v = 0.0f;
+  out->power_stage_request = false;
+  out->pwm_output_request = false;
+  out->safe_shutdown_request = true;
+  out->done = true;
+}
+
+static void fixed_current_print_stage_stats(const char *name,
+                                            const FixedRotorCurrentStageStats *stats)
+{
+  char line[512];
+  const int32_t id_ref = float_to_scaled_i32(stats->id_ref_mean, 1000.0f);
+  const int32_t id_mean = float_to_scaled_i32(stats->id_mean, 1000.0f);
+  const uint32_t id_std = float_to_scaled_u32(stats->id_std, 1000.0f);
+  const int32_t err_mean = float_to_scaled_i32(stats->id_error_mean, 1000.0f);
+  const uint32_t err_peak = float_to_scaled_u32(stats->id_error_peak, 1000.0f);
+  const int32_t iq_mean = float_to_scaled_i32(stats->iq_mean, 1000.0f);
+  const uint32_t iq_std = float_to_scaled_u32(stats->iq_std, 1000.0f);
+  const uint32_t iq_peak = float_to_scaled_u32(stats->iq_peak, 1000.0f);
+  const uint32_t phase_peak = float_to_scaled_u32(stats->phase_current_peak, 1000.0f);
+  const uint32_t v_peak = float_to_scaled_u32(stats->voltage_vector_peak, 1000.0f);
+  const int32_t overshoot = float_to_scaled_i32(stats->overshoot_percent, 100.0f);
+  const int32_t settle = float_to_scaled_i32(stats->settling_time_ms, 100.0f);
+  const int32_t ss_err = float_to_scaled_i32(stats->steady_state_error_a, 1000.0f);
+  const uint32_t iq_cross = float_to_scaled_u32(stats->cross_axis_iq_peak_a, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "current_pi_stage_%s: samples=%lu id_ref_mean=%s%lu.%03lu id_mean=%s%lu.%03lu id_std=%lu.%03lu id_error_mean=%s%lu.%03lu id_error_peak=%lu.%03lu iq_mean=%s%lu.%03lu iq_std=%lu.%03lu iq_peak=%lu.%03lu phase_current_peak=%lu.%03lu voltage_vector_peak=%lu.%03lu saturation_count=%lu gap_count=%lu overshoot_percent=%s%lu.%02lu settling_time_ms=%s%lu.%02lu steady_state_error_a=%s%lu.%03lu cross_axis_iq_peak_a=%lu.%03lu",
+           name,
+           (unsigned long)stats->sample_count,
+           (id_ref < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id_ref) / 1000u), (unsigned long)(abs_i32_to_u32(id_ref) % 1000u),
+           (id_mean < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id_mean) / 1000u), (unsigned long)(abs_i32_to_u32(id_mean) % 1000u),
+           (unsigned long)(id_std / 1000u), (unsigned long)(id_std % 1000u),
+           (err_mean < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(err_mean) / 1000u), (unsigned long)(abs_i32_to_u32(err_mean) % 1000u),
+           (unsigned long)(err_peak / 1000u), (unsigned long)(err_peak % 1000u),
+           (iq_mean < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq_mean) / 1000u), (unsigned long)(abs_i32_to_u32(iq_mean) % 1000u),
+           (unsigned long)(iq_std / 1000u), (unsigned long)(iq_std % 1000u),
+           (unsigned long)(iq_peak / 1000u), (unsigned long)(iq_peak % 1000u),
+           (unsigned long)(phase_peak / 1000u), (unsigned long)(phase_peak % 1000u),
+           (unsigned long)(v_peak / 1000u), (unsigned long)(v_peak % 1000u),
+           (unsigned long)stats->saturation_count,
+           (unsigned long)stats->control_tick_gap_count,
+           (overshoot < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(overshoot) / 100u), (unsigned long)(abs_i32_to_u32(overshoot) % 100u),
+           (settle < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(settle) / 100u), (unsigned long)(abs_i32_to_u32(settle) % 100u),
+           (ss_err < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(ss_err) / 1000u), (unsigned long)(abs_i32_to_u32(ss_err) % 1000u),
+           (unsigned long)(iq_cross / 1000u), (unsigned long)(iq_cross % 1000u));
+  uart2_printf_line(line);
+}
+
+static void fixed_current_print_log(const FixedRotorCurrentTest *test)
+{
+  char line[512];
+  for (uint32_t i = 0u; i < test->log_count; ++i) {
+    const FixedRotorCurrentLogRecord *r = &test->log[i];
+    const int32_t id_ref = float_to_scaled_i32(r->id_ref_a, 1000.0f);
+    const int32_t id = float_to_scaled_i32(r->id_a, 1000.0f);
+    const int32_t iq = float_to_scaled_i32(r->iq_a, 1000.0f);
+    const int32_t iu = float_to_scaled_i32(r->iu_a, 1000.0f);
+    const int32_t iv = float_to_scaled_i32(r->iv_a, 1000.0f);
+    const int32_t iw = float_to_scaled_i32(r->iw_a, 1000.0f);
+    const int32_t vd = float_to_scaled_i32(r->vd_v, 1000.0f);
+    const int32_t vq = float_to_scaled_i32(r->vq_v, 1000.0f);
+    const int32_t va = float_to_scaled_i32(r->v_alpha_v, 1000.0f);
+    const int32_t vb = float_to_scaled_i32(r->v_beta_v, 1000.0f);
+    const uint32_t vbus = float_to_scaled_u32(r->vbus_v, 1000.0f);
+    snprintf(line,
+             sizeof(line),
+             "current_pi_log%03lu: state=%s tick=%lu adc_seq=%lu voltage_seq=%lu enc=%ld id_ref=%s%lu.%03lu iq_ref=0.000 iu=%s%lu.%03lu iv=%s%lu.%03lu iw=%s%lu.%03lu id=%s%lu.%03lu iq=%s%lu.%03lu vd=%s%lu.%03lu vq=%s%lu.%03lu v_alpha=%s%lu.%03lu v_beta=%s%lu.%03lu sat=%u vbus=%lu.%03lu fault=0x%08lX",
+             (unsigned long)i,
+             fixed_rotor_current_test_state_name(r->state),
+             (unsigned long)r->control_tick_seq,
+             (unsigned long)r->adc_seq,
+             (unsigned long)r->voltage_command_seq,
+             (long)r->encoder_count,
+             (id_ref < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id_ref) / 1000u), (unsigned long)(abs_i32_to_u32(id_ref) % 1000u),
+             (iu < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu) / 1000u), (unsigned long)(abs_i32_to_u32(iu) % 1000u),
+             (iv < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv) / 1000u), (unsigned long)(abs_i32_to_u32(iv) % 1000u),
+             (iw < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw) / 1000u), (unsigned long)(abs_i32_to_u32(iw) % 1000u),
+             (id < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id) / 1000u), (unsigned long)(abs_i32_to_u32(id) % 1000u),
+             (iq < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq) / 1000u), (unsigned long)(abs_i32_to_u32(iq) % 1000u),
+             (vd < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vd) / 1000u), (unsigned long)(abs_i32_to_u32(vd) % 1000u),
+             (vq < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vq) / 1000u), (unsigned long)(abs_i32_to_u32(vq) % 1000u),
+             (va < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(va) / 1000u), (unsigned long)(abs_i32_to_u32(va) % 1000u),
+             (vb < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vb) / 1000u), (unsigned long)(abs_i32_to_u32(vb) % 1000u),
+             (unsigned int)r->saturation_active,
+             (unsigned long)(vbus / 1000u), (unsigned long)(vbus % 1000u),
+             (unsigned long)r->fault_code);
+    uart2_printf_line(line);
+  }
+  snprintf(line,
+           sizeof(line),
+           "current_pi_log_summary: stored=%lu dropped=%lu",
+           (unsigned long)test->log_count,
+           (unsigned long)test->log_dropped);
+  uart2_printf_line(line);
+}
+
+static bool fixed_rotor_current_pi_run(void)
+{
+  static FixedRotorCurrentTest test __attribute__((section(".ccmram")));
+  FixedRotorCurrentTestConfig cfg = fixed_rotor_current_test_default_config();
+  FixedRotorCurrentTestOutput out = {0};
+  uint32_t last_seq = 0u;
+  bool gate_enabled = false;
+  char line[512];
+
+  cfg.phase_resistance_ohm = FIXED_CURRENT_PI_R_PHASE_OHM;
+  cfg.phase_inductance_h = FIXED_CURRENT_PI_L_PHASE_H;
+  cfg.bandwidth_hz = FIXED_CURRENT_PI_BANDWIDTH_HZ;
+  cfg.voltage_limit_v = FIXED_CURRENT_PI_VOLTAGE_LIMIT_V;
+  cfg.kaw = FIXED_CURRENT_PI_KAW;
+  cfg.integrator_limit_v = FIXED_CURRENT_PI_INTEGRATOR_LIMIT_V;
+  fixed_rotor_current_test_init(&test, &cfg);
+  g_drv_test.run_raw_u_min = 0xffffu;
+  g_drv_test.run_raw_v_min = 0xffffu;
+  g_drv_test.run_raw_u_max = 0u;
+  g_drv_test.run_raw_v_max = 0u;
+
+  snprintf(line,
+           sizeof(line),
+           "current_pi_config: mode=FIXED_ROTOR_CURRENT_PI bandwidth_hz=%lu.%02lu R_phase=%lu.%02lu L_phase_mH=%lu.%03lu Ts_us=%lu voltage_limit=%lu.%02lu current_kp=%lu.%05lu current_ki=%lu.%02lu current_ki_times_ts=%lu.%05lu Kaw=%lu.%02lu current_amp_per_count=%lu.%06lu speed_loop=0 position_loop=0",
+           (unsigned long)cfg.bandwidth_hz,
+           (unsigned long)((uint32_t)(cfg.bandwidth_hz * 100.0f) % 100u),
+           (unsigned long)cfg.phase_resistance_ohm,
+           (unsigned long)((uint32_t)(cfg.phase_resistance_ohm * 100.0f) % 100u),
+           (unsigned long)(cfg.phase_inductance_h * 1000.0f),
+           (unsigned long)((uint32_t)(cfg.phase_inductance_h * 1000000.0f) % 1000u),
+           (unsigned long)(cfg.dt_s * 1000000.0f),
+           (unsigned long)cfg.voltage_limit_v,
+           (unsigned long)((uint32_t)(cfg.voltage_limit_v * 100.0f) % 100u),
+           (unsigned long)fixed_rotor_current_test_kp(&test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_kp(&test) * 100000.0f) % 100000u),
+           (unsigned long)fixed_rotor_current_test_ki(&test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki(&test) * 100.0f) % 100u),
+           (unsigned long)fixed_rotor_current_test_ki_times_ts(&test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki_times_ts(&test) * 100000.0f) % 100000u),
+           (unsigned long)cfg.kaw,
+           (unsigned long)((uint32_t)(cfg.kaw * 100.0f) % 100u),
+           (unsigned long)g_drv_test.current_amp_per_count,
+           (unsigned long)((uint32_t)(g_drv_test.current_amp_per_count * 1000000.0f) % 1000000u));
+  uart2_printf_line(line);
+
+  fixed_current_safe_shutdown(&test);
+  power_stage_set_ccr_half();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_disable_six_outputs();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  fixed_current_enable_cycle_counter();
+
+  uint32_t timeout_ticks = 0u;
+  while (!out.done && timeout_ticks < 180000u) {
+    HalAdcSnapshot snap = {0};
+    if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
+      g_drv_test.fault_code = FIXED_ROTOR_FAULT_ADC_SEQ_GAP;
+      break;
+    }
+
+    encoder_tracker_sample();
+    const float iv = ((float)((int32_t)snap.raw_pc0_m0_so1 -
+                              (int32_t)g_drv_test.offset.offset_u)) *
+                     g_drv_test.current_amp_per_count;
+    const float iw = ((float)((int32_t)snap.raw_pc1_m0_so2 -
+                              (int32_t)g_drv_test.offset.offset_v)) *
+                     g_drv_test.current_amp_per_count;
+    const float vbus = board_read_vbus_v();
+    if (snap.raw_pc0_m0_so1 < g_drv_test.run_raw_u_min) {
+      g_drv_test.run_raw_u_min = snap.raw_pc0_m0_so1;
+    }
+    if (snap.raw_pc0_m0_so1 > g_drv_test.run_raw_u_max) {
+      g_drv_test.run_raw_u_max = snap.raw_pc0_m0_so1;
+    }
+    if (snap.raw_pc1_m0_so2 < g_drv_test.run_raw_v_min) {
+      g_drv_test.run_raw_v_min = snap.raw_pc1_m0_so2;
+    }
+    if (snap.raw_pc1_m0_so2 > g_drv_test.run_raw_v_max) {
+      g_drv_test.run_raw_v_max = snap.raw_pc1_m0_so2;
+    }
+    const bool drv_ok =
+        ((test.control_tick_seq % 2000u) != 0u ||
+         (drv8301_read_status(&g_drv0) && drv8301_read_status(&g_drv1))) &&
+        !drv8301_has_fault(&g_drv0) &&
+        !drv8301_has_fault(&g_drv1) &&
+        !drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) &&
+        !drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw);
+
+    FixedRotorCurrentTestInput in;
+    in.time_us = (uint64_t)timeout_ticks * 50ull;
+    in.adc_seq = snap.seq;
+    in.encoder_count = g_encoder_accum;
+    in.theta_test_rad = fixed_current_encoder_theta_from_tim3();
+    in.iv_a = iv;
+    in.iw_a = iw;
+    in.vbus_v = vbus;
+    in.adc_valid = snap.valid &&
+                   (snap.raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                   (snap.raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+                   (snap.raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                   (snap.raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT);
+    in.encoder_valid = encoder_delta_ok();
+    in.nfault_ok = nfault_ok();
+    in.drv_ok = drv_ok;
+    in.m1_safe = m1_is_safe_off();
+    in.pwm_ccr_ok = ccrs_in_open_loop_range() || power_stage_channels_off();
+    in.pwm_allowed = true;
+    in.fault_active = (g_axis0.fault_flags != 0u);
+
+    const uint32_t cycles_before = DWT->CYCCNT;
+    fixed_rotor_current_test_step(&test, &in, &out);
+    const uint32_t elapsed_cycles = DWT->CYCCNT - cycles_before;
+    const float elapsed_us = fixed_current_cycles_to_us(elapsed_cycles);
+    fixed_rotor_current_test_note_execution_time(&test, elapsed_cycles, elapsed_us);
+    if (test.result == FIXED_ROTOR_RESULT_FAIL && !out.safe_shutdown_request) {
+      fixed_current_force_safe_output(&out, &test);
+    }
+
+    if (out.power_stage_request && !gate_enabled) {
+      power_stage_disable_six_outputs();
+      power_stage_set_ccr_half();
+      hal_gpio_set_gate_enable(true);
+      if (!power_stage_wait_nfault_release()) {
+        g_drv_test.fault_code = FIXED_ROTOR_FAULT_NFAULT;
+        break;
+      }
+      TIM1->CCER |= POWER_CCER_MASK;
+      __HAL_TIM_MOE_ENABLE(&htim1);
+      gate_enabled = true;
+    }
+
+    if (out.power_stage_request && gate_enabled && !out.safe_shutdown_request) {
+      encoder_apply_alpha_beta_svpwm(out.v_alpha_v, out.v_beta_v, vbus);
+      TIM1->CCER |= POWER_CCER_MASK;
+      __HAL_TIM_MOE_ENABLE(&htim1);
+    }
+
+    if (out.safe_shutdown_request) {
+      fixed_current_safe_shutdown(&test);
+      break;
+    }
+    timeout_ticks++;
+  }
+
+  if (!out.done && g_drv_test.fault_code == 0u) {
+    g_drv_test.fault_code = FIXED_ROTOR_FAULT_TIMEOUT;
+  }
+  fixed_current_safe_shutdown(&test);
+  (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
+  (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  drv_bringup_capture_final_state();
+
+  if (g_drv_test.fault_code != 0u && test.fault_code == 0u) {
+    test.fault_code = g_drv_test.fault_code;
+    test.result = FIXED_ROTOR_RESULT_FAIL;
+  }
+
+  fixed_current_print_log(&test);
+  fixed_current_print_stage_stats("ENABLE_ZERO", &test.enable_zero_stats);
+  fixed_current_print_stage_stats("HOLD_ID_0P05", &test.hold_0p05_stats);
+  fixed_current_print_stage_stats("HOLD_ID_0P10", &test.hold_0p10_stats);
+  fixed_current_print_stage_stats("HOLD_ZERO", &test.hold_zero_stats);
+
+  snprintf(line,
+           sizeof(line),
+           "current_pi_diag: control_tick_seq=%lu adc_seq=%lu voltage_command_seq=%lu missed_control_tick_count=%lu duplicate_control_tick_count=%lu worst_case_control_cycles=%lu worst_case_control_time_us=%lu.%03lu theta_test=%lu.%03lu encoder_motion_max_counts=%ld result=%s fault_code=0x%08lX",
+           (unsigned long)test.control_tick_seq,
+           (unsigned long)test.last_adc_seq,
+           (unsigned long)test.voltage_command_seq,
+           (unsigned long)test.missed_control_tick_count,
+           (unsigned long)test.duplicate_control_tick_count,
+           (unsigned long)test.worst_case_control_cycles,
+           (unsigned long)float_to_scaled_u32(test.worst_case_control_time_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(test.worst_case_control_time_us, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(test.theta_test_rad, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(test.theta_test_rad, 1000.0f) % 1000u,
+           (long)test.encoder_motion_max_counts,
+           fixed_rotor_current_test_result_name(test.result),
+           (unsigned long)test.fault_code);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "current_pi_power_final: gate=%u nfault=%u ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu drv0_control1=0x%04X drv0_control2=0x%04X drv1_control1=0x%04X drv1_control2=0x%04X fault_code=0x%08lX current_pi_test_result=%s",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned int)board_read_drv_nfault(),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->BDTR,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)g_drv_test.drv0_regs.control1,
+           (unsigned int)g_drv_test.drv0_regs.control2,
+           (unsigned int)g_drv_test.drv1_regs.control1,
+           (unsigned int)g_drv_test.drv1_regs.control2,
+           (unsigned long)test.fault_code,
+           fixed_rotor_current_test_result_name(test.result));
+  uart2_printf_line(line);
+
+  if (test.result == FIXED_ROTOR_RESULT_PASS && test.fault_code == 0u) {
+    uart2_printf_line("FIXED_ROTOR_CURRENT_PI_TEST_PASS");
+    return true;
+  }
+
+  uart2_printf_line("FIXED_ROTOR_CURRENT_PI_TEST_FAIL");
+  drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
+  return false;
+}
+
 static void drv_bringup_test_run(void)
 {
   memset(&g_drv_test, 0, sizeof(g_drv_test));
@@ -8304,7 +8679,14 @@ static void drv_bringup_test_run(void)
 
   const uint32_t observe_start_ms = HAL_GetTick();
   const uint32_t observe_start_seq = drv_bringup_get_adc_seq();
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI
+  g_drv_test.open_loop_pass = fixed_rotor_current_pi_run();
+  g_drv_test.phase_resistance_classification =
+      g_drv_test.open_loop_pass ? "FIXED_ROTOR_CURRENT_PI_TEST_PASS"
+                                : "FIXED_ROTOR_CURRENT_PI_TEST_FAIL";
+#else
   g_drv_test.open_loop_pass = phase_inductance_identification_run();
+#endif
   const uint32_t observe_end_ms = HAL_GetTick();
   const uint32_t observe_end_seq = drv_bringup_get_adc_seq();
   g_drv_test.adc_seq_after = drv_bringup_get_adc_seq();
@@ -8376,7 +8758,9 @@ static void drv_bringup_test_run(void)
        (strcmp(g_drv_test.phase_resistance_classification,
                "PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS") == 0) ||
        (strcmp(g_drv_test.phase_resistance_classification,
-               "PHASE_INDUCTANCE_IDENTIFICATION_PASS") == 0))) {
+               "PHASE_INDUCTANCE_IDENTIFICATION_PASS") == 0) ||
+       (strcmp(g_drv_test.phase_resistance_classification,
+               "FIXED_ROTOR_CURRENT_PI_TEST_PASS") == 0))) {
     g_drv_test.current_direction_ok = true;
     g_drv_test.current_resolution_ok = true;
     g_drv_test.dq_alignment_ok = true;
@@ -9640,6 +10024,14 @@ static void print_drv_bringup_test_status(void)
   uart2_printf_line(line);
 
   if (g_drv_test.phase_inductance_classification != NULL) {
+    snprintf(line,
+             sizeof(line),
+             "phase_inductance_config: repeat_count_per_rank=%lu total_repeat_count=%lu min_valid_repeats=%lu min_rank_repeats=%lu base_alpha_v=0.200 r_phase_ohm=3.200 current_pi_enabled=0 speed_loop_enabled=0 position_loop_enabled=0",
+             (unsigned long)PHASE_INDUCTANCE_REPEAT_COUNT_PER_RANK,
+             (unsigned long)PHASE_INDUCTANCE_REPEAT_COUNT,
+             (unsigned long)PHASE_INDUCTANCE_MIN_VALID_REPEATS,
+             (unsigned long)(PHASE_INDUCTANCE_MIN_VALID_REPEATS / 2u));
+    uart2_printf_line(line);
     for (uint32_t li = 0u; li < PHASE_INDUCTANCE_LEVEL_COUNT; ++li) {
       const PhaseInductanceLevelResult *lvl = &g_drv_test.inductance_levels[li];
       snprintf(line,
@@ -10256,7 +10648,11 @@ int main(void)
 
   uart2_printf_line("");
   uart2_printf_line("odrive_v36_cube bringup start");
-  uart2_printf_line("M0 STATIC ALPHA AXIS PHASE RESISTANCE IDENTIFICATION: DRV gain 80V/V, no current PI, no speed/position loop.");
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI
+  uart2_printf_line("M0 FIXED ROTOR LOW CURRENT DQ PI TEST BUILD: DRV gain 80V/V, speed/position loop disabled, no auto rotation.");
+#else
+  uart2_printf_line("M0 PHASE INDUCTANCE IDENTIFICATION BUILD: DRV gain 80V/V, no current PI, no speed/position loop.");
+#endif
   drv_bringup_test_run();
   print_drv_bringup_test_status();
   print_bringup_status();

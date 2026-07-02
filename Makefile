@@ -53,9 +53,14 @@ IDENTIFICATION_PIPELINE_TEST_SRCS := tests/identification_pipeline_test.c \
 	src/board/board_odrive_v36.c \
 	src/hal/mock/hal_adc_mock.c
 
-.PHONY: test math_test sim_test pc_test clean build
+CURRENT_CONTROLLER_TEST_SRCS := tests/current_controller_test.c \
+	src/control/current_controller.c \
+	src/control/fixed_rotor_current_test.c \
+	src/foc/foc_math.c
 
-test: math_test sim_test pc_test board_adc_sampling_test identification_pipeline_test
+.PHONY: test math_test sim_test pc_test board_adc_sampling_test identification_pipeline_test current_controller_test clean build
+
+test: math_test sim_test pc_test board_adc_sampling_test identification_pipeline_test current_controller_test
 
 math_test: build/foc_math_test$(EXE)
 	./build/foc_math_test$(EXE)
@@ -71,6 +76,9 @@ board_adc_sampling_test: build/board_adc_sampling_test$(EXE)
 
 identification_pipeline_test: build/identification_pipeline_test$(EXE)
 	./build/identification_pipeline_test$(EXE)
+
+current_controller_test: build/current_controller_test$(EXE)
+	./build/current_controller_test$(EXE)
 
 build:
 	$(MKDIR_BUILD)
@@ -89,6 +97,9 @@ build/board_adc_sampling_test$(EXE): $(BOARD_ADC_SAMPLING_TEST_SRCS) | build
 
 build/identification_pipeline_test$(EXE): $(IDENTIFICATION_PIPELINE_TEST_SRCS) | build
 	$(CC) $(CFLAGS) $(IDENTIFICATION_PIPELINE_TEST_SRCS) $(LDFLAGS) -o $@
+
+build/current_controller_test$(EXE): $(CURRENT_CONTROLLER_TEST_SRCS) | build
+	$(CC) $(CFLAGS) $(CURRENT_CONTROLLER_TEST_SRCS) $(LDFLAGS) -o $@
 
 clean:
 	$(CLEAN_BUILD)
