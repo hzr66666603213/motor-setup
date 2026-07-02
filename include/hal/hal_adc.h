@@ -41,6 +41,10 @@ typedef struct {
     uint16_t raw_u;        /* U/A 相电流 ADC 原始值，count */
     uint16_t raw_v;        /* V/B 相电流 ADC 原始值，count */
     uint16_t raw_w;        /* W/C 相电流 ADC 原始值，count；two-shunt 模式下可为 0 */
+    uint16_t raw_pc0_m0_so1; /* ADC2_IN10 / PC0 / M0 SO1 */
+    uint16_t raw_pc1_m0_so2; /* ADC2_IN11 / PC1 / M0 SO2 */
+    uint16_t raw_pc2_m1_so2; /* ADC2_IN12 / PC2 / M1 SO2 */
+    uint16_t raw_pc3_m1_so1; /* ADC2_IN13 / PC3 / M1 SO1 */
     uint16_t raw_vbus;     /* 母线电压 ADC 原始值，count */
     uint16_t raw_mos_temp; /* MOS/板温 ADC 原始值，count */
     uint32_t seq;          /* 同步采样序号 */

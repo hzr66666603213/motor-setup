@@ -19,6 +19,10 @@ bool hal_adc_init(void)
     s_mock_snapshot.raw_u = 2048u;
     s_mock_snapshot.raw_v = 2048u;
     s_mock_snapshot.raw_w = 0u;
+    s_mock_snapshot.raw_pc0_m0_so1 = 2048u;
+    s_mock_snapshot.raw_pc1_m0_so2 = 2048u;
+    s_mock_snapshot.raw_pc2_m1_so2 = 2048u;
+    s_mock_snapshot.raw_pc3_m1_so1 = 2048u;
     s_mock_snapshot.raw_vbus = 2048u;
     s_mock_snapshot.raw_mos_temp = 1200u;
     s_mock_snapshot.seq = 0u;
@@ -79,6 +83,10 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
     s_mock_snapshot.raw_u = 2048u;
     s_mock_snapshot.raw_v = 2048u;
     s_mock_snapshot.raw_w = 0u;
+    s_mock_snapshot.raw_pc0_m0_so1 = 2048u;
+    s_mock_snapshot.raw_pc1_m0_so2 = 2048u;
+    s_mock_snapshot.raw_pc2_m1_so2 = 2048u;
+    s_mock_snapshot.raw_pc3_m1_so1 = 2048u;
     s_mock_snapshot.raw_vbus = 2048u;
     s_mock_snapshot.raw_mos_temp = 1200u;
     s_mock_snapshot.seq += 1u;

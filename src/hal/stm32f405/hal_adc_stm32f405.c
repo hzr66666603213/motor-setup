@@ -30,8 +30,10 @@ static volatile HalAdcDiagnostics s_adc_diagnostics;
 
 static uint16_t s_pending_vbus_raw;
 static uint16_t s_pending_mos_temp_raw;
-static uint16_t s_pending_current_u_raw;
-static uint16_t s_pending_current_v_raw;
+static uint16_t s_pending_pc0_m0_so1_raw;
+static uint16_t s_pending_pc1_m0_so2_raw;
+static uint16_t s_pending_pc2_m1_so2_raw;
+static uint16_t s_pending_pc3_m1_so1_raw;
 static volatile bool s_pending_adc1_ready = false;
 static volatile bool s_pending_adc2_ready = false;
 
@@ -75,8 +77,10 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
         s_pending_adc1_ready = true;
     } else if (adc == &hadc2) {
         s_adc_diagnostics.adc2_callback_count++;
-        s_pending_current_u_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
-        s_pending_current_v_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
+        s_pending_pc0_m0_so1_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
+        s_pending_pc1_m0_so2_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
+        s_pending_pc2_m1_so2_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_3);
+        s_pending_pc3_m1_so1_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_4);
         s_pending_adc2_ready = true;
     } else {
         return;
@@ -88,9 +92,13 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
      */
     if (s_pending_adc1_ready && s_pending_adc2_ready) {
         HalAdcSnapshot next;
-        next.raw_u = s_pending_current_u_raw;
-        next.raw_v = s_pending_current_v_raw;
+        next.raw_u = s_pending_pc0_m0_so1_raw;
+        next.raw_v = s_pending_pc1_m0_so2_raw;
         next.raw_w = 0u;
+        next.raw_pc0_m0_so1 = s_pending_pc0_m0_so1_raw;
+        next.raw_pc1_m0_so2 = s_pending_pc1_m0_so2_raw;
+        next.raw_pc2_m1_so2 = s_pending_pc2_m1_so2_raw;
+        next.raw_pc3_m1_so1 = s_pending_pc3_m1_so1_raw;
         next.raw_vbus = s_pending_vbus_raw;
         next.raw_mos_temp = s_pending_mos_temp_raw;
         next.seq = s_snapshot.seq + 1u;
