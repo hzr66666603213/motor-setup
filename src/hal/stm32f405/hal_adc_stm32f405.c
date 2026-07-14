@@ -21,8 +21,23 @@
 
 #include "stm32f4xx_hal.h"
 
+/* Production control keeps the deadline counter; percentile-style buckets are offline diagnostics. */
+#define HAL_ADC_EXTENDED_CALLBACK_TIMING_STATS 0
+
 extern ADC_HandleTypeDef hadc1;
 extern ADC_HandleTypeDef hadc2;
+
+__attribute__((weak)) void current_sensor_noise_diagnostic_fast_isr(
+    const HalAdcSnapshot *snapshot)
+{
+    (void)snapshot;
+}
+
+__attribute__((weak)) void current_sensor_adc_snapshot_fast_isr(
+    const HalAdcSnapshot *snapshot)
+{
+    current_sensor_noise_diagnostic_fast_isr(snapshot);
+}
 
 static volatile HalAdcSnapshot s_snapshot;
 static volatile uint32_t s_snapshot_seqlock;
@@ -38,6 +53,60 @@ static uint16_t s_pending_pc2_m1_so2_raw;
 static uint16_t s_pending_pc3_m1_so1_raw;
 static volatile bool s_pending_adc1_ready = false;
 static volatile bool s_pending_adc2_ready = false;
+static volatile uint32_t s_pending_first_ready_cycle = 0u;
+static volatile uint32_t s_pending_adc1_start_cycle = 0u;
+static volatile uint32_t s_pending_adc2_start_cycle = 0u;
+static volatile uint32_t s_pending_adc1_generation = 0u;
+static volatile uint32_t s_pending_adc2_generation = 0u;
+static volatile uint32_t s_pair_generation = 0u;
+static volatile bool s_diagnostic_window_active = false;
+static volatile bool s_diagnostic_window_frozen = false;
+
+static uint32_t hal_adc_pair_timeout_cycles(void)
+{
+    const uint32_t cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+    return cpu_hz / 20000u;
+}
+
+static void hal_adc_record_true_unpaired(uint8_t adc_index)
+{
+    if (adc_index == 1u) {
+        s_adc_diagnostics.adc1_complete_without_adc2_count++;
+        if (s_diagnostic_window_active) {
+            s_adc_diagnostics.runtime_true_adc1_unpaired_count++;
+        }
+    } else {
+        s_adc_diagnostics.adc2_complete_without_adc1_count++;
+        if (s_diagnostic_window_active) {
+            s_adc_diagnostics.runtime_true_adc2_unpaired_count++;
+        }
+    }
+}
+
+static void hal_adc_check_pending_timeouts(uint32_t now_cycle)
+{
+    const uint32_t timeout = hal_adc_pair_timeout_cycles();
+    if (s_pending_adc1_ready && !s_pending_adc2_ready &&
+        ((uint32_t)(now_cycle - s_pending_adc1_start_cycle) > timeout)) {
+        hal_adc_record_true_unpaired(1u);
+        if (s_diagnostic_window_active) {
+            s_adc_diagnostics.pending_timeout_count++;
+        }
+        s_adc_diagnostics.max_boundary_completion_gap_cycles =
+            (uint32_t)(now_cycle - s_pending_adc1_start_cycle);
+        s_pending_adc1_ready = false;
+    }
+    if (s_pending_adc2_ready && !s_pending_adc1_ready &&
+        ((uint32_t)(now_cycle - s_pending_adc2_start_cycle) > timeout)) {
+        hal_adc_record_true_unpaired(2u);
+        if (s_diagnostic_window_active) {
+            s_adc_diagnostics.pending_timeout_count++;
+        }
+        s_adc_diagnostics.max_boundary_completion_gap_cycles =
+            (uint32_t)(now_cycle - s_pending_adc2_start_cycle);
+        s_pending_adc2_ready = false;
+    }
+}
 
 static bool hal_adc_configure_adc2_rank_order(HalAdcM0RankOrder order)
 {
@@ -131,10 +200,38 @@ bool hal_adc_init(void)
     s_snapshot_seqlock = 0u;
     s_pending_adc1_ready = false;
     s_pending_adc2_ready = false;
+    s_pending_first_ready_cycle = 0u;
+    s_pending_adc1_start_cycle = 0u;
+    s_pending_adc2_start_cycle = 0u;
+    s_pending_adc1_generation = 0u;
+    s_pending_adc2_generation = 0u;
+    s_pair_generation = 0u;
+    s_diagnostic_window_active = false;
+    s_diagnostic_window_frozen = false;
     s_adc_diagnostics.irq_count = 0u;
     s_adc_diagnostics.adc1_callback_count = 0u;
     s_adc_diagnostics.adc2_callback_count = 0u;
     s_adc_diagnostics.snapshot_count = 0u;
+    s_adc_diagnostics.adc1_complete_without_adc2_count = 0u;
+    s_adc_diagnostics.adc2_complete_without_adc1_count = 0u;
+    s_adc_diagnostics.maximum_adc1_adc2_completion_gap_cycles = 0u;
+    s_adc_diagnostics.max_same_generation_completion_gap_cycles = 0u;
+    s_adc_diagnostics.max_boundary_completion_gap_cycles = 0u;
+    s_adc_diagnostics.completion_gap_generation_mismatch_count = 0u;
+    s_adc_diagnostics.runtime_true_adc1_unpaired_count = 0u;
+    s_adc_diagnostics.runtime_true_adc2_unpaired_count = 0u;
+    s_adc_diagnostics.adc1_pending_overwrite_count = 0u;
+    s_adc_diagnostics.adc2_pending_overwrite_count = 0u;
+    s_adc_diagnostics.pending_timeout_count = 0u;
+    s_adc_diagnostics.boundary_adc1_pending_at_start = 0u;
+    s_adc_diagnostics.boundary_adc2_pending_at_start = 0u;
+    s_adc_diagnostics.boundary_adc1_pending_at_end = 0u;
+    s_adc_diagnostics.boundary_adc2_pending_at_end = 0u;
+    s_adc_diagnostics.post_freeze_adc1_completion_count = 0u;
+    s_adc_diagnostics.post_freeze_adc2_completion_count = 0u;
+    s_adc_diagnostics.worst_snapshot_publish_cycles = 0u;
+    s_adc_diagnostics.worst_noise_diagnostic_isr_cycles = 0u;
+    s_adc_diagnostics.worst_adc_callback_cycles = 0u;
 
     const HAL_StatusTypeDef ok1 = HAL_ADCEx_InjectedStart_IT(&hadc1);
     const HAL_StatusTypeDef ok2 = HAL_ADCEx_InjectedStart_IT(&hadc2);
@@ -149,24 +246,108 @@ void hal_adc_stm32f405_on_irq_enter(void)
     s_adc_diagnostics.irq_count++;
 }
 
+void hal_adc_stm32f405_begin_diagnostic_window(void)
+{
+    s_adc_diagnostics.runtime_true_adc1_unpaired_count = 0u;
+    s_adc_diagnostics.runtime_true_adc2_unpaired_count = 0u;
+    s_adc_diagnostics.adc1_pending_overwrite_count = 0u;
+    s_adc_diagnostics.adc2_pending_overwrite_count = 0u;
+    s_adc_diagnostics.pending_timeout_count = 0u;
+    s_adc_diagnostics.boundary_adc1_pending_at_start =
+        s_pending_adc1_ready ? 1u : 0u;
+    s_adc_diagnostics.boundary_adc2_pending_at_start =
+        s_pending_adc2_ready ? 1u : 0u;
+    s_adc_diagnostics.boundary_adc1_pending_at_end = 0u;
+    s_adc_diagnostics.boundary_adc2_pending_at_end = 0u;
+    s_adc_diagnostics.post_freeze_adc1_completion_count = 0u;
+    s_adc_diagnostics.post_freeze_adc2_completion_count = 0u;
+    s_adc_diagnostics.max_same_generation_completion_gap_cycles = 0u;
+    s_adc_diagnostics.max_boundary_completion_gap_cycles = 0u;
+    s_adc_diagnostics.completion_gap_generation_mismatch_count = 0u;
+    s_adc_diagnostics.min_adc_callback_cycles = 0xFFFFFFFFu;
+    s_adc_diagnostics.sum_adc_callback_cycles = 0u;
+    s_adc_diagnostics.adc_callback_timing_sample_count = 0u;
+    s_adc_diagnostics.adc_callback_over_20us_count = 0u;
+    s_adc_diagnostics.adc_callback_over_30us_count = 0u;
+    s_adc_diagnostics.adc_callback_over_40us_count = 0u;
+    s_adc_diagnostics.adc_callback_over_50us_count = 0u;
+    s_diagnostic_window_frozen = false;
+    s_diagnostic_window_active = true;
+}
+
+void hal_adc_stm32f405_freeze_diagnostic_window(void)
+{
+    s_adc_diagnostics.boundary_adc1_pending_at_end =
+        s_pending_adc1_ready ? 1u : 0u;
+    s_adc_diagnostics.boundary_adc2_pending_at_end =
+        s_pending_adc2_ready ? 1u : 0u;
+    s_diagnostic_window_active = false;
+    s_diagnostic_window_frozen = true;
+}
+
 void hal_adc_stm32f405_on_injected_complete(void *hadc)
 {
+    const uint32_t callback_start_cycle = DWT->CYCCNT;
     ADC_HandleTypeDef *adc = (ADC_HandleTypeDef *)hadc;
+    const uint32_t now_cycle = DWT->CYCCNT;
+
+    if (s_diagnostic_window_frozen) {
+        if (adc == &hadc1) {
+            s_adc_diagnostics.post_freeze_adc1_completion_count++;
+        } else if (adc == &hadc2) {
+            s_adc_diagnostics.post_freeze_adc2_completion_count++;
+        }
+    }
+
+    hal_adc_check_pending_timeouts(now_cycle);
 
     if (adc == &hadc1) {
+        if (s_pending_adc1_ready) {
+            hal_adc_record_true_unpaired(1u);
+            if (s_diagnostic_window_active) {
+                s_adc_diagnostics.adc1_pending_overwrite_count++;
+            }
+            s_pending_adc1_ready = false;
+        }
         s_adc_diagnostics.adc1_callback_count++;
         s_pending_vbus_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
         s_pending_mos_temp_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
+        if (s_pending_adc2_ready) {
+            s_pending_adc1_generation = s_pending_adc2_generation;
+        } else {
+            s_pair_generation++;
+            s_pending_adc1_generation = s_pair_generation;
+        }
+        s_pending_adc1_start_cycle = now_cycle;
         s_pending_adc1_ready = true;
     } else if (adc == &hadc2) {
+        if (s_pending_adc2_ready) {
+            hal_adc_record_true_unpaired(2u);
+            if (s_diagnostic_window_active) {
+                s_adc_diagnostics.adc2_pending_overwrite_count++;
+            }
+            s_pending_adc2_ready = false;
+        }
         s_adc_diagnostics.adc2_callback_count++;
         s_pending_pc0_m0_so1_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
         s_pending_pc1_m0_so2_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
         s_pending_pc2_m1_so2_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_3);
         s_pending_pc3_m1_so1_raw = (uint16_t)HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_4);
+        if (s_pending_adc1_ready) {
+            s_pending_adc2_generation = s_pending_adc1_generation;
+        } else {
+            s_pair_generation++;
+            s_pending_adc2_generation = s_pair_generation;
+        }
+        s_pending_adc2_start_cycle = now_cycle;
         s_pending_adc2_ready = true;
     } else {
         return;
+    }
+
+    if ((s_pending_adc1_ready ^ s_pending_adc2_ready) &&
+        s_pending_first_ready_cycle == 0u) {
+        s_pending_first_ready_cycle = now_cycle;
     }
 
     /*
@@ -174,6 +355,28 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
      * 这样 board_axis0_read_phase_current_raw() 不会读到“电流是新帧、VBUS 是旧帧”的半帧。
      */
     if (s_pending_adc1_ready && s_pending_adc2_ready) {
+        const uint32_t first_cycle =
+            (s_pending_adc1_start_cycle < s_pending_adc2_start_cycle)
+                ? s_pending_adc1_start_cycle
+                : s_pending_adc2_start_cycle;
+        const uint32_t second_cycle =
+            (s_pending_adc1_start_cycle >= s_pending_adc2_start_cycle)
+                ? s_pending_adc1_start_cycle
+                : s_pending_adc2_start_cycle;
+        const uint32_t gap = second_cycle - first_cycle;
+        if (gap > s_adc_diagnostics.maximum_adc1_adc2_completion_gap_cycles) {
+            s_adc_diagnostics.maximum_adc1_adc2_completion_gap_cycles = gap;
+        }
+        if (s_pending_adc1_generation == s_pending_adc2_generation) {
+            if (gap > s_adc_diagnostics.max_same_generation_completion_gap_cycles) {
+                s_adc_diagnostics.max_same_generation_completion_gap_cycles = gap;
+            }
+        } else {
+            s_adc_diagnostics.completion_gap_generation_mismatch_count++;
+            if (gap > s_adc_diagnostics.max_boundary_completion_gap_cycles) {
+                s_adc_diagnostics.max_boundary_completion_gap_cycles = gap;
+            }
+        }
         HalAdcSnapshot next = {0};
         hal_adc_demux_adc2((HalAdcM0RankOrder)s_m0_rank_order,
                            s_pending_pc0_m0_so1_raw,
@@ -185,11 +388,54 @@ void hal_adc_stm32f405_on_injected_complete(void *hadc)
         next.raw_mos_temp = s_pending_mos_temp_raw;
         next.seq = s_snapshot.seq + 1u;
         next.valid = s_adc_started;
+        const uint32_t publish_start_cycle = DWT->CYCCNT;
         hal_adc_publish_snapshot(&next);
+        const uint32_t publish_cycles = DWT->CYCCNT - publish_start_cycle;
+        if (publish_cycles > s_adc_diagnostics.worst_snapshot_publish_cycles) {
+            s_adc_diagnostics.worst_snapshot_publish_cycles = publish_cycles;
+        }
         s_adc_diagnostics.snapshot_count++;
 
         s_pending_adc1_ready = false;
         s_pending_adc2_ready = false;
+        s_pending_first_ready_cycle = 0u;
+        s_pending_adc1_start_cycle = 0u;
+        s_pending_adc2_start_cycle = 0u;
+
+        const uint32_t hook_start_cycle = DWT->CYCCNT;
+        current_sensor_adc_snapshot_fast_isr(&next);
+        const uint32_t hook_cycles = DWT->CYCCNT - hook_start_cycle;
+        if (hook_cycles > s_adc_diagnostics.worst_noise_diagnostic_isr_cycles) {
+            s_adc_diagnostics.worst_noise_diagnostic_isr_cycles = hook_cycles;
+        }
+    }
+    const uint32_t callback_cycles = DWT->CYCCNT - callback_start_cycle;
+    if (callback_cycles > s_adc_diagnostics.worst_adc_callback_cycles) {
+        s_adc_diagnostics.worst_adc_callback_cycles = callback_cycles;
+    }
+#if HAL_ADC_EXTENDED_CALLBACK_TIMING_STATS
+    const uint32_t cpu_hz =
+        (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+    const uint32_t cycles_20us = cpu_hz / 50000u;
+    const uint32_t cycles_30us = (cpu_hz * 30u) / 1000000u;
+    const uint32_t cycles_40us = cpu_hz / 25000u;
+    if (callback_cycles < s_adc_diagnostics.min_adc_callback_cycles) {
+        s_adc_diagnostics.min_adc_callback_cycles = callback_cycles;
+    }
+    s_adc_diagnostics.sum_adc_callback_cycles += callback_cycles;
+    s_adc_diagnostics.adc_callback_timing_sample_count++;
+    if (callback_cycles >= cycles_20us) {
+        s_adc_diagnostics.adc_callback_over_20us_count++;
+    }
+    if (callback_cycles >= cycles_30us) {
+        s_adc_diagnostics.adc_callback_over_30us_count++;
+    }
+    if (callback_cycles >= cycles_40us) {
+        s_adc_diagnostics.adc_callback_over_40us_count++;
+    }
+#endif
+    if (callback_cycles >= 8400u) {
+        s_adc_diagnostics.adc_callback_over_50us_count++;
     }
 }
 

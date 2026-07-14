@@ -55,7 +55,12 @@ IDENTIFICATION_PIPELINE_TEST_SRCS := tests/identification_pipeline_test.c \
 
 CURRENT_CONTROLLER_TEST_SRCS := tests/current_controller_test.c \
 	src/control/current_controller.c \
+	src/control/velocity_controller.c \
+	src/control/electrical_offset_calibration.c \
+	src/control/current_sensor_admission.c \
+	src/control/current_sensor_noise_diagnostic.c \
 	src/control/fixed_rotor_current_test.c \
+	src/control/rotating_dq_current_test.c \
 	src/foc/foc_math.c
 
 .PHONY: test math_test sim_test pc_test board_adc_sampling_test identification_pipeline_test current_controller_test clean build

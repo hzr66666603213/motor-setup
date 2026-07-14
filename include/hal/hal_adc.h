@@ -58,6 +58,33 @@ typedef struct {
     uint32_t adc1_callback_count;
     uint32_t adc2_callback_count;
     uint32_t snapshot_count;
+    uint32_t adc1_complete_without_adc2_count;
+    uint32_t adc2_complete_without_adc1_count;
+    uint32_t maximum_adc1_adc2_completion_gap_cycles;
+    uint32_t max_same_generation_completion_gap_cycles;
+    uint32_t max_boundary_completion_gap_cycles;
+    uint32_t completion_gap_generation_mismatch_count;
+    uint32_t runtime_true_adc1_unpaired_count;
+    uint32_t runtime_true_adc2_unpaired_count;
+    uint32_t adc1_pending_overwrite_count;
+    uint32_t adc2_pending_overwrite_count;
+    uint32_t pending_timeout_count;
+    uint32_t boundary_adc1_pending_at_start;
+    uint32_t boundary_adc2_pending_at_start;
+    uint32_t boundary_adc1_pending_at_end;
+    uint32_t boundary_adc2_pending_at_end;
+    uint32_t post_freeze_adc1_completion_count;
+    uint32_t post_freeze_adc2_completion_count;
+    uint32_t worst_snapshot_publish_cycles;
+    uint32_t worst_noise_diagnostic_isr_cycles;
+    uint32_t worst_adc_callback_cycles;
+    uint32_t min_adc_callback_cycles;
+    uint64_t sum_adc_callback_cycles;
+    uint32_t adc_callback_timing_sample_count;
+    uint32_t adc_callback_over_20us_count;
+    uint32_t adc_callback_over_30us_count;
+    uint32_t adc_callback_over_40us_count;
+    uint32_t adc_callback_over_50us_count;
 } HalAdcDiagnostics;
 
 typedef enum {
@@ -88,6 +115,10 @@ HalAdcM0RankOrder hal_adc_get_m0_rank_order(void);
  */
 void hal_adc_stm32f405_on_injected_complete(void *hadc);
 void hal_adc_stm32f405_on_irq_enter(void);
+void hal_adc_stm32f405_begin_diagnostic_window(void);
+void hal_adc_stm32f405_freeze_diagnostic_window(void);
+void current_sensor_adc_snapshot_fast_isr(const HalAdcSnapshot *snapshot);
+void current_sensor_noise_diagnostic_fast_isr(const HalAdcSnapshot *snapshot);
 
 #ifdef __cplusplus
 }

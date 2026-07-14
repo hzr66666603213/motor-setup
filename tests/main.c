@@ -1,4 +1,5 @@
 #include "control/current_controller.h"
+#include "control/velocity_controller.h"
 #include "foc/foc_math.h"
 #include "foc/svpwm.h"
 #include "sim/foc_sim.h"
@@ -454,6 +455,388 @@ static void test_velocity_wrapper(void)
     check_true((iq_target >= -1.0) && (iq_target <= 1.0), "velocity wrapper current limit");
 }
 
+static void test_velocity_count_window(void)
+{
+    VelocityCountWindow window;
+    const int32_t deltas[] = {1, 2, 1, 2, 1};
+    float rpm = 0.0f;
+
+    printf("\n== velocity count sliding window ==\n");
+    velocity_count_window_reset(&window);
+    for (uint32_t i = 0u; i < 5u; ++i) {
+        rpm = velocity_count_window_update_rpm(&window,
+                                               deltas[i],
+                                               0.01f,
+                                               4096u);
+    }
+    check_true(is_near(rpm, 2.05078125f, 1.0e-5f),
+               "five 10ms deltas form one 50ms speed window");
+
+    rpm = velocity_count_window_update_rpm(&window, 0, 0.01f, 4096u);
+    check_true(is_near(rpm, 1.7578125f, 1.0e-5f),
+               "sixth sample evicts the oldest delta");
+
+    velocity_count_window_reset(&window);
+    for (uint32_t i = 0u; i < 5u; ++i) {
+        rpm = velocity_count_window_update_rpm(&window, -1, 0.01f, 4096u);
+    }
+    check_true(is_near(rpm, -1.46484375f, 1.0e-5f),
+               "sliding window preserves reverse direction");
+
+    check_true(velocity_count_window_update_rpm(0, 1, 0.01f, 4096u) == 0.0f &&
+                   velocity_count_window_update_rpm(&window, 1, 0.0f, 4096u) == 0.0f &&
+                   velocity_count_window_update_rpm(&window, 1, 0.01f, 0u) == 0.0f,
+               "invalid estimator inputs return zero safely");
+
+    check_true(velocity_count_window_set_samples(&window, 2u),
+               "velocity estimator accepts a two-sample window");
+    const int32_t short_deltas[] = {1, 2};
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        rpm = velocity_count_window_update_rpm(&window,
+                                               short_deltas[i],
+                                               0.01f,
+                                               4096u);
+    }
+    check_true(is_near(rpm, 2.197265625f, 1.0e-5f),
+               "two 10ms deltas form one 20ms speed window");
+    rpm = velocity_count_window_update_rpm(&window, 3, 0.01f, 4096u);
+    check_true(is_near(rpm, 3.662109375f, 1.0e-5f),
+               "two-sample window evicts its oldest delta");
+    check_true(!velocity_count_window_set_samples(&window, 0u) &&
+                   !velocity_count_window_set_samples(
+                       &window, VELOCITY_COUNT_WINDOW_SAMPLES + 1u),
+               "velocity estimator rejects invalid window lengths");
+
+    check_true(velocity_count_window_set_samples(&window, 10u),
+               "low-speed estimator accepts a ten-sample window");
+    for (uint32_t i = 0u; i < 10u; ++i) {
+        rpm = velocity_count_window_update_rpm(&window,
+                                               1,
+                                               0.01f,
+                                               4096u);
+    }
+    check_true(is_near(rpm, 1.46484375f, 1.0e-5f),
+               "ten 10ms samples form one 100ms low-speed window");
+
+    VelocityEdgePeriodEstimator edge;
+    velocity_edge_period_init(&edge, 1000, 400u);
+    for (uint32_t tick = 0u; tick < 146u; ++tick) {
+        velocity_edge_period_sample(&edge, (tick == 145u) ? 1001 : 1000);
+    }
+    check_true(is_near(velocity_edge_period_rpm(&edge, 20000.0f, 4096u),
+                       2.0064f,
+                       0.01f),
+               "edge-period estimator resolves about 2rpm from one encoder interval");
+    for (uint32_t tick = 0u; tick < 401u; ++tick) {
+        velocity_edge_period_sample(&edge, 1001);
+    }
+    check_true(velocity_edge_period_rpm(&edge, 20000.0f, 4096u) == 0.0f,
+               "edge-period estimator reports zero after the stale timeout");
+    velocity_edge_period_init(&edge, 2000, 400u);
+    for (uint32_t tick = 0u; tick < 146u; ++tick) {
+        velocity_edge_period_sample(&edge, (tick == 145u) ? 1999 : 2000);
+    }
+    check_true(velocity_edge_period_rpm(&edge, 20000.0f, 4096u) < 0.0f,
+               "edge-period estimator preserves reverse direction");
+
+    float filtered_rpm = velocity_first_order_filter_step(0.0f, 8.0f, 0.25f);
+    check_true(is_near(filtered_rpm, 2.0f, 1.0e-6f),
+               "first-order speed filter applies the configured alpha");
+    filtered_rpm = velocity_first_order_filter_step(filtered_rpm,
+                                                    -2.0f,
+                                                    0.25f);
+    check_true(is_near(filtered_rpm, 1.0f, 1.0e-6f),
+               "one reverse edge does not immediately reverse filtered speed");
+    check_true(is_near(velocity_first_order_filter_step(1.0f, 7.0f, 2.0f),
+                       7.0f,
+                       1.0e-6f) &&
+                   is_near(velocity_first_order_filter_step(1.0f,
+                                                            7.0f,
+                                                            0.0f),
+                           1.0f,
+                           1.0e-6f),
+               "first-order speed filter clamps alpha at both boundaries");
+}
+
+static void test_velocity_controller_anti_windup(void)
+{
+    VelocityController controller;
+    float output = 0.0f;
+
+    printf("\n== velocity controller anti-windup ==\n");
+    velocity_controller_init(&controller, 0.02f, 0.20f, 0.030f, 25.0f);
+    for (uint32_t i = 0u; i < 200u; ++i) {
+        output = velocity_controller_update(&controller,
+                                            2.0f * 0.10471975512f,
+                                            0.0f,
+                                            0.01f);
+    }
+    check_true(output <= 0.030001f,
+               "velocity PI output remains current limited");
+    check_true(controller.integrator_a < 0.027f,
+               "conditional integration prevents output-limit windup");
+    check_true(controller.anti_windup_hold_count > 0u,
+               "velocity PI records anti-windup holds");
+
+    const float integrator_before_unwind = controller.integrator_a;
+    (void)velocity_controller_update(&controller, 0.0f, 1.0f, 0.01f);
+    check_true(controller.integrator_a < integrator_before_unwind,
+               "opposite error immediately unwinds velocity integrator");
+
+    velocity_controller_reset(&controller);
+    output = velocity_controller_update(&controller, 10.0f, 0.0f, 0.01f);
+    check_true(is_near(output, 0.030f, 1.0e-6f) &&
+                   is_near(controller.integrator_a, 0.0f, 1.0e-6f),
+               "proportional saturation does not wind the integrator");
+    check_true(controller.saturation_count == 1u,
+               "velocity PI records output saturation");
+
+    velocity_controller_init(&controller, 0.0f, 0.0f, 0.030f, 25.0f);
+    velocity_controller_set_error_reversal_decay(&controller, 0.25f);
+    controller.integrator_a = 0.020f;
+    controller.last_error_rad_s = 1.0f;
+    output = velocity_controller_update(&controller, 0.0f, 1.0f, 0.01f);
+    check_true(is_near(controller.integrator_a, 0.005f, 1.0e-6f) &&
+                   is_near(output, 0.005f, 1.0e-6f) &&
+                   controller.error_reversal_decay_count == 1u,
+               "error reversal decays stale velocity integrator state");
+}
+
+static void test_low_speed_velocity_pi_candidate(void)
+{
+    const float rpm_to_rad_s = 0.10471975512f;
+    const float update_dt_s = 0.01f;
+    VelocityController controller;
+    float target_rpm = 0.0f;
+    float output_a = 0.0f;
+    float output_peak_a = 0.0f;
+
+    printf("\n== low-speed velocity PI candidate ==\n");
+    velocity_controller_init(&controller,
+                             0.040f,
+                             0.004f,
+                             0.030f,
+                             25.0f * rpm_to_rad_s);
+    controller.integrator_limit_a = 0.001f;
+    velocity_controller_set_error_reversal_decay(&controller, 0.25f);
+    velocity_controller_set_output_slew_limit(&controller, 0.20f);
+
+    for (uint32_t update = 0u; update < 300u; ++update) {
+        if (target_rpm < 2.0f) {
+            target_rpm += 0.01f;
+            if (target_rpm > 2.0f) {
+                target_rpm = 2.0f;
+            }
+        }
+        output_a = velocity_controller_update(&controller,
+                                               target_rpm * rpm_to_rad_s,
+                                               0.0f,
+                                               update_dt_s);
+        if (fabsf(output_a) > output_peak_a) {
+            output_peak_a = fabsf(output_a);
+        }
+    }
+    check_true(output_a >= 0.008f && output_a <= 0.010f,
+               "2rpm conservative command stays in the measurable 8-10mA range");
+    check_true(output_peak_a <= 0.030001f &&
+                   controller.saturation_count == 0u,
+               "2rpm ramp remains inside authorized 30mA output limit");
+    VelocityLowSpeedAssist assist;
+    velocity_low_speed_assist_reset(&assist);
+    output_a = velocity_low_speed_assist_update(&assist,
+                                                output_a,
+                                                2.0f,
+                                                0.0f,
+                                                0.030f,
+                                                0.5f,
+                                                2.5f,
+                                                0.030f,
+                                                true);
+    check_true(assist.active && is_near(output_a, 0.030f, 1.0e-6f),
+               "stalled 2rpm command reaches the authorized 30mA stiction ceiling");
+    output_a = velocity_low_speed_assist_update(&assist,
+                                                output_a,
+                                                2.0f,
+                                                2.6f,
+                                                0.030f,
+                                                0.5f,
+                                                2.5f,
+                                                0.030f,
+                                                true);
+    check_true(!assist.active && assist.deactivation_count == 1u,
+               "assist is removed above the upper speed hysteresis threshold");
+    output_a = velocity_low_speed_assist_update(&assist,
+                                                -0.010f,
+                                                2.0f,
+                                                0.0f,
+                                                0.030f,
+                                                0.5f,
+                                                2.5f,
+                                                0.030f,
+                                                true);
+    check_true(!assist.active && is_near(output_a, -0.010f, 1.0e-6f),
+               "reverse braking request retains full authority without assist");
+    output_a = velocity_low_speed_assist_update(&assist,
+                                                0.029f,
+                                                2.0f,
+                                                0.0f,
+                                                0.030f,
+                                                0.5f,
+                                                2.5f,
+                                                0.030f,
+                                                true);
+    check_true(is_near(output_a, 0.030f, 1.0e-6f),
+               "low-speed assist cannot exceed the authorized 30mA continuous limit");
+
+    const float integrator_before_braking = controller.integrator_a;
+    const float output_before_braking = output_a;
+    float braking_output_a = velocity_controller_update(
+        &controller, 2.0f * rpm_to_rad_s, 4.0f * rpm_to_rad_s, update_dt_s);
+    check_true(braking_output_a < output_before_braking,
+               "braking request first slews output toward zero");
+    check_true(is_near(velocity_controller_apply_hold_direction_guard(
+                           &controller,
+                           -0.010f,
+                           2.0f,
+                           false),
+                       0.0f,
+                       1.0e-6f),
+               "sub-threshold hold speed cannot command reverse torque");
+    check_true(is_near(velocity_controller_apply_hold_direction_guard(
+                           &controller,
+                           -0.010f,
+                           2.0f,
+                           true),
+                       -0.010f,
+                       1.0e-6f),
+               "qualified overspeed or fall phase retains reverse braking");
+    check_true(is_near(velocity_controller_apply_coulomb_feedforward(
+                           &controller,
+                           0.004f,
+                           2.0f,
+                           0.008f,
+                           true),
+                       0.012f,
+                       1.0e-6f),
+               "positive hold friction feedforward adds bounded torque");
+    check_true(is_near(velocity_controller_apply_coulomb_feedforward(
+                           &controller,
+                           0.028f,
+                           2.0f,
+                           0.008f,
+                           true),
+                       0.030f,
+                       1.0e-6f),
+               "hold friction feedforward respects the 30mA current limit");
+    check_true(is_near(velocity_controller_apply_coulomb_feedforward(
+                           &controller,
+                           -0.004f,
+                           -2.0f,
+                           0.008f,
+                           false),
+                       -0.004f,
+                       1.0e-6f),
+               "disabled hold friction feedforward preserves fall command");
+    velocity_low_speed_assist_reset(&assist);
+    output_a = velocity_controller_apply_coulomb_feedforward(
+        &controller, 0.008f, 2.0f, 0.008f, true);
+    output_a = velocity_low_speed_assist_update(&assist,
+                                                output_a,
+                                                2.0f,
+                                                0.0f,
+                                                0.008f,
+                                                0.75f,
+                                                2.50f,
+                                                0.030f,
+                                                true);
+    check_true(assist.active && is_near(output_a, 0.024f, 1.0e-6f),
+               "manually selected 8mA hold assist remains below the authorized 30mA limit");
+    for (uint32_t update = 0u; update < 4u && braking_output_a >= 0.0f;
+         ++update) {
+        braking_output_a = velocity_controller_update(
+            &controller, 2.0f * rpm_to_rad_s, 4.0f * rpm_to_rad_s, update_dt_s);
+    }
+    check_true(braking_output_a < 0.0f,
+               "sustained measured overspeed commands reverse braking iq");
+    check_true(controller.integrator_a < integrator_before_braking,
+               "reverse braking unwinds stale positive integrator");
+
+    velocity_controller_reset(&controller);
+    for (uint32_t update = 0u; update < 200u; ++update) {
+        output_a = velocity_controller_update(&controller,
+                                               25.0f * rpm_to_rad_s,
+                                               -25.0f * rpm_to_rad_s,
+                                               update_dt_s);
+    }
+    check_true(is_near(output_a, 0.030f, 1.0e-6f),
+               "large speed error stays capped at 30mA");
+    check_true(controller.integrator_a <= 0.001001f &&
+                    controller.anti_windup_hold_count > 0u,
+                "30mA saturation preserves velocity anti-windup");
+
+    velocity_controller_reset(&controller);
+    VelocityCountWindow candidate_window;
+    check_true(velocity_count_window_set_samples(&candidate_window, 5u),
+               "candidate trace uses the quantization-aware five-sample window");
+    const int32_t hardware_trace[] = {1, -2, 0, 8, 4, -17, -21};
+    float previous_output_a = 0.0f;
+    float trace_peak_a = 0.0f;
+    bool trace_slew_ok = true;
+    bool trace_direct_reversal_seen = false;
+    target_rpm = 0.0f;
+    for (uint32_t i = 0u;
+         i < (sizeof(hardware_trace) / sizeof(hardware_trace[0])); ++i) {
+        target_rpm += 0.01f;
+        const float measured_rpm = velocity_count_window_update_rpm(
+            &candidate_window,
+            hardware_trace[i],
+            update_dt_s,
+            4096u);
+        output_a = velocity_controller_update(&controller,
+                                               target_rpm * rpm_to_rad_s,
+                                               measured_rpm * rpm_to_rad_s,
+                                               update_dt_s);
+        const bool same_nonzero_sign =
+            (output_a * previous_output_a) > 0.0f;
+        if (same_nonzero_sign &&
+            fabsf(output_a) > fabsf(previous_output_a) + 0.002001f) {
+            trace_slew_ok = false;
+        }
+        if ((output_a * previous_output_a) < 0.0f) {
+            trace_direct_reversal_seen = true;
+        }
+        if (fabsf(output_a) > trace_peak_a) {
+            trace_peak_a = fabsf(output_a);
+        }
+        previous_output_a = output_a;
+    }
+    check_true(trace_slew_ok,
+               "hardware delta trace limits increasing torque magnitude");
+    check_true(!trace_direct_reversal_seen,
+               "hardware delta trace crosses torque direction through zero");
+    check_true(trace_peak_a < 0.030f && controller.slew_limit_count > 0u,
+               "hardware delta trace avoids immediate full-scale iq toggling");
+
+    VelocityCountWindow speed_window;
+    VelocityOverspeedAnalysis overspeed;
+    check_true(velocity_count_window_set_samples(&speed_window, 5u),
+               "25rpm guard uses configured five-sample window");
+    for (uint32_t sample = 0u; sample < 5u; ++sample) {
+        (void)velocity_count_window_update_rpm(&speed_window,
+                                               18,
+                                               update_dt_s,
+                                               4096u);
+    }
+    velocity_count_window_analyze_overspeed(&speed_window,
+                                            update_dt_s,
+                                            4096u,
+                                            25.0f,
+                                            &overspeed);
+    check_true(overspeed.windowed_rpm > 25.0f &&
+                   overspeed.evidence == VELOCITY_OVERSPEED_EVIDENCE_WINDOWED,
+               "sustained speed above 25rpm triggers windowed protection");
+}
+
 static void test_closed_loop_first_order_iq(void)
 {
     const double dt = 5.0e-5;
@@ -548,6 +931,9 @@ int main(void)
     test_current_step_response();
     test_invalid_pole_pairs_resets_current_integrator();
     test_velocity_wrapper();
+    test_velocity_count_window();
+    test_velocity_controller_anti_windup();
+    test_low_speed_velocity_pi_candidate();
     test_closed_loop_first_order_iq();
 
     if (g_failures != 0) {

@@ -82,6 +82,14 @@ const char *get_fault_string(Axis0FaultFlags fault)
     case AXIS0_FAULT_OVERTEMPERATURE: return "overtemperature";
     case AXIS0_FAULT_CONTROL_SATURATION: return "control_saturation";
     case AXIS0_FAULT_CURRENT_PROTECTION: return "current_protection";
+    case AXIS0_FAULT_ADC_HARDWARE_UNPAIRED: return "adc_hardware_unpaired";
+    case AXIS0_FAULT_ADC_PUBLISH_SEQUENCE: return "adc_publish_sequence_invalid";
+    case AXIS0_FAULT_DIAGNOSTIC_ISR_OVERRUN: return "diagnostic_isr_overrun";
+    case AXIS0_FAULT_ADC_CALLBACK_OVERRUN: return "adc_callback_overrun";
+    case AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID: return "diagnostic_data_invalid";
+    case AXIS0_FAULT_CURRENT_SENSOR_NOISE_REJECTED: return "current_sensor_noise_rejected";
+    case AXIS0_FAULT_CURRENT_SENSOR_ADMISSION_OVERRUN: return "admission_isr_overrun";
+    case AXIS0_FAULT_ELECTRICAL_OFFSET_CALIBRATION_FAILED: return "electrical_offset_calibration_failed";
     default: return "unknown";
     }
 }

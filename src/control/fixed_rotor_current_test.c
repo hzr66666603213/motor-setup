@@ -217,6 +217,53 @@ static void fr_fail(FixedRotorCurrentTest *test, uint32_t fault_code)
     fr_finalize_all_stats(test);
 }
 
+void fixed_rotor_current_test_request_start(FixedRotorCurrentTest *test)
+{
+    if (test == 0 ||
+        test->result != FIXED_ROTOR_RESULT_RUNNING ||
+        test->fault_code != FIXED_ROTOR_FAULT_NONE) {
+        return;
+    }
+
+    test->state = FIXED_ROTOR_STATE_ENABLE_ZERO;
+    test->state_ticks = 0u;
+    test->control_tick_seq = 0u;
+    test->voltage_command_seq = 0u;
+    test->missed_control_tick_count = 0u;
+    test->duplicate_control_tick_count = 0u;
+    test->last_adc_seq = 0u;
+    test->have_last_adc_seq = false;
+    test->theta_latched = false;
+    test->theta_test_rad = 0.0f;
+    test->encoder_start_count = 0;
+    test->encoder_motion_max_counts = 0;
+    test->id_ref_a = 0.0f;
+    test->iq_deviation_ticks = 0u;
+    test->tracking_error_ticks = 0u;
+    test->saturation_ticks = 0u;
+    test->log_count = 0u;
+    test->log_dropped = 0u;
+    current_controller_reset(&test->controller);
+    fr_stage_stats_reset(&test->enable_zero_stats);
+    fr_stage_stats_reset(&test->hold_0p05_stats);
+    fr_stage_stats_reset(&test->hold_0p10_stats);
+    fr_stage_stats_reset(&test->hold_zero_stats);
+}
+
+void fixed_rotor_current_test_force_fault(FixedRotorCurrentTest *test,
+                                          uint32_t fault_code)
+{
+    if (test == 0 || fault_code == FIXED_ROTOR_FAULT_NONE) {
+        return;
+    }
+    if (test->result == FIXED_ROTOR_RESULT_PASS ||
+        test->result == FIXED_ROTOR_RESULT_FAIL) {
+        test->fault_code |= fault_code;
+        return;
+    }
+    fr_fail(test, fault_code);
+}
+
 void fixed_rotor_current_test_note_execution_time(FixedRotorCurrentTest *test,
                                                   uint32_t cycles,
                                                   float time_us)
@@ -578,6 +625,36 @@ void fixed_rotor_current_test_step(FixedRotorCurrentTest *test,
         (test->state != FIXED_ROTOR_STATE_FAIL);
     output->pwm_output_request = output->power_stage_request;
     output->safe_shutdown_request =
+        (test->state == FIXED_ROTOR_STATE_COMPLETE) ||
+        (test->state == FIXED_ROTOR_STATE_FAIL);
+    output->done = output->safe_shutdown_request;
+}
+
+void fixed_rotor_current_test_fast_isr(FixedRotorCurrentTest *test,
+                                       const FixedRotorCurrentTestInput *input,
+                                       FixedRotorCurrentTestOutput *output)
+{
+    fixed_rotor_current_test_step(test, input, output);
+}
+
+void fixed_rotor_current_test_service_main(const FixedRotorCurrentTest *test,
+                                           FixedRotorCurrentTestOutput *output)
+{
+    if (output != 0) {
+        memset(output, 0, sizeof(*output));
+    }
+    if (test == 0 || output == 0) {
+        return;
+    }
+
+    output->state = test->state;
+    output->result = test->result;
+    output->fault_code = test->fault_code;
+    output->id_ref_a = test->id_ref_a;
+    output->iq_ref_a = 0.0f;
+    output->safe_shutdown_request =
+        (test->result == FIXED_ROTOR_RESULT_PASS) ||
+        (test->result == FIXED_ROTOR_RESULT_FAIL) ||
         (test->state == FIXED_ROTOR_STATE_COMPLETE) ||
         (test->state == FIXED_ROTOR_STATE_FAIL);
     output->done = output->safe_shutdown_request;

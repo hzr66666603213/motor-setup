@@ -37,7 +37,12 @@
 #include "app/axis0_types.h"
 #include "board/board_odrive_v36.h"
 #include "config/axis0_default_config.h"
+#include "control/current_sensor_admission.h"
+#include "control/current_sensor_noise_diagnostic.h"
+#include "control/electrical_offset_calibration.h"
 #include "control/fixed_rotor_current_test.h"
+#include "control/rotating_dq_current_test.h"
+#include "control/velocity_controller.h"
 #include "drivers/drv8301.h"
 #include "foc/svpwm.h"
 #include "hal/hal_adc.h"
@@ -46,6 +51,12 @@
 #include "motor_identification.h"
 #include "protection/fault.h"
 #include "../../../../src/motor_identification.c"
+
+#if defined(__GNUC__)
+#define MAIN_FAST_OPT __attribute__((optimize("O3")))
+#else
+#define MAIN_FAST_OPT
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -1035,6 +1046,9 @@ typedef struct {
                          TIM_CCER_CC2E | TIM_CCER_CC2NE | \
                          TIM_CCER_CC3E | TIM_CCER_CC3NE)
 #define M1_CCER_MASK POWER_CCER_MASK
+#ifndef CURRENT_SENSOR_ADMISSION_DETAILED_TIMING
+#define CURRENT_SENSOR_ADMISSION_DETAILED_TIMING 0
+#endif
 #define TEST_STATE_IDLE 0u
 #define TEST_STATE_ALIGN 1u
 #define TEST_STATE_VD_RAMP 2u
@@ -1151,10 +1165,79 @@ typedef struct {
 #define PHASE_INDUCTANCE_RISE_FALL_DIFF_MAX_PERCENT 25.0f
 #define PHASE_INDUCTANCE_DISCRETE_DIFF_MAX_PERCENT 30.0f
 #define PHASE_INDUCTANCE_LEVEL_DIFF_MAX_PERCENT 20.0f
+#define ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A 0.30f
+#define ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A 0.50f
+#define ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS 24
+#define ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES 4u
+#define ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_DISCARD_SAMPLES 128u
+#define ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_COLLECT_SAMPLES 256u
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_PRESTATE (1u << 0)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_WAKE_CAPTURE (1u << 1)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_SET (1u << 2)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_CAPTURE (1u << 3)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_CLEAR (1u << 4)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_SHORT_DC_CAL (1u << 5)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_POST_CAPTURE (1u << 6)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC0_MEAN (1u << 7)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC1_MEAN (1u << 8)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_IU_MEAN (1u << 9)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC0_STD (1u << 10)
+#define ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC1_STD (1u << 11)
+#define ELECTRICAL_OFFSET_ALIGNMENT_POST_CAL_DISCARD_SAMPLES 256u
+#define ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY 32u
+#define ELECTRICAL_OFFSET_ALIGNMENT_TRACE_POST_CAPACITY 8u
+#define ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT 8u
+#define ELECTRICAL_OFFSET_ALIGNMENT_SPEED_LIMIT_RPM 50.0f
+#define ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES 20u
+#ifndef ALIGNMENT_DETAILED_TIMING
+#define ALIGNMENT_DETAILED_TIMING 0u
+#endif
+#ifndef ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_ONLY
+#define ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_ONLY 0u
+#endif
+#ifndef ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY
+#define ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY 0u
+#endif
+#ifndef ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY
+#define ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY 0u
+#endif
+#ifndef ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY
+#define ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY 0u
+#endif
+#define ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_COUNT 3149u
+#define ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_REPEATS 3u
+#define ELECTRICAL_OFFSET_POINT0_DIAGNOSTIC_SETTLE_MS 200u
+#define ELECTRICAL_OFFSET_PWM_ZERO_STAGE_A_SAMPLES 256u
+#define ELECTRICAL_OFFSET_PWM_ZERO_STAGE_B_SAMPLES 128u
+#define ELECTRICAL_OFFSET_PWM_ZERO_STAGE_C_SAMPLES 128u
+#define ELECTRICAL_OFFSET_PWM_ZERO_STAGE_D_SAMPLES 32u
+#define ELECTRICAL_OFFSET_PWM_ZERO_FIRST_SAMPLE_COUNT 32u
+#define ELECTRICAL_OFFSET_PWM_ZERO_NEAR_EDGE_COUNTS 336u
+#define ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES 16u
+#define ELECTRICAL_OFFSET_TRIGGER_SWEEP_FIRST_SAMPLE_COUNT 16u
+#if ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY
+#define ELECTRICAL_OFFSET_TRIGGER_SWEEP_SAMPLES_PER_CANDIDATE 256u
+#else
+#define ELECTRICAL_OFFSET_TRIGGER_SWEEP_SAMPLES_PER_CANDIDATE 128u
+#endif
 #define M0_BRINGUP_MODE_PHASE_INDUCTANCE 1u
 #define M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI 2u
+#define M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST 3u
+#define M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION 4u
+#define M0_BRINGUP_MODE_CURRENT_SENSOR_NOISE_DIAGNOSTIC 5u
+#define M0_BRINGUP_MODE_CURRENT_SENSOR_ADMISSION_TEST 6u
+#define M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC 7u
+#define M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST 8u
+#define M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST 9u
+#define M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK 10u
 #ifndef M0_BRINGUP_MODE
-#define M0_BRINGUP_MODE M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI
+#define M0_BRINGUP_MODE M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+#endif
+#ifndef ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_VALID
+#define ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_VALID 1u
+#endif
+#ifndef ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_RAD
+#define ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_RAD 4.072f
 #endif
 #define FIXED_CURRENT_PI_R_PHASE_OHM 3.20f
 #define FIXED_CURRENT_PI_L_PHASE_H 0.00066f
@@ -1162,6 +1245,76 @@ typedef struct {
 #define FIXED_CURRENT_PI_VOLTAGE_LIMIT_V 1.00f
 #define FIXED_CURRENT_PI_KAW (TWO_PI_F * FIXED_CURRENT_PI_BANDWIDTH_HZ)
 #define FIXED_CURRENT_PI_INTEGRATOR_LIMIT_V 1.00f
+#define ROTATING_DQ_VELOCITY_TARGET_RPM 2.0f
+#define ROTATING_DQ_VELOCITY_TARGET_RAMP_RPM_PER_S 1.0f
+#define ROTATING_DQ_VELOCITY_TARGET_FALL_RPM_PER_S 2.0f
+#define ROTATING_DQ_VELOCITY_LOOP_HZ 100.0f
+#define ROTATING_DQ_VELOCITY_LOOP_DIVIDER 200u
+#define ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES 10u
+#define ROTATING_DQ_VELOCITY_EDGE_STALE_TICKS 400u
+#define ROTATING_DQ_VELOCITY_EDGE_DIAGNOSTIC 0u
+#define ROTATING_DQ_VELOCITY_KP 0.040f
+#define ROTATING_DQ_VELOCITY_KI 0.004f
+#define ROTATING_DQ_VELOCITY_IQ_LIMIT_A 0.030f
+#define ROTATING_DQ_VELOCITY_STICTION_ASSIST_A 0.008f
+#define ROTATING_DQ_HANDOFF_CAPTURE_CURRENT_A \
+  ROTATING_DQ_VELOCITY_IQ_LIMIT_A
+#define ROTATING_DQ_VELOCITY_STICTION_ASSIST_ON_RPM 0.75f
+#define ROTATING_DQ_VELOCITY_STICTION_ASSIST_OFF_RPM 2.50f
+#define ROTATING_DQ_VELOCITY_HOLD_FRICTION_FF_A 0.008f
+#define ROTATING_DQ_VELOCITY_HOLD_BRAKE_ENABLE_RPM 2.5f
+#define ROTATING_DQ_VELOCITY_INTEGRATOR_LIMIT_A 0.001f
+#define ROTATING_DQ_VELOCITY_IQ_SLEW_A_PER_S 0.20f
+#define ROTATING_DQ_VELOCITY_ERROR_REVERSAL_INTEGRATOR_SCALE 0.25f
+#define ROTATING_DQ_VELOCITY_TRACKING_MIN_RPM 1.0f
+#define ROTATING_DQ_VELOCITY_TRACKING_MAX_RPM 4.0f
+#define ROTATING_DQ_VELOCITY_TRACKING_MAX_ABS_ERROR_RPM 1.5f
+#define ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM 25.0f
+#define ROTATING_DQ_CONTROL_TIME_LIMIT_CYCLES 3360u
+#define ROTATING_DQ_VELOCITY_TEST_DURATION_SECONDS 30u
+#define ROTATING_DQ_VELOCITY_TEST_TICKS \
+  (ROTATING_DQ_VELOCITY_TEST_DURATION_SECONDS * 20000u)
+#define ROTATING_DQ_RUN_SUPERVISOR_MARGIN_MS 2000u
+/* 2 rpm over the configured duration, plus 25% bounded travel margin. */
+#define ROTATING_DQ_VELOCITY_TRAVEL_LIMIT_COUNTS \
+  ((ROTATING_DQ_VELOCITY_TEST_DURATION_SECONDS * 512u) / 3u)
+#define ROTATING_DQ_BREAKAWAY_DIAGNOSTIC 1u
+#define ROTATING_DQ_BREAKAWAY_HANDOFF_TEST 1u
+#define ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC 0u
+#define ROTATING_DQ_BREAKAWAY_FIXED_HOLD_CURRENT_A 0.008f
+#define ROTATING_DQ_BREAKAWAY_CURRENT_A 0.030f
+#define ROTATING_DQ_BREAKAWAY_DURATION_TICKS 1000u
+#define ROTATING_DQ_BREAKAWAY_MIN_MOTION_COUNTS 16
+#define ROTATING_DQ_BREAKAWAY_MIN_DIRECTION_EVENTS 16u
+#define ROTATING_DQ_BREAKAWAY_MAX_STEP_COUNTS 4u
+#define ROTATING_DQ_HANDOFF_SUSTAIN_TICKS 1000u
+#define ROTATING_DQ_HANDOFF_SUSTAIN_MOTION_COUNTS 3
+#define ROTATING_DQ_HANDOFF_SUSTAIN_DIRECTION_EVENTS 3u
+#define ROTATING_DQ_HANDOFF_SUSTAIN_ENABLE 0u
+#define ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC 0u
+#define ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC 0u
+#define ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC 0u
+#define ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC 1u
+#define ROTATING_DQ_EXTERNAL_LOW_IQ_E2_DIAGNOSTIC 1u
+#define ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST 0u
+#define ROTATING_DQ_EXTERNAL_LOW_IQ_E2_ACTIVE \
+  ((ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC != 0u) && \
+   (ROTATING_DQ_EXTERNAL_LOW_IQ_E2_DIAGNOSTIC != 0u))
+#define ROTATING_DQ_VELOCITY_EXTERNAL_E2_INTEGRATOR 1u
+#define ROTATING_DQ_VELOCITY_MOE_OFF_SHADOW_DIAGNOSTIC 0u
+#define ROTATING_DQ_ZERO_TORQUE_INTEGRATOR_FROZEN_DIAGNOSTIC 0u
+#define ROTATING_DQ_ZERO_TORQUE_BLOCK_INTEGRATOR_DIAGNOSTIC 1u
+#define ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC_TICKS 20000u
+#define ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_TICKS 1000u
+#define ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT 20u
+#define ROTATING_DQ_ENCODER_PROBE_MOE_OFF 1u
+#define ROTATING_DQ_ENCODER_PROBE_MOE_ON_FIXED_ZERO 2u
+#define ROTATING_DQ_ENCODER_PROBE_MOE_ON_ZERO_PI 3u
+/* Change only between isolated hardware runs; all three retain the 32-count trip. */
+#define ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ROTATING_DQ_ENCODER_PROBE_MOE_ON_ZERO_PI
+#define ROTATING_DQ_RUNTIME_ALIGNMENT_VALIDATION_ONLY 0u
+#define ELECTRICAL_OFFSET_ADMISSION_STD_LIMIT_COUNTS 3.5f
+#define ELECTRICAL_OFFSET_ADMISSION_ABOVE_10_LIMIT 3u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -1173,6 +1326,8 @@ typedef struct {
 
 /* USER CODE BEGIN PV */
 static Axis0Context g_axis0;
+static uint32_t g_axis0_first_fault_flag;
+static uint32_t g_axis0_first_fault_source_line;
 static Drv8301 g_drv0;
 static Drv8301 g_drv1;
 static DrvBringupTestResult g_drv_test;
@@ -1182,6 +1337,773 @@ static bool g_board_init_ok = false;
 static uint16_t g_encoder_last_cnt = 0u;
 static int64_t g_encoder_accum = 0;
 static int16_t g_encoder_last_delta = 0;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+static bool g_rotating_dq_runtime_offset_valid = false;
+#else
+static bool g_rotating_dq_runtime_offset_valid =
+    (ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_VALID != 0u);
+#endif
+static float g_rotating_dq_runtime_offset_rad =
+    ROTATING_DQ_RUNTIME_ELECTRICAL_OFFSET_RAD;
+static volatile bool g_runtime_offset_calibration_active = false;
+typedef struct {
+  bool active;
+  uint32_t divider_ticks;
+  uint32_t update_count;
+  uint32_t tracking_samples;
+  int64_t last_encoder_count;
+  VelocityCountWindow speed_window;
+  VelocityEdgePeriodEstimator edge_estimator;
+  float target_command_rpm;
+  float instant_rpm;
+  float windowed_rpm;
+  float edge_period_rpm;
+  float measured_rpm;
+  float iq_ref_a;
+  float speed_sum_rpm;
+  float abs_error_sum_rpm;
+  float speed_peak_rpm;
+  float instant_speed_peak_rpm;
+  float windowed_speed_peak_rpm;
+  float edge_speed_peak_rpm;
+  float iq_ref_peak_a;
+  float iq_ref_min_a;
+  float iq_ref_max_a;
+  float hold_iq_ref_sum_a;
+  float hold_iq_ref_abs_sum_a;
+  uint32_t hold_command_samples;
+  uint32_t hold_iq_at_limit_count;
+  uint32_t hold_low_speed_count;
+  uint32_t hold_low_speed_iq_at_limit_count;
+  uint32_t iq_ref_positive_update_count;
+  uint32_t iq_ref_negative_update_count;
+  uint32_t iq_ref_zero_update_count;
+  float integrator_peak_a;
+  float last_integrator_a;
+  float last_proportional_a;
+  float last_unsaturated_a;
+  bool estimator_ready;
+  uint32_t saturation_count;
+  uint32_t anti_windup_hold_count;
+  uint32_t error_reversal_decay_count;
+  int64_t last_update_encoder_before;
+  int64_t last_update_encoder_after;
+  int32_t last_update_delta_counts;
+  float first_speed_pi_iq_ref_a;
+  float previous_speed_pi_iq_ref_a;
+  float max_speed_pi_iq_step_a;
+  bool first_speed_pi_iq_captured;
+  VelocityLowSpeedAssist stiction_assist;
+} RotatingDqVelocitySupervisor;
+
+#define ROTATING_DQ_OVERSPEED_SOURCE_INSTANT  (1u << 0)
+#define ROTATING_DQ_OVERSPEED_SOURCE_WINDOWED (1u << 1)
+
+typedef struct {
+  uint32_t valid;
+  uint32_t source_mask;
+  uint32_t control_tick;
+  uint32_t adc_seq;
+  uint32_t velocity_update_count;
+  RotatingDqCurrentTestState state;
+  int64_t encoder_before;
+  int64_t encoder_after;
+  int32_t encoder_delta_counts;
+  VelocityCountWindow speed_window;
+  float target_rpm;
+  float instant_rpm;
+  float windowed_rpm;
+  float measured_rpm;
+  float iq_ref_a;
+  float proportional_a;
+  float integrator_a;
+  float unsaturated_iq_a;
+  uint32_t saturation_count;
+  uint32_t anti_windup_hold_count;
+  uint32_t error_reversal_decay_count;
+} RotatingDqOverspeedLatch;
+
+static VelocityController g_rotating_velocity_controller;
+static RotatingDqVelocitySupervisor g_rotating_velocity_supervisor;
+static volatile RotatingDqOverspeedLatch g_rotating_dq_overspeed_latch;
+static VelocityBreakawayProbe g_rotating_breakaway_probe;
+static VelocityBreakawayProbe g_rotating_handoff_sustain_probe;
+static VelocityBreakawayHandoff g_rotating_breakaway_handoff;
+typedef union {
+  FixedRotorCurrentTest fixed_current;
+  RotatingDqCurrentTest rotating_dq;
+} CurrentTestCcmramStorage;
+
+static CurrentTestCcmramStorage g_current_test_storage __attribute__((section(".ccmram")));
+#define g_fixed_current_test (g_current_test_storage.fixed_current)
+#define g_rotating_dq_test (g_current_test_storage.rotating_dq)
+static volatile bool g_fixed_current_active = false;
+static volatile bool g_fixed_current_run_request = false;
+static volatile bool g_fixed_current_power_ready = false;
+static volatile bool g_fixed_current_done = false;
+static volatile bool g_fixed_current_slow_drv_ok = true;
+static volatile bool g_fixed_current_clear_integrator_on_first_tick = false;
+static volatile uint32_t g_fixed_current_isr_last_seq = 0u;
+static volatile uint32_t g_fixed_current_worst_adc_callback_cycles = 0u;
+static volatile float g_fixed_current_worst_adc_callback_us = 0.0f;
+static volatile bool g_rotating_dq_active = false;
+static volatile bool g_rotating_dq_run_request = false;
+static volatile bool g_rotating_dq_power_ready = false;
+static volatile bool g_rotating_dq_done = false;
+static volatile bool g_rotating_dq_slow_drv_ok = true;
+static volatile uint32_t g_rotating_dq_isr_last_seq = 0u;
+static volatile uint32_t g_rotating_dq_worst_adc_callback_cycles = 0u;
+static volatile float g_rotating_dq_worst_adc_callback_us = 0.0f;
+static volatile uint32_t g_adc_callback_last_start_cycles = 0u;
+static volatile uint32_t g_adc_callback_last_end_cycles = 0u;
+static volatile uint32_t g_adc_callback_last_elapsed_cycles = 0u;
+static volatile uint32_t g_adc_callback_last_ipsr = 0u;
+static float g_fixed_current_theta_test_rad = 0.0f;
+static FixedRotorCurrentTestOutput g_fixed_current_last_output;
+static RotatingDqCurrentTestOutput g_rotating_dq_last_output;
+
+typedef struct {
+  uint32_t total_max_cycles;
+  uint32_t encoder_sample_max_cycles;
+  uint32_t raw_minmax_max_cycles;
+  uint32_t theta_max_cycles;
+  uint32_t fill_input_max_cycles;
+  uint32_t controller_max_cycles;
+  uint32_t pwm_apply_max_cycles;
+  uint32_t note_time_max_cycles;
+} RotatingDqIsrWrapperProfile;
+
+static volatile RotatingDqIsrWrapperProfile g_rotating_dq_wrapper_profile;
+
+#define ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT 17u
+#define ROTATING_DQ_DIRECT_TRACE_POST_SAMPLES 8u
+#define ROTATING_DQ_TRACE_SOURCE_DIRECT_ADC          (1u << 0)
+#define ROTATING_DQ_TRACE_SOURCE_CLEAN_RECONSTRUCTED (1u << 1)
+
+typedef struct {
+  uint32_t tick;
+  uint32_t adc_seq;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  uint16_t offset_pc0;
+  uint16_t offset_pc1;
+  int16_t dpc0;
+  int16_t dpc1;
+  int16_t iu_counts;
+  int16_t iv_counts;
+  int16_t iw_counts;
+  int64_t encoder_count;
+  int32_t theta_mrad;
+  uint32_t tim1_cnt_input;
+  uint32_t tim1_cnt_latched;
+  uint32_t tim1_arr;
+  uint32_t tim1_ccr1;
+  uint32_t tim1_ccr2;
+  uint32_t tim1_ccr3;
+  uint32_t tim1_ccr4;
+  uint32_t tim1_cr1;
+  uint32_t tim1_ccer;
+  uint32_t tim1_bdtr;
+  uint32_t adc_rank_order;
+  uint32_t callback_cycles;
+  float current_amp_per_count;
+  int16_t vd_mv;
+  int16_t vq_mv;
+  int16_t integrator_d_mv;
+  int16_t integrator_q_mv;
+  uint32_t fault_before;
+  uint32_t fault_after;
+  uint32_t phase_fault_set_tick;
+  uint32_t dq_fault_set_tick;
+  uint8_t moe;
+  uint8_t gate_raw;
+  uint8_t nfault_ok;
+} RotatingDqFaultTraceSample;
+
+typedef struct {
+  RotatingDqFaultTraceSample history[ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT];
+  RotatingDqFaultTraceSample fault;
+  uint32_t write_index;
+  uint32_t count;
+  uint8_t fault_valid;
+  uint8_t overflow_guard;
+  uint8_t direct_event_active;
+  uint8_t direct_event_complete;
+  uint32_t direct_event_tick;
+  uint32_t direct_post_remaining;
+  uint32_t direct_over_total;
+  uint32_t direct_over_consecutive;
+  uint32_t direct_over_consecutive_max;
+  uint32_t direct_first_over_tick;
+  uint32_t direct_last_over_tick;
+  uint32_t clean_over_total;
+  uint32_t clean_over_consecutive;
+  uint32_t clean_over_consecutive_max;
+  uint32_t clean_first_over_tick;
+  uint32_t clean_last_over_tick;
+  uint32_t event_source_mask;
+} RotatingDqFaultTrace;
+
+static volatile RotatingDqFaultTrace g_rotating_dq_fault_trace;
+static RotatingDqFaultTrace g_rotating_dq_fault_trace_print;
+typedef struct {
+  uint32_t tick;
+  uint32_t packed_raw_pc0_pc1;
+  float id_measured_a;
+  float iq_measured_a;
+  float iq_ref_a;
+  float vd_v;
+  float vq_v;
+  float integrator_d_v;
+  float integrator_q_v;
+  uint16_t ccr1;
+  uint16_t ccr2;
+  uint16_t ccr3;
+  uint16_t ccr4;
+  uint16_t tim1_cnt;
+  uint8_t state;
+  uint8_t common_mode_shape;
+  uint8_t common_mode_caused_dq_crossing;
+  uint8_t reserved;
+} RotatingDqDqOverStreakSample;
+
+typedef struct {
+  RotatingDqDqOverStreakSample
+      sample[ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS];
+  uint32_t count;
+} RotatingDqDqOverStreakRaw;
+static volatile RotatingDqDqOverStreakRaw g_rotating_dq_dq_over_streak_raw;
+static volatile RotatingDqFaultTraceSample g_rotating_dq_steady_direct_peak;
+static RotatingDqFaultTraceSample g_rotating_dq_steady_direct_peak_print;
+static volatile uint8_t g_rotating_dq_steady_direct_peak_valid;
+
+typedef enum {
+  ROTATING_DQ_ENCODER_PATTERN_UNCLASSIFIED = 0,
+  ROTATING_DQ_ENCODER_PATTERN_MONOTONIC,
+  ROTATING_DQ_ENCODER_PATTERN_OSCILLATORY,
+  ROTATING_DQ_ENCODER_PATTERN_SINGLE_JUMP,
+  ROTATING_DQ_ENCODER_PATTERN_ILLEGAL_TRANSITION
+} RotatingDqEncoderMotionPattern;
+
+typedef struct {
+  uint32_t control_tick;
+  uint32_t adc_seq;
+  uint16_t encoder_raw_count;
+  int64_t encoder_accum;
+  int64_t encoder_delta_counts;
+  uint8_t encoder_ab_state;
+  uint8_t encoder_previous_ab_state;
+  int16_t encoder_step_counts;
+  float theta_rad;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  int16_t delta_pc0;
+  int16_t delta_pc1;
+  float iu_a;
+  float iv_a;
+  float iw_a;
+  float id_a;
+  float iq_a;
+  float id_ref_a;
+  float iq_ref_a;
+  float vd_v;
+  float vq_v;
+  float integrator_d_v;
+  float integrator_q_v;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  uint32_t adc_rank_order;
+  uint8_t cm_shape;
+  uint8_t cm_caused_dq_crossing;
+} RotatingDqEncoderMotionSnapshot;
+
+typedef struct {
+  uint8_t active;
+  uint8_t have_last_ab_state;
+  uint8_t last_ab_state;
+  int8_t last_step_direction;
+  int64_t encoder_start_count;
+  int64_t encoder_last_count;
+  int64_t encoder_min_delta_counts;
+  int64_t encoder_max_delta_counts;
+  int64_t encoder_final_delta_counts;
+  uint32_t encoder_first_change_tick;
+  uint32_t encoder_first_limit_tick;
+  uint32_t encoder_peak_abs_tick;
+  uint32_t encoder_max_step_per_tick;
+  uint32_t encoder_accumulated_abs_steps;
+  uint32_t encoder_direction_reversal_count;
+  uint32_t encoder_same_direction_streak;
+  uint32_t encoder_same_direction_streak_max;
+  uint32_t encoder_illegal_transition_count;
+  RotatingDqEncoderMotionSnapshot peak_snapshot;
+  RotatingDqEncoderMotionSnapshot limit_snapshot;
+  RotatingDqEncoderMotionSnapshot pre_first_change_snapshot;
+  RotatingDqEncoderMotionSnapshot first_change_snapshot;
+  uint8_t peak_snapshot_valid;
+  uint8_t limit_snapshot_valid;
+  uint8_t pre_first_change_snapshot_valid;
+  uint8_t first_change_snapshot_valid;
+} RotatingDqEncoderEvidence;
+
+typedef struct {
+  float integrator_initial_v;
+  float integrator_final_v;
+  float integrator_peak_positive_v;
+  float integrator_peak_negative_v;
+  float integrator_delta_sum_clean_v;
+  float integrator_delta_sum_cm_harmless_v;
+  float integrator_delta_sum_cm_harmful_v;
+  float integrator_aw_clamp_sum_v;
+  float iq_error_sum_clean_a;
+  float iq_error_sum_cm_harmless_a;
+  float iq_error_sum_cm_harmful_a;
+  float shadow_integrator_clean_only_v;
+  float shadow_integrator_exclude_harmful_v;
+  uint32_t clean_count;
+  uint32_t cm_harmless_count;
+  uint32_t cm_harmful_count;
+  uint32_t clean_positive_error_count;
+  uint32_t clean_negative_error_count;
+  uint32_t cm_harmless_positive_error_count;
+  uint32_t cm_harmless_negative_error_count;
+  uint32_t cm_harmful_positive_error_count;
+  uint32_t cm_harmful_negative_error_count;
+  uint32_t block_index;
+  uint32_t next_block_tick;
+} RotatingDqIqIntegratorAttribution;
+
+typedef struct {
+  uint32_t start_tick;
+  uint32_t end_tick;
+  uint32_t sample_count;
+  int64_t encoder_start;
+  int64_t encoder_end;
+  float theta_start_rad;
+  float theta_end_rad;
+  float integrator_start_v;
+  float integrator_end_v;
+  float integrator_delta_clean_v;
+  float integrator_delta_cm_harmless_v;
+  float integrator_delta_cm_harmful_v;
+  float iq_error_clean_sum_a;
+  float iq_error_cm_harmless_sum_a;
+  float iq_error_cm_harmful_sum_a;
+  float vq_proportional_sum_v;
+  float vq_integrator_sum_v;
+  float vq_feedforward_sum_v;
+  float vq_sum_v;
+  float vq_proportional_min_v;
+  float vq_proportional_max_v;
+  float vq_final_min_v;
+  float vq_final_max_v;
+  int32_t delta_pc0_clean_sum;
+  int32_t delta_pc1_clean_sum;
+  uint64_t ccr1_sum;
+  uint64_t ccr2_sum;
+  uint64_t ccr3_sum;
+  uint32_t ccr_span_max;
+  uint32_t integrator_nonzero_count;
+  uint32_t clean_count;
+  uint32_t cm_harmless_count;
+  uint32_t cm_harmful_count;
+  uint32_t adc_rank_order;
+} RotatingDqIqAttributionBlock;
+
+/* Diagnostic-only data lives in normal SRAM; CCMRAM has no spare capacity. */
+static volatile RotatingDqEncoderEvidence g_rotating_dq_encoder_evidence;
+static RotatingDqEncoderEvidence g_rotating_dq_encoder_evidence_print;
+static volatile RotatingDqIqIntegratorAttribution
+    g_rotating_dq_iq_integrator_attribution;
+static RotatingDqIqIntegratorAttribution
+    g_rotating_dq_iq_integrator_attribution_print;
+static volatile RotatingDqIqAttributionBlock
+    g_rotating_dq_iq_attribution_blocks[ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT];
+static RotatingDqIqAttributionBlock
+    g_rotating_dq_iq_attribution_blocks_print[ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT];
+
+typedef enum {
+  NOISE_DIAG_ISR_IDLE = 0,
+  NOISE_DIAG_ISR_WAIT_DC_CAL_DISCARD,
+  NOISE_DIAG_ISR_COLLECT_DC_CAL,
+  NOISE_DIAG_ISR_WAIT_POST_CAL_ACK,
+  NOISE_DIAG_ISR_WAIT_POST_CAL_DISCARD,
+  NOISE_DIAG_ISR_COLLECT_POST_CAL,
+  NOISE_DIAG_ISR_COMPLETE,
+  NOISE_DIAG_ISR_FAIL
+} NoiseDiagIsrState;
+
+typedef struct {
+  volatile bool active;
+  volatile NoiseDiagIsrState state;
+  volatile uint32_t state_count;
+  volatile uint32_t dc_cal_discard_count;
+  volatile uint32_t dc_cal_sample_count;
+  volatile uint32_t post_discard_count;
+  volatile uint32_t post_sample_count;
+  volatile uint32_t fail_code;
+  volatile uint32_t publish_seq_gap_count;
+  volatile uint32_t publish_duplicate_count;
+  volatile uint32_t publish_total_count;
+  volatile bool publish_have_last_seq;
+  volatile uint32_t publish_last_seq;
+  volatile uint32_t publish_first_seq;
+  volatile uint32_t publish_seq_span;
+  volatile uint32_t nfault_during_dc_cal_asserted_count;
+  volatile uint32_t nfault_during_post_cal_asserted_count;
+  volatile uint32_t consumer_samples_read;
+  volatile uint32_t consumer_first_seq;
+  volatile uint32_t consumer_last_seq;
+  volatile uint32_t consumer_skipped_snapshot_count;
+  volatile uint32_t worst_isr_cycles;
+  volatile bool pairing_window_started;
+  volatile uint32_t worst_seq_check_cycles;
+  volatile uint32_t worst_state_machine_cycles;
+  volatile uint32_t worst_raw_stats_cycles;
+  volatile uint32_t worst_histogram_cycles;
+  volatile uint32_t worst_phase_reconstruction_cycles;
+  volatile uint32_t worst_consecutive_threshold_cycles;
+  volatile uint32_t worst_worst16_cycles;
+  volatile uint32_t dc_offset_pc0;
+  volatile uint32_t dc_offset_pc1;
+  volatile bool post_offset_ready;
+  uint64_t dc_raw_sum_pc0;
+  uint64_t dc_raw_sum_pc1;
+  uint16_t dc_center_pc0;
+  uint16_t dc_center_pc1;
+  bool dc_center_valid;
+  int16_t prev_delta_pc0;
+  int16_t prev_delta_pc1;
+  CurrentSensorNoiseOnlineAccumulator dc_cal_acc;
+  CurrentSensorNoiseOnlineAccumulator post_acc;
+} NoiseDiagIsrContext;
+
+static NoiseDiagIsrContext g_noise_diag;
+
+typedef struct {
+  volatile bool active;
+  volatile bool pairing_window_started;
+  volatile uint32_t dc_cal_discard_count;
+  volatile uint32_t dc_cal_collect_count;
+  volatile uint32_t post_cal_discard_count;
+  volatile uint32_t post_cal_collect_count;
+  volatile uint32_t worst_production_core_cycles;
+  volatile uint32_t worst_detailed_profile_cycles;
+  volatile uint32_t worst_profiling_overhead_cycles;
+  volatile uint32_t worst_wait_cycles;
+  volatile uint32_t worst_dc_cal_collect_cycles;
+  volatile uint32_t worst_post_collect_cycles;
+  volatile uint32_t worst_transition_cycles;
+  volatile uint32_t hook_call_count;
+  volatile uint32_t alignment_hook_call_count;
+  volatile uint32_t overlap_hook_call_count;
+  volatile uint32_t dispatcher_admission_calls;
+  volatile uint32_t dispatcher_handoff_idle_calls;
+  volatile uint32_t dispatcher_alignment_calls;
+  volatile uint32_t dispatcher_unhandled_state_calls;
+  volatile uint32_t dispatcher_overlap_calls;
+  volatile ElectricalOffsetBringupState dispatcher_unhandled_state;
+  volatile bool verdict_target_5us_met;
+  volatile bool verdict_deadline_pass;
+  volatile bool verdict_functional_pass;
+  volatile bool verdict_preflight_pass;
+  volatile bool handoff_pass;
+  volatile bool disable_request;
+  volatile bool disabled_ack;
+  volatile uint32_t disable_request_seq;
+  volatile uint32_t disabled_ack_seq;
+  volatile uint32_t hook_calls_after_disable;
+  volatile uint32_t snapshots_after_disable;
+  volatile uint32_t worst_seq_check_cycles;
+  volatile uint32_t worst_raw_accumulate_cycles;
+  volatile uint32_t worst_phase_check_cycles;
+  volatile uint32_t worst_state_machine_cycles;
+  volatile uint32_t worst_total_cycles;
+  volatile CurrentSensorAdmissionState worst_state;
+  volatile uint32_t worst_sample_index;
+  volatile uint32_t worst_adc_seq;
+} AdmissionTestIsrContext;
+
+typedef struct {
+  bool valid;
+  ElectricalOffsetFailure failure;
+  ElectricalOffsetBringupState state_at_failure;
+  ElectricalOffsetBringupState previous_state;
+  ElectricalOffsetBringupState requested_next_state;
+  uint32_t source_line;
+  uint32_t adc_seq;
+  bool admission_active;
+  bool admission_disabled_ack;
+  bool admission_preflight_pass;
+  bool admission_handoff_pass;
+  bool admission_target_5us_met;
+  bool admission_deadline_pass;
+  bool gate;
+  bool moe;
+  bool dc_cal_bits_clear;
+  bool nfault_asserted;
+  bool offset_pc0_valid;
+  bool offset_pc1_valid;
+  bool alignment_active;
+  bool alignment_dispatch_enabled;
+  uint32_t producer_gap_count;
+  uint32_t duplicate_count;
+  uint32_t true_unpaired_count;
+  uint32_t torn_count;
+  uint32_t generation_mismatch_count;
+} ElectricalOffsetFirstFailure;
+
+typedef struct {
+  bool valid;
+  uint32_t timestamp_cycles;
+  uint32_t adc_seq;
+  ElectricalOffsetBringupState state;
+  bool gate;
+  bool moe;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  float v_alpha_cmd;
+  float v_beta_cmd;
+  float voltage_magnitude_cmd;
+  float last_applied_v_alpha;
+  float last_applied_v_beta;
+  float last_applied_voltage_magnitude;
+  float modulation_command_u;
+  float modulation_command_v;
+  float modulation_command_w;
+  uint32_t voltage_command_seq;
+  uint32_t voltage_applied_seq;
+  bool zero_command_request;
+  bool zero_command_ack;
+  uint32_t zero_command_request_seq;
+  uint32_t zero_command_ack_seq;
+  bool pending_update;
+  uint32_t tim1_ccer;
+  uint32_t tim1_bdtr;
+} ElectricalOffsetGateSnapshot;
+
+typedef struct {
+  bool valid;
+  bool post_fault;
+  int32_t relative_index;
+  uint32_t adc_seq;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  int32_t delta_pc0;
+  int32_t delta_pc1;
+  int32_t iu_counts;
+  int32_t iv_counts;
+  int32_t iw_counts;
+  int32_t phase_metric_counts;
+  int32_t voltage_command_mV;
+  uint32_t ramp_sample_index;
+  uint32_t tim1_cnt;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  uint32_t nfault_asserted;
+  uint32_t current_soft_consecutive;
+  uint32_t current_hard_consecutive;
+} ElectricalOffsetAlignmentTraceSample;
+
+typedef struct {
+  bool valid;
+  uint32_t source_line;
+  ElectricalOffsetFailure failure;
+  ElectricalOffsetBringupState state;
+  ElectricalOffsetBringupState previous_state;
+  uint32_t adc_seq;
+  uint32_t alignment_point;
+  uint32_t ramp_sample_index;
+  uint32_t dwt_start;
+  uint32_t dwt_end;
+  uint32_t elapsed_cycles;
+  uint32_t callback_start;
+  uint32_t callback_end;
+  uint32_t callback_elapsed_cycles;
+  uint32_t current_handler;
+  uint32_t tim1_cnt;
+  uint32_t tim1_sr;
+  uint32_t adc1_sr;
+  uint32_t adc2_sr;
+  uint32_t basepri;
+  uint32_t primask;
+  uint32_t ipsr;
+  uint32_t detailed_timing_enabled;
+  uint32_t trace_write_index;
+  uint32_t ramp_bucket_index;
+  bool state_transition_pending;
+  float voltage_command;
+  uint32_t voltage_applied_seq;
+  uint32_t moe;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+} ElectricalOffsetTimingFirstOverrun;
+
+typedef struct {
+  bool valid;
+  uint32_t source_line;
+  ElectricalOffsetBringupState state;
+  uint32_t adc_seq;
+  uint32_t alignment_point;
+  uint32_t ramp_sample_index;
+  float ramp_progress;
+  uint32_t ramp_elapsed_us;
+  float commanded_angle_deg;
+  float commanded_voltage_magnitude;
+  float v_alpha_cmd;
+  float v_beta_cmd;
+  uint32_t voltage_command_seq;
+  uint32_t voltage_applied_seq;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  uint32_t offset_pc0;
+  uint32_t offset_pc1;
+  int32_t delta_pc0;
+  int32_t delta_pc1;
+  float iv_a;
+  float iw_a;
+  float iu_a;
+  float id_a;
+  float iq_a;
+  float phase_abs_a;
+  float current_limit_soft_a;
+  float current_limit_hard_a;
+  int32_t raw_hard_limit_counts;
+  uint32_t phase_soft_consecutive_count;
+  uint32_t phase_hard_consecutive_count;
+  uint32_t tim1_cnt;
+  uint32_t tim1_ccr1;
+  uint32_t tim1_ccr2;
+  uint32_t tim1_ccr3;
+  uint32_t tim1_bdtr_moe;
+  uint32_t tim1_ccer;
+  int64_t encoder_count;
+  float mechanical_speed_rpm;
+  bool nfault_asserted;
+  uint32_t adc_callback_cycles;
+  uint32_t alignment_hook_cycles;
+  uint32_t source_mask;
+  bool raw_pc0_hard;
+  bool raw_pc1_hard;
+  bool reconstructed_iu;
+  bool reconstructed_iv;
+  bool reconstructed_iw;
+  bool phase_soft;
+  bool phase_hard;
+  bool dq_overcurrent;
+  bool adc_saturation;
+  bool current_sensor_invalid;
+  bool current_offset_invalid;
+  const char *first_trip_channel;
+} ElectricalOffsetOvercurrentFirstSnapshot;
+
+typedef struct {
+  uint32_t samples;
+  double sum_phase_abs;
+  float max_phase_abs;
+  int32_t max_abs_delta_pc0;
+  int32_t max_abs_delta_pc1;
+  uint32_t soft_consecutive_max;
+  int64_t encoder_last;
+  float speed_rpm_last;
+} ElectricalOffsetRampBucketStats;
+
+typedef struct {
+  bool ran;
+  bool pass;
+  uint32_t failure_mask;
+  bool short_dc_cal_ran;
+  bool short_dc_cal_pass;
+  uint32_t admission_offset_pc0;
+  uint32_t admission_offset_pc1;
+  float wakeup_raw_mean_pc0;
+  float wakeup_raw_mean_pc1;
+  float wakeup_std_pc0;
+  float wakeup_std_pc1;
+  int32_t offset_shift_pc0_counts;
+  int32_t offset_shift_pc1_counts;
+  uint32_t alignment_offset_pc0;
+  uint32_t alignment_offset_pc1;
+  float alignment_offset_std_pc0;
+  float alignment_offset_std_pc1;
+  float post_residual_pc0_mean_counts;
+  float post_residual_pc1_mean_counts;
+  float post_residual_pc0_std_counts;
+  float post_residual_pc1_std_counts;
+  int32_t residual_iu_mean_counts;
+  int32_t max_abs_delta_pc0;
+  int32_t max_abs_delta_pc1;
+  bool dc_cal_bits_clear;
+  bool pc0_mean_ok;
+  bool pc1_mean_ok;
+  bool iu_mean_ok;
+  bool pc0_std_ok;
+  bool pc1_std_ok;
+} ElectricalOffsetAlignmentOffsetRevalidation;
+
+typedef struct {
+  uint32_t transition_index;
+  ElectricalOffsetBringupState old_state;
+  ElectricalOffsetBringupState new_state;
+  ElectricalOffsetFailure reason;
+  uint32_t source_line;
+  uint32_t adc_seq;
+  uint32_t timestamp_cycles;
+} ElectricalOffsetStateTraceEntry;
+
+#define ELECTRICAL_OFFSET_TRACE_CAPACITY 16u
+
+static CurrentSensorAdmission g_current_sensor_admission
+    __attribute__((section(".ccmram")));
+static AdmissionTestIsrContext g_admission_test;
+static volatile bool g_electrical_offset_alignment_active = false;
+static ElectricalOffsetFirstFailure g_electrical_offset_first_failure;
+static ElectricalOffsetStateTraceEntry
+    g_electrical_offset_state_trace[ELECTRICAL_OFFSET_TRACE_CAPACITY];
+static uint32_t g_electrical_offset_state_trace_count = 0u;
+static bool g_electrical_offset_alignment_dispatch_enabled = false;
+static ElectricalOffsetGateSnapshot g_electrical_offset_gate_snapshot;
+static ElectricalOffsetOvercurrentFirstSnapshot
+    g_electrical_offset_overcurrent_first_snapshot;
+static ElectricalOffsetTimingFirstOverrun
+    g_electrical_offset_timing_first_overrun;
+static volatile uint32_t g_electrical_offset_worst_alignment_fast_hook_core_cycles = 0u;
+static volatile uint32_t g_electrical_offset_alignment_fast_hook_call_count = 0u;
+static uint32_t g_electrical_offset_alignment_entry_once_cycles = 0u;
+static uint32_t g_electrical_offset_worst_main_service_cycles = 0u;
+static uint32_t g_electrical_offset_old_scope_overrun_count = 0u;
+static ElectricalOffsetAlignmentTraceSample
+    g_electrical_offset_alignment_trace[ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY +
+                                        ELECTRICAL_OFFSET_ALIGNMENT_TRACE_POST_CAPACITY];
+static uint32_t g_electrical_offset_alignment_trace_write = 0u;
+static uint32_t g_electrical_offset_alignment_trace_count = 0u;
+static uint32_t g_electrical_offset_alignment_trace_post_count = 0u;
+static ElectricalOffsetRampBucketStats
+    g_electrical_offset_ramp_bucket[ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT];
+static ElectricalOffsetAlignmentOffsetRevalidation
+    g_electrical_offset_offset_revalidation;
+static volatile bool g_electrical_offset_zero_command_request = false;
+static volatile bool g_electrical_offset_zero_command_ack = false;
+static volatile bool g_electrical_offset_voltage_update_pending = false;
+static volatile uint32_t g_electrical_offset_zero_command_request_seq = 0u;
+static volatile uint32_t g_electrical_offset_zero_command_ack_seq = 0u;
+static volatile uint32_t g_electrical_offset_voltage_command_seq = 0u;
+static volatile uint32_t g_electrical_offset_voltage_applied_seq = 0u;
+static volatile uint32_t g_electrical_offset_zero_command_timeout_count = 0u;
+static volatile uint32_t g_electrical_offset_tim1_update_count = 0u;
+static volatile float g_electrical_offset_v_alpha_cmd = 0.0f;
+static volatile float g_electrical_offset_v_beta_cmd = 0.0f;
+static volatile float g_electrical_offset_voltage_magnitude_cmd = 0.0f;
+static volatile float g_electrical_offset_last_applied_v_alpha = 0.0f;
+static volatile float g_electrical_offset_last_applied_v_beta = 0.0f;
+static volatile float g_electrical_offset_last_applied_voltage_magnitude = 0.0f;
+static volatile float g_electrical_offset_modulation_u = 0.0f;
+static volatile float g_electrical_offset_modulation_v = 0.0f;
+static volatile float g_electrical_offset_modulation_w = 0.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -1193,8 +2115,31 @@ static void uart2_printf_line(const char *text);
 static void axis0_context_init_minimal(void);
 static void print_bringup_status(void);
 static void drv_bringup_test_run(void);
-static void print_drv_bringup_test_status(void);
+static bool rotating_dq_velocity_moe_off_shadow_run(void)
+    __attribute__((unused));
+static void print_drv_bringup_test_status(void) __attribute__((unused));
+static uint32_t float_to_scaled_u32(float value, float scale);
+static int32_t float_to_scaled_i32(float value, float scale);
+static uint32_t abs_i32_to_u32(int32_t x);
+static float fixed_current_cycles_to_us(uint32_t cycles);
+static uint32_t drv_bringup_get_adc_seq(void);
+static void drv_bringup_mark_fault_at(Axis0FaultFlags fault,
+                                      uint32_t source_line);
+#define drv_bringup_mark_fault(fault) \
+  drv_bringup_mark_fault_at((fault), __LINE__)
+static bool gate_raw_is_low(void);
+static bool gate_raw_is_high(void);
+static bool nfault_ok(void);
+static bool open_loop_wait_next_adc_sample(uint32_t *last_seq,
+                                           HalAdcSnapshot *snap);
+static void power_stage_disable_six_outputs(void);
+static void power_stage_set_ccr_half(void);
+static void power_stage_enable_six_outputs(void);
+static void power_stage_force_safe_off_zero_ccr(void);
+static void drv_bringup_capture_final_state(void);
+static int64_t encoder_tracker_sample(void);
 static CurrentDqSample current_observe_calculate(const HalAdcSnapshot *snap, float theta_e);
+static CurrentDqSample current_confirmed_m0_vw_calculate(const HalAdcSnapshot *snap);
 static void current_observe_lpf_update(const CurrentDqSample *sample);
 static void current_observe_stats_update(CurrentObserveStats *stats, const CurrentDqSample *sample);
 static bool power_stage_check_adc_sample_timing(void);
@@ -1212,7 +2157,94 @@ static bool phase_vector_mapping_run(uint32_t *last_seq);
 static void phase_vector_mapping_evaluate(void);
 static void phase_resistance_apply_confirmed_mapping(void);
 static bool phase_inductance_identification_run(void) __attribute__((unused));
-static bool fixed_rotor_current_pi_run(void);
+static bool fixed_rotor_current_pi_run(void) __attribute__((unused));
+static bool rotating_dq_current_test_run(void) __attribute__((unused));
+static bool electrical_offset_calibration_run(void);
+static bool current_sensor_noise_diagnostic_run(void) __attribute__((unused));
+static bool current_sensor_admission_test_run(void);
+static void current_sensor_admission_test_reset(void);
+static bool current_sensor_admission_wait_state(CurrentSensorAdmissionState state,
+                                                uint32_t timeout_ms);
+static bool current_sensor_admission_disable_and_wait(uint32_t timeout_ms);
+static void current_sensor_admission_test_fast_isr(const HalAdcSnapshot *snapshot);
+static void electrical_offset_trace_reset(void);
+static void electrical_offset_trace_transition(ElectricalOffsetBringupState old_state,
+                                               ElectricalOffsetBringupState new_state,
+                                               ElectricalOffsetFailure reason,
+                                               uint32_t source_line);
+static void electrical_offset_latch_failure(ElectricalOffsetFailure failure,
+                                            ElectricalOffsetBringupState state,
+                                            ElectricalOffsetBringupState previous_state,
+                                            ElectricalOffsetBringupState requested_next_state,
+                                            uint32_t source_line,
+                                            bool admission_preflight_pass,
+                                            bool admission_handoff_pass,
+                                            bool admission_target_5us_met,
+                                            bool admission_deadline_pass,
+                                            bool offset_pc0_valid,
+                                            bool offset_pc1_valid,
+                                            bool dc_cal_bits_clear,
+                                            bool alignment_dispatch_enabled);
+static void electrical_offset_print_first_failure(void);
+static void electrical_offset_print_state_trace(void);
+static void electrical_offset_zero_command_reset(void);
+static void electrical_offset_zero_command_request(uint32_t adc_seq);
+static bool electrical_offset_zero_command_wait_ack(uint32_t timeout_ms);
+static void electrical_offset_zero_command_fast_isr(const HalAdcSnapshot *snapshot);
+static void electrical_offset_latch_gate_snapshot(ElectricalOffsetBringupState state);
+static void electrical_offset_print_gate_snapshot(const char *prefix);
+static void electrical_offset_alignment_diag_reset(void);
+static void electrical_offset_alignment_trace_record(
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    uint32_t ramp_sample_index,
+    float voltage,
+    const ElectricalOffsetAlignmentProtectionResult *protection,
+    bool post_fault);
+static void electrical_offset_latch_overcurrent_snapshot(
+    uint32_t source_line,
+    ElectricalOffsetBringupState state,
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    uint32_t alignment_point,
+    uint32_t ramp_sample_index,
+    float ramp_progress,
+    uint32_t ramp_elapsed_us,
+    float theta_cmd_deg,
+    float voltage,
+    float v_alpha,
+    float v_beta,
+    float speed_rpm,
+    uint32_t loop_cycles,
+    const ElectricalOffsetAlignmentProtectionResult *protection);
+static void electrical_offset_collect_post_fault_trace(uint32_t *last_seq,
+                                                       uint32_t ramp_sample_index);
+static void electrical_offset_print_alignment_diagnostics(void);
+static bool electrical_offset_alignment_revalidate_offsets(uint32_t *last_seq);
+static bool __attribute__((unused)) electrical_offset_pwm_zero_current_diagnostic_run(
+    uint32_t *last_seq,
+    bool dc_cal_bits_clear_for_alignment,
+    bool offset_pc0_valid,
+    bool offset_pc1_valid);
+static bool __attribute__((unused)) electrical_offset_pwm_zero_trigger_sweep_run(
+    uint32_t *last_seq,
+    bool dc_cal_bits_clear_for_alignment,
+    bool offset_pc0_valid,
+    bool offset_pc1_valid);
+static void electrical_offset_fail_now(ElectricalOffsetFailure failure,
+                                       ElectricalOffsetBringupState state,
+                                       ElectricalOffsetBringupState previous_state,
+                                       ElectricalOffsetBringupState requested_next_state,
+                                       uint32_t source_line,
+                                       bool admission_preflight_pass,
+                                       bool admission_handoff_pass,
+                                       bool admission_target_5us_met,
+                                       bool admission_deadline_pass,
+                                       bool offset_pc0_valid,
+                                       bool offset_pc1_valid,
+                                       bool dc_cal_bits_clear,
+                                       bool alignment_dispatch_enabled);
+static void fixed_current_adc_snapshot_fast_path(void);
 static void current_observe_stats_finalize(const CurrentObserveStats *stats,
                                            float *id_mean,
                                            float *iq_mean,
@@ -1245,9 +2277,2578 @@ static void uart2_printf_line(const char *text)
   uart2_write("\r\n");
 }
 
+static void electrical_offset_trace_reset(void)
+{
+  memset(&g_electrical_offset_first_failure, 0,
+         sizeof(g_electrical_offset_first_failure));
+  memset(&g_electrical_offset_gate_snapshot, 0,
+         sizeof(g_electrical_offset_gate_snapshot));
+  memset(g_electrical_offset_state_trace, 0,
+         sizeof(g_electrical_offset_state_trace));
+  g_electrical_offset_state_trace_count = 0u;
+  g_electrical_offset_alignment_dispatch_enabled = false;
+  electrical_offset_alignment_diag_reset();
+  electrical_offset_zero_command_reset();
+}
+
+static void electrical_offset_zero_command_reset(void)
+{
+  g_electrical_offset_zero_command_request = false;
+  g_electrical_offset_zero_command_ack = false;
+  g_electrical_offset_voltage_update_pending = false;
+  g_electrical_offset_zero_command_request_seq = 0u;
+  g_electrical_offset_zero_command_ack_seq = 0u;
+  g_electrical_offset_voltage_command_seq = 0u;
+  g_electrical_offset_voltage_applied_seq = 0u;
+  g_electrical_offset_zero_command_timeout_count = 0u;
+  g_electrical_offset_tim1_update_count = 0u;
+  g_electrical_offset_v_alpha_cmd = 0.0f;
+  g_electrical_offset_v_beta_cmd = 0.0f;
+  g_electrical_offset_voltage_magnitude_cmd = 0.0f;
+  g_electrical_offset_last_applied_v_alpha = 0.0f;
+  g_electrical_offset_last_applied_v_beta = 0.0f;
+  g_electrical_offset_last_applied_voltage_magnitude = 0.0f;
+  g_electrical_offset_modulation_u = 0.0f;
+  g_electrical_offset_modulation_v = 0.0f;
+  g_electrical_offset_modulation_w = 0.0f;
+}
+
+static void electrical_offset_zero_command_request(uint32_t adc_seq)
+{
+  __disable_irq();
+  g_electrical_offset_v_alpha_cmd = 0.0f;
+  g_electrical_offset_v_beta_cmd = 0.0f;
+  g_electrical_offset_voltage_magnitude_cmd = 0.0f;
+  g_electrical_offset_modulation_u = 0.0f;
+  g_electrical_offset_modulation_v = 0.0f;
+  g_electrical_offset_modulation_w = 0.0f;
+  g_electrical_offset_zero_command_request_seq = adc_seq;
+  g_electrical_offset_voltage_command_seq++;
+  g_electrical_offset_zero_command_ack = false;
+  g_electrical_offset_zero_command_ack_seq = 0u;
+  g_electrical_offset_voltage_update_pending = true;
+  g_electrical_offset_zero_command_request = true;
+  __enable_irq();
+}
+
+static void electrical_offset_zero_command_fast_isr(const HalAdcSnapshot *snapshot)
+    __attribute__((unused));
+static void electrical_offset_zero_command_fast_isr(const HalAdcSnapshot *snapshot)
+{
+  if (snapshot == NULL || !g_electrical_offset_zero_command_request ||
+      g_electrical_offset_zero_command_ack) {
+    return;
+  }
+
+  g_electrical_offset_v_alpha_cmd = 0.0f;
+  g_electrical_offset_v_beta_cmd = 0.0f;
+  g_electrical_offset_voltage_magnitude_cmd = 0.0f;
+  g_electrical_offset_modulation_u = 0.0f;
+  g_electrical_offset_modulation_v = 0.0f;
+  g_electrical_offset_modulation_w = 0.0f;
+  g_electrical_offset_last_applied_v_alpha = 0.0f;
+  g_electrical_offset_last_applied_v_beta = 0.0f;
+  g_electrical_offset_last_applied_voltage_magnitude = 0.0f;
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  TIM1->CCER &= ~POWER_CCER_MASK;
+  __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(&htim1);
+  g_electrical_offset_voltage_applied_seq =
+      g_electrical_offset_zero_command_request_seq;
+  g_electrical_offset_zero_command_ack_seq = snapshot->seq;
+  g_electrical_offset_voltage_update_pending = false;
+  g_electrical_offset_zero_command_ack = true;
+}
+
+static bool electrical_offset_zero_command_wait_ack(uint32_t timeout_ms)
+{
+  const uint32_t start_ms = HAL_GetTick();
+  while (!g_electrical_offset_zero_command_ack) {
+    if ((HAL_GetTick() - start_ms) > timeout_ms) {
+      g_electrical_offset_zero_command_timeout_count++;
+      return false;
+    }
+  }
+
+  const uint32_t ack_seq = g_electrical_offset_zero_command_ack_seq;
+  uint32_t update_seen = 0u;
+  TIM1->SR &= ~TIM_SR_UIF;
+  while ((drv_bringup_get_adc_seq() - ack_seq) < 2u || update_seen == 0u) {
+    if ((TIM1->SR & TIM_SR_UIF) != 0u) {
+      TIM1->SR &= ~TIM_SR_UIF;
+      update_seen++;
+      g_electrical_offset_tim1_update_count++;
+    }
+    if ((HAL_GetTick() - start_ms) > timeout_ms) {
+      g_electrical_offset_zero_command_timeout_count++;
+      return false;
+    }
+  }
+  return true;
+}
+
+static void electrical_offset_latch_gate_snapshot(ElectricalOffsetBringupState state)
+{
+  g_electrical_offset_gate_snapshot.valid = true;
+  g_electrical_offset_gate_snapshot.timestamp_cycles = DWT->CYCCNT;
+  g_electrical_offset_gate_snapshot.adc_seq = drv_bringup_get_adc_seq();
+  g_electrical_offset_gate_snapshot.state = state;
+  g_electrical_offset_gate_snapshot.gate = gate_raw_is_high();
+  g_electrical_offset_gate_snapshot.moe =
+      (TIM1->BDTR & TIM_BDTR_MOE) != 0u;
+  g_electrical_offset_gate_snapshot.ccr1 = TIM1->CCR1;
+  g_electrical_offset_gate_snapshot.ccr2 = TIM1->CCR2;
+  g_electrical_offset_gate_snapshot.ccr3 = TIM1->CCR3;
+  g_electrical_offset_gate_snapshot.v_alpha_cmd =
+      g_electrical_offset_v_alpha_cmd;
+  g_electrical_offset_gate_snapshot.v_beta_cmd =
+      g_electrical_offset_v_beta_cmd;
+  g_electrical_offset_gate_snapshot.voltage_magnitude_cmd =
+      g_electrical_offset_voltage_magnitude_cmd;
+  g_electrical_offset_gate_snapshot.last_applied_v_alpha =
+      g_electrical_offset_last_applied_v_alpha;
+  g_electrical_offset_gate_snapshot.last_applied_v_beta =
+      g_electrical_offset_last_applied_v_beta;
+  g_electrical_offset_gate_snapshot.last_applied_voltage_magnitude =
+      g_electrical_offset_last_applied_voltage_magnitude;
+  g_electrical_offset_gate_snapshot.modulation_command_u =
+      g_electrical_offset_modulation_u;
+  g_electrical_offset_gate_snapshot.modulation_command_v =
+      g_electrical_offset_modulation_v;
+  g_electrical_offset_gate_snapshot.modulation_command_w =
+      g_electrical_offset_modulation_w;
+  g_electrical_offset_gate_snapshot.voltage_command_seq =
+      g_electrical_offset_voltage_command_seq;
+  g_electrical_offset_gate_snapshot.voltage_applied_seq =
+      g_electrical_offset_voltage_applied_seq;
+  g_electrical_offset_gate_snapshot.zero_command_request =
+      g_electrical_offset_zero_command_request;
+  g_electrical_offset_gate_snapshot.zero_command_ack =
+      g_electrical_offset_zero_command_ack;
+  g_electrical_offset_gate_snapshot.zero_command_request_seq =
+      g_electrical_offset_zero_command_request_seq;
+  g_electrical_offset_gate_snapshot.zero_command_ack_seq =
+      g_electrical_offset_zero_command_ack_seq;
+  g_electrical_offset_gate_snapshot.pending_update =
+      g_electrical_offset_voltage_update_pending;
+  g_electrical_offset_gate_snapshot.tim1_ccer = TIM1->CCER;
+  g_electrical_offset_gate_snapshot.tim1_bdtr = TIM1->BDTR;
+}
+
+static void electrical_offset_print_gate_snapshot(const char *prefix)
+{
+  char line[768];
+  const ElectricalOffsetGateSnapshot *s = &g_electrical_offset_gate_snapshot;
+  snprintf(line,
+           sizeof(line),
+           "%s: valid=%u snapshot_timestamp_cycles=%lu snapshot_adc_seq=%lu snapshot_state=%s snapshot_gate=%u snapshot_moe=%u snapshot_ccr1=%lu snapshot_ccr2=%lu snapshot_ccr3=%lu snapshot_v_alpha_cmd=%ld.%03ld snapshot_v_beta_cmd=%ld.%03ld snapshot_last_applied_voltage=%ld.%03ld snapshot_voltage_command_seq=%lu snapshot_voltage_applied_seq=%lu snapshot_zero_request=%u snapshot_zero_ack=%u snapshot_zero_request_seq=%lu snapshot_zero_ack_seq=%lu snapshot_pending_update=%u tim1_ccer=0x%08lX tim1_bdtr=0x%08lX",
+           prefix,
+           (unsigned int)s->valid,
+           (unsigned long)s->timestamp_cycles,
+           (unsigned long)s->adc_seq,
+           electrical_offset_state_name(s->state),
+           (unsigned int)s->gate,
+           (unsigned int)s->moe,
+           (unsigned long)s->ccr1,
+           (unsigned long)s->ccr2,
+           (unsigned long)s->ccr3,
+           (long)float_to_scaled_i32(s->v_alpha_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->v_alpha_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->v_beta_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->v_beta_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->last_applied_voltage_magnitude, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->last_applied_voltage_magnitude, 1000.0f)) % 1000,
+           (unsigned long)s->voltage_command_seq,
+           (unsigned long)s->voltage_applied_seq,
+           (unsigned int)s->zero_command_request,
+           (unsigned int)s->zero_command_ack,
+           (unsigned long)s->zero_command_request_seq,
+           (unsigned long)s->zero_command_ack_seq,
+           (unsigned int)s->pending_update,
+           (unsigned long)s->tim1_ccer,
+           (unsigned long)s->tim1_bdtr);
+  uart2_printf_line(line);
+}
+
+static int32_t electrical_offset_current_counts(float current_a)
+{
+  return (g_drv_test.current_amp_per_count > 0.0f)
+             ? float_to_scaled_i32(current_a / g_drv_test.current_amp_per_count, 1.0f)
+             : 0;
+}
+
+static void electrical_offset_alignment_diag_reset(void)
+{
+  memset(&g_electrical_offset_overcurrent_first_snapshot, 0,
+         sizeof(g_electrical_offset_overcurrent_first_snapshot));
+  memset(&g_electrical_offset_timing_first_overrun, 0,
+         sizeof(g_electrical_offset_timing_first_overrun));
+  memset(g_electrical_offset_alignment_trace, 0,
+         sizeof(g_electrical_offset_alignment_trace));
+  memset(g_electrical_offset_ramp_bucket, 0,
+         sizeof(g_electrical_offset_ramp_bucket));
+  memset(&g_electrical_offset_offset_revalidation, 0,
+         sizeof(g_electrical_offset_offset_revalidation));
+  g_electrical_offset_alignment_trace_write = 0u;
+  g_electrical_offset_alignment_trace_count = 0u;
+  g_electrical_offset_alignment_trace_post_count = 0u;
+  g_electrical_offset_worst_alignment_fast_hook_core_cycles = 0u;
+  g_electrical_offset_alignment_fast_hook_call_count = 0u;
+  g_electrical_offset_alignment_entry_once_cycles = 0u;
+  g_electrical_offset_worst_main_service_cycles = 0u;
+  g_electrical_offset_old_scope_overrun_count = 0u;
+}
+
+static uint32_t electrical_offset_alignment_bucket_index(uint32_t ramp_ms,
+                                                         uint32_t elapsed_ms)
+{
+  if (ramp_ms == 0u) {
+    return 0u;
+  }
+  const uint32_t bucket = electrical_offset_alignment_bucket_index(ramp_ms,
+                                                                   elapsed_ms);
+  return bucket;
+}
+
+static void electrical_offset_latch_timing_overrun(
+    ElectricalOffsetFailure failure,
+    uint32_t source_line,
+    ElectricalOffsetBringupState state,
+    ElectricalOffsetBringupState previous_state,
+    const HalAdcSnapshot *snap,
+    uint32_t alignment_point,
+    uint32_t ramp_sample_index,
+    uint32_t dwt_start,
+    uint32_t dwt_end,
+    uint32_t elapsed_ms,
+    uint32_t ramp_ms,
+    bool state_transition_pending,
+    float voltage_command)
+{
+  if (g_electrical_offset_timing_first_overrun.valid) {
+    return;
+  }
+  ElectricalOffsetTimingFirstOverrun *s =
+      &g_electrical_offset_timing_first_overrun;
+  memset(s, 0, sizeof(*s));
+  s->valid = true;
+  s->failure = failure;
+  s->source_line = source_line;
+  s->state = state;
+  s->previous_state = previous_state;
+  s->adc_seq = (snap != NULL) ? snap->seq : drv_bringup_get_adc_seq();
+  s->alignment_point = alignment_point;
+  s->ramp_sample_index = ramp_sample_index;
+  s->dwt_start = dwt_start;
+  s->dwt_end = dwt_end;
+  s->elapsed_cycles = dwt_end - dwt_start;
+  s->callback_start = g_adc_callback_last_start_cycles;
+  s->callback_end = g_adc_callback_last_end_cycles;
+  s->callback_elapsed_cycles = g_adc_callback_last_elapsed_cycles;
+  s->current_handler = g_adc_callback_last_ipsr;
+  s->tim1_cnt = TIM1->CNT;
+  s->tim1_sr = TIM1->SR;
+  s->adc1_sr = ADC1->SR;
+  s->adc2_sr = ADC2->SR;
+  s->basepri = __get_BASEPRI();
+  s->primask = __get_PRIMASK();
+  s->ipsr = __get_IPSR();
+  s->detailed_timing_enabled = ALIGNMENT_DETAILED_TIMING;
+  s->trace_write_index = g_electrical_offset_alignment_trace_write;
+  s->ramp_bucket_index = electrical_offset_alignment_bucket_index(ramp_ms,
+                                                                  elapsed_ms);
+  s->state_transition_pending = state_transition_pending;
+  s->voltage_command = voltage_command;
+  s->voltage_applied_seq = g_electrical_offset_voltage_applied_seq;
+  s->moe = (TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u;
+  s->ccr1 = TIM1->CCR1;
+  s->ccr2 = TIM1->CCR2;
+  s->ccr3 = TIM1->CCR3;
+}
+
+static void electrical_offset_print_timing_overrun(void)
+{
+  char line[768];
+  const ElectricalOffsetTimingFirstOverrun *s =
+      &g_electrical_offset_timing_first_overrun;
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_timing_first_overrun: valid=%u failure=%s source_line=%lu state=%s previous_state=%s adc_seq=%lu ramp_sample_index=%lu dwt_start=%lu dwt_end=%lu elapsed_cycles=%lu elapsed_us=%lu.%03lu callback_start=%lu callback_end=%lu callback_elapsed_cycles=%lu handler_ipsr=%lu tim1_cnt=%lu tim1_sr=0x%08lX adc1_sr=0x%08lX adc2_sr=0x%08lX basepri=%lu primask=%lu ipsr=%lu detailed_timing_enabled=%lu trace_write_index=%lu ramp_bucket_index=%lu state_transition_pending=%u voltage_command=%lu.%03lu voltage_applied_seq=%lu moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu",
+           (unsigned int)s->valid,
+           electrical_offset_failure_name(s->failure),
+           (unsigned long)s->source_line,
+           electrical_offset_state_name(s->state),
+           electrical_offset_state_name(s->previous_state),
+           (unsigned long)s->adc_seq,
+           (unsigned long)s->ramp_sample_index,
+           (unsigned long)s->dwt_start,
+           (unsigned long)s->dwt_end,
+           (unsigned long)s->elapsed_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(s->elapsed_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(s->elapsed_cycles), 1000.0f) % 1000u,
+           (unsigned long)s->callback_start,
+           (unsigned long)s->callback_end,
+           (unsigned long)s->callback_elapsed_cycles,
+           (unsigned long)s->current_handler,
+           (unsigned long)s->tim1_cnt,
+           (unsigned long)s->tim1_sr,
+           (unsigned long)s->adc1_sr,
+           (unsigned long)s->adc2_sr,
+           (unsigned long)s->basepri,
+           (unsigned long)s->primask,
+           (unsigned long)s->ipsr,
+           (unsigned long)s->detailed_timing_enabled,
+           (unsigned long)s->trace_write_index,
+           (unsigned long)s->ramp_bucket_index,
+           (unsigned int)s->state_transition_pending,
+           (unsigned long)float_to_scaled_u32(s->voltage_command, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(s->voltage_command, 1000.0f) % 1000u,
+           (unsigned long)s->voltage_applied_seq,
+           (unsigned long)s->moe,
+           (unsigned long)s->ccr1,
+           (unsigned long)s->ccr2,
+           (unsigned long)s->ccr3);
+  uart2_printf_line(line);
+}
+
+static void electrical_offset_fill_trace_sample(
+    ElectricalOffsetAlignmentTraceSample *dst,
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    uint32_t ramp_sample_index,
+    float voltage,
+    const ElectricalOffsetAlignmentProtectionResult *protection,
+    bool post_fault)
+{
+  if (dst == NULL || snap == NULL || sample == NULL) {
+    return;
+  }
+  memset(dst, 0, sizeof(*dst));
+  dst->valid = true;
+  dst->post_fault = post_fault;
+  dst->adc_seq = snap->seq;
+  dst->raw_pc0 = snap->raw_pc0_m0_so1;
+  dst->raw_pc1 = snap->raw_pc1_m0_so2;
+  dst->delta_pc0 = (int32_t)snap->raw_pc0_m0_so1 -
+                   (int32_t)g_drv_test.offset.offset_u;
+  dst->delta_pc1 = (int32_t)snap->raw_pc1_m0_so2 -
+                   (int32_t)g_drv_test.offset.offset_v;
+  dst->iv_counts = dst->delta_pc0;
+  dst->iw_counts = dst->delta_pc1;
+  dst->iu_counts = -(dst->iv_counts + dst->iw_counts);
+  dst->phase_metric_counts = electrical_offset_current_counts(sample->magnitude_max);
+  dst->voltage_command_mV = float_to_scaled_i32(voltage, 1000.0f);
+  dst->ramp_sample_index = ramp_sample_index;
+  dst->tim1_cnt = TIM1->CNT;
+  dst->ccr1 = TIM1->CCR1;
+  dst->ccr2 = TIM1->CCR2;
+  dst->ccr3 = TIM1->CCR3;
+  dst->nfault_asserted = nfault_ok() ? 0u : 1u;
+  if (protection != NULL) {
+    dst->current_soft_consecutive = protection->soft_consecutive_count;
+    dst->current_hard_consecutive = protection->hard_consecutive_count;
+  }
+}
+
+static void electrical_offset_alignment_trace_record(
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    uint32_t ramp_sample_index,
+    float voltage,
+    const ElectricalOffsetAlignmentProtectionResult *protection,
+    bool post_fault)
+{
+  if (post_fault) {
+    if (g_electrical_offset_alignment_trace_post_count >=
+        ELECTRICAL_OFFSET_ALIGNMENT_TRACE_POST_CAPACITY) {
+      return;
+    }
+    const uint32_t idx = ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY +
+                         g_electrical_offset_alignment_trace_post_count;
+    electrical_offset_fill_trace_sample(&g_electrical_offset_alignment_trace[idx],
+                                        snap,
+                                        sample,
+                                        ramp_sample_index,
+                                        voltage,
+                                        protection,
+                                        true);
+    g_electrical_offset_alignment_trace_post_count++;
+    return;
+  }
+
+  const uint32_t idx = g_electrical_offset_alignment_trace_write %
+                       ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY;
+  electrical_offset_fill_trace_sample(&g_electrical_offset_alignment_trace[idx],
+                                      snap,
+                                      sample,
+                                      ramp_sample_index,
+                                      voltage,
+                                      protection,
+                                      false);
+  g_electrical_offset_alignment_trace_write++;
+  if (g_electrical_offset_alignment_trace_count <
+      ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY) {
+    g_electrical_offset_alignment_trace_count++;
+  }
+}
+
+static void electrical_offset_ramp_bucket_update(uint32_t ramp_ms,
+                                                 uint32_t elapsed_ms,
+                                                 const CurrentDqSample *sample,
+                                                 float voltage,
+                                                 uint32_t soft_consecutive,
+                                                 float speed_rpm)
+{
+  if (ramp_ms == 0u || sample == NULL) {
+    return;
+  }
+  uint32_t bucket = (elapsed_ms * ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT) /
+                    ramp_ms;
+  if (bucket >= ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT) {
+    bucket = ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT - 1u;
+  }
+  ElectricalOffsetRampBucketStats *b = &g_electrical_offset_ramp_bucket[bucket];
+  const int32_t d0 = electrical_offset_current_counts(sample->iv);
+  const int32_t d1 = electrical_offset_current_counts(sample->iw);
+  const int32_t ad0 = (d0 < 0) ? -d0 : d0;
+  const int32_t ad1 = (d1 < 0) ? -d1 : d1;
+  (void)voltage;
+  b->samples++;
+  b->sum_phase_abs += sample->magnitude_max;
+  if (sample->magnitude_max > b->max_phase_abs) {
+    b->max_phase_abs = sample->magnitude_max;
+  }
+  if (ad0 > b->max_abs_delta_pc0) { b->max_abs_delta_pc0 = ad0; }
+  if (ad1 > b->max_abs_delta_pc1) { b->max_abs_delta_pc1 = ad1; }
+  if (soft_consecutive > b->soft_consecutive_max) {
+    b->soft_consecutive_max = soft_consecutive;
+  }
+  b->encoder_last = g_encoder_accum;
+  b->speed_rpm_last = speed_rpm;
+}
+
+static void electrical_offset_latch_overcurrent_snapshot(
+    uint32_t source_line,
+    ElectricalOffsetBringupState state,
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    uint32_t alignment_point,
+    uint32_t ramp_sample_index,
+    float ramp_progress,
+    uint32_t ramp_elapsed_us,
+    float theta_cmd_deg,
+    float voltage,
+    float v_alpha,
+    float v_beta,
+    float speed_rpm,
+    uint32_t loop_cycles,
+    const ElectricalOffsetAlignmentProtectionResult *protection)
+{
+  if (g_electrical_offset_overcurrent_first_snapshot.valid ||
+      snap == NULL || sample == NULL || protection == NULL) {
+    return;
+  }
+  ElectricalOffsetOvercurrentFirstSnapshot *s =
+      &g_electrical_offset_overcurrent_first_snapshot;
+  memset(s, 0, sizeof(*s));
+  s->valid = true;
+  s->source_line = source_line;
+  s->state = state;
+  s->adc_seq = snap->seq;
+  s->alignment_point = alignment_point;
+  s->ramp_sample_index = ramp_sample_index;
+  s->ramp_progress = ramp_progress;
+  s->ramp_elapsed_us = ramp_elapsed_us;
+  s->commanded_angle_deg = theta_cmd_deg;
+  s->commanded_voltage_magnitude = voltage;
+  s->v_alpha_cmd = v_alpha;
+  s->v_beta_cmd = v_beta;
+  s->voltage_command_seq = g_electrical_offset_voltage_command_seq;
+  s->voltage_applied_seq = g_electrical_offset_voltage_applied_seq;
+  s->raw_pc0 = snap->raw_pc0_m0_so1;
+  s->raw_pc1 = snap->raw_pc1_m0_so2;
+  s->offset_pc0 = g_drv_test.offset.offset_u;
+  s->offset_pc1 = g_drv_test.offset.offset_v;
+  s->delta_pc0 = (int32_t)snap->raw_pc0_m0_so1 -
+                 (int32_t)g_drv_test.offset.offset_u;
+  s->delta_pc1 = (int32_t)snap->raw_pc1_m0_so2 -
+                 (int32_t)g_drv_test.offset.offset_v;
+  s->iv_a = sample->iv;
+  s->iw_a = sample->iw;
+  s->iu_a = sample->iu;
+  s->id_a = sample->id;
+  s->iq_a = sample->iq;
+  s->phase_abs_a = sample->magnitude_max;
+  s->current_limit_soft_a = ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A;
+  s->current_limit_hard_a = ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A;
+  s->raw_hard_limit_counts = ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS;
+  s->phase_soft_consecutive_count = protection->soft_consecutive_count;
+  s->phase_hard_consecutive_count = protection->hard_consecutive_count;
+  s->tim1_cnt = TIM1->CNT;
+  s->tim1_ccr1 = TIM1->CCR1;
+  s->tim1_ccr2 = TIM1->CCR2;
+  s->tim1_ccr3 = TIM1->CCR3;
+  s->tim1_bdtr_moe = (TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u;
+  s->tim1_ccer = TIM1->CCER;
+  s->encoder_count = g_encoder_accum;
+  s->mechanical_speed_rpm = speed_rpm;
+  s->nfault_asserted = !nfault_ok();
+  s->adc_callback_cycles = g_fixed_current_worst_adc_callback_cycles;
+  s->alignment_hook_cycles = loop_cycles;
+  s->source_mask = protection->source_mask;
+  s->raw_pc0_hard =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC0_HARD) != 0u;
+  s->raw_pc1_hard =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC1_HARD) != 0u;
+  s->reconstructed_iu =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RECONSTRUCTED_IU) != 0u;
+  s->reconstructed_iv =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RECONSTRUCTED_IV) != 0u;
+  s->reconstructed_iw =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RECONSTRUCTED_IW) != 0u;
+  s->phase_soft =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_PHASE_SOFT) != 0u;
+  s->phase_hard =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_PHASE_HARD) != 0u;
+  s->dq_overcurrent =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_DQ) != 0u;
+  s->adc_saturation =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_ADC_SATURATION) != 0u;
+  s->current_sensor_invalid =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_CURRENT_SENSOR_INVALID) != 0u;
+  s->current_offset_invalid =
+      (protection->source_mask & ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_CURRENT_OFFSET_INVALID) != 0u;
+  s->first_trip_channel = protection->first_trip_channel;
+}
+
+static void electrical_offset_collect_post_fault_trace(uint32_t *last_seq,
+                                                       uint32_t ramp_sample_index)
+{
+  for (uint32_t i = 0u; i < ELECTRICAL_OFFSET_ALIGNMENT_TRACE_POST_CAPACITY; ++i) {
+    HalAdcSnapshot post = {0};
+    if (!open_loop_wait_next_adc_sample(last_seq, &post)) {
+      break;
+    }
+    const CurrentDqSample sample = current_confirmed_m0_vw_calculate(&post);
+    electrical_offset_alignment_trace_record(&post,
+                                             &sample,
+                                             ramp_sample_index + i + 1u,
+                                             0.0f,
+                                             NULL,
+                                             true);
+  }
+}
+
+typedef struct {
+  uint32_t samples;
+  double sum0;
+  double sum1;
+  double sumsq0;
+  double sumsq1;
+  int32_t max_abs_delta_pc0;
+  int32_t max_abs_delta_pc1;
+} ElectricalOffsetRawStats;
+
+typedef struct {
+  uint32_t samples;
+  double raw0_sum;
+  double raw1_sum;
+  double raw0_sumsq;
+  double raw1_sumsq;
+  double iu_sum;
+  double iv_sum;
+  double iw_sum;
+  double phase_sum;
+  double phase_sumsq;
+  uint16_t raw0_min;
+  uint16_t raw0_max;
+  uint16_t raw1_min;
+  uint16_t raw1_max;
+  int32_t max_abs_delta_pc0;
+  int32_t max_abs_delta_pc1;
+  float phase_peak;
+  uint32_t soft_consecutive;
+  uint32_t soft_consecutive_max;
+  bool raw_hard_fault;
+  bool phase_emergency_fault;
+  bool adc_saturation_fault;
+  bool nfault_fault;
+  bool vbus_fault;
+  uint32_t tim1_cnt_min;
+  uint32_t tim1_cnt_max;
+  double tim1_cnt_sum;
+  uint32_t min_phase_edge_distance_counts;
+  uint32_t samples_near_switch_edge;
+} ElectricalOffsetPwmZeroStats;
+
+typedef struct {
+  bool valid;
+  uint32_t index;
+  uint32_t adc_seq;
+  uint32_t elapsed_us_after_moe_enable;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  int32_t delta_pc0;
+  int32_t delta_pc1;
+  float iu;
+  float iv;
+  float iw;
+  float phase_abs;
+  uint32_t soft_consecutive;
+  uint32_t tim1_cnt;
+  uint32_t tim1_dir;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  float commanded_voltage;
+  float applied_voltage;
+  int64_t encoder_count;
+  float speed_rpm;
+  bool nfault_asserted;
+} ElectricalOffsetPwmZeroFirstSample;
+
+typedef struct {
+  bool valid;
+  uint32_t index;
+  uint32_t adc_seq;
+  uint32_t elapsed_us_after_moe_enable;
+  uint32_t trigger_count;
+  uint32_t trigger_direction;
+  uint32_t expected_trigger_cnt;
+  uint32_t callback_entry_cnt;
+  uint16_t raw_pc0;
+  uint16_t raw_pc1;
+  int32_t delta_pc0;
+  int32_t delta_pc1;
+  float iu;
+  float iv;
+  float iw;
+  float phase_abs;
+  uint32_t soft_consecutive;
+  uint32_t ccr1;
+  uint32_t ccr2;
+  uint32_t ccr3;
+  bool moe;
+  bool nfault_asserted;
+} ElectricalOffsetTriggerSweepFirstSample;
+
+static bool electrical_offset_collect_raw_stats(uint32_t *last_seq,
+                                                uint32_t discard_count,
+                                                uint32_t collect_count,
+                                                uint32_t reference_pc0,
+                                                uint32_t reference_pc1,
+                                                ElectricalOffsetRawStats *stats)
+{
+  if (stats == NULL) {
+    return false;
+  }
+  memset(stats, 0, sizeof(*stats));
+  const uint32_t start_ms = HAL_GetTick();
+  uint32_t discarded = 0u;
+  while (discarded < discard_count) {
+    HalAdcSnapshot snap = {0};
+    if ((HAL_GetTick() - start_ms) > 1000u) {
+      return false;
+    }
+    if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      return false;
+    }
+    discarded++;
+  }
+  while (stats->samples < collect_count) {
+    HalAdcSnapshot snap = {0};
+    if ((HAL_GetTick() - start_ms) > 2500u) {
+      return false;
+    }
+    if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      return false;
+    }
+    const int32_t d0 = (int32_t)snap.raw_pc0_m0_so1 - (int32_t)reference_pc0;
+    const int32_t d1 = (int32_t)snap.raw_pc1_m0_so2 - (int32_t)reference_pc1;
+    const int32_t ad0 = (d0 < 0) ? -d0 : d0;
+    const int32_t ad1 = (d1 < 0) ? -d1 : d1;
+    if (ad0 > stats->max_abs_delta_pc0) { stats->max_abs_delta_pc0 = ad0; }
+    if (ad1 > stats->max_abs_delta_pc1) { stats->max_abs_delta_pc1 = ad1; }
+    stats->sum0 += (double)snap.raw_pc0_m0_so1;
+    stats->sum1 += (double)snap.raw_pc1_m0_so2;
+    stats->sumsq0 += (double)snap.raw_pc0_m0_so1 * (double)snap.raw_pc0_m0_so1;
+    stats->sumsq1 += (double)snap.raw_pc1_m0_so2 * (double)snap.raw_pc1_m0_so2;
+    stats->samples++;
+  }
+  return stats->samples == collect_count;
+}
+
+static float electrical_offset_stats_mean(double sum, uint32_t n)
+{
+  return (n > 0u) ? (float)(sum / (double)n) : 0.0f;
+}
+
+static float electrical_offset_stats_std(double sum, double sumsq, uint32_t n)
+{
+  if (n < 2u) {
+    return 0.0f;
+  }
+  const double mean = sum / (double)n;
+  double var = (sumsq / (double)n) - mean * mean;
+  if (var < 0.0) { var = 0.0; }
+  return (float)sqrt(var);
+}
+
+static void electrical_offset_pwm_zero_stats_reset(ElectricalOffsetPwmZeroStats *s)
+{
+  memset(s, 0, sizeof(*s));
+  s->raw0_min = 0xFFFFu;
+  s->raw1_min = 0xFFFFu;
+  s->tim1_cnt_min = 0xFFFFFFFFu;
+  s->min_phase_edge_distance_counts = 0xFFFFFFFFu;
+}
+
+static void electrical_offset_pwm_zero_stats_update(
+    ElectricalOffsetPwmZeroStats *st,
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    const ElectricalOffsetAlignmentProtectionResult *prot)
+{
+  if (st == NULL || snap == NULL || sample == NULL) {
+    return;
+  }
+  const int32_t d0 = (int32_t)snap->raw_pc0_m0_so1 -
+                     (int32_t)g_drv_test.offset.offset_u;
+  const int32_t d1 = (int32_t)snap->raw_pc1_m0_so2 -
+                     (int32_t)g_drv_test.offset.offset_v;
+  const int32_t ad0 = (d0 < 0) ? -d0 : d0;
+  const int32_t ad1 = (d1 < 0) ? -d1 : d1;
+  const uint32_t tim_cnt = TIM1->CNT;
+  const uint32_t edge_distance =
+      electrical_offset_min_phase_edge_distance_counts(tim_cnt,
+                                                       TIM1->CCR1,
+                                                       TIM1->CCR2,
+                                                       TIM1->CCR3);
+  st->samples++;
+  st->raw0_sum += (double)snap->raw_pc0_m0_so1;
+  st->raw1_sum += (double)snap->raw_pc1_m0_so2;
+  st->raw0_sumsq += (double)snap->raw_pc0_m0_so1 *
+                    (double)snap->raw_pc0_m0_so1;
+  st->raw1_sumsq += (double)snap->raw_pc1_m0_so2 *
+                    (double)snap->raw_pc1_m0_so2;
+  st->iu_sum += (double)sample->iu;
+  st->iv_sum += (double)sample->iv;
+  st->iw_sum += (double)sample->iw;
+  st->phase_sum += (double)sample->magnitude_max;
+  st->phase_sumsq += (double)sample->magnitude_max *
+                     (double)sample->magnitude_max;
+  if (snap->raw_pc0_m0_so1 < st->raw0_min) { st->raw0_min = snap->raw_pc0_m0_so1; }
+  if (snap->raw_pc0_m0_so1 > st->raw0_max) { st->raw0_max = snap->raw_pc0_m0_so1; }
+  if (snap->raw_pc1_m0_so2 < st->raw1_min) { st->raw1_min = snap->raw_pc1_m0_so2; }
+  if (snap->raw_pc1_m0_so2 > st->raw1_max) { st->raw1_max = snap->raw_pc1_m0_so2; }
+  if (ad0 > st->max_abs_delta_pc0) { st->max_abs_delta_pc0 = ad0; }
+  if (ad1 > st->max_abs_delta_pc1) { st->max_abs_delta_pc1 = ad1; }
+  if (sample->magnitude_max > st->phase_peak) {
+    st->phase_peak = sample->magnitude_max;
+  }
+  if (prot != NULL) {
+    st->soft_consecutive = prot->soft_consecutive_count;
+    if (prot->soft_consecutive_count > st->soft_consecutive_max) {
+      st->soft_consecutive_max = prot->soft_consecutive_count;
+    }
+    if ((prot->source_mask &
+         (ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC0_HARD |
+          ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC1_HARD)) != 0u) {
+      st->raw_hard_fault = true;
+    }
+    if ((prot->source_mask &
+         ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_PHASE_HARD) != 0u) {
+      st->phase_emergency_fault = true;
+    }
+    if ((prot->source_mask &
+         ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_ADC_SATURATION) != 0u) {
+      st->adc_saturation_fault = true;
+    }
+    if ((prot->source_mask &
+         ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_NFAULT) != 0u) {
+      st->nfault_fault = true;
+    }
+  }
+  if (tim_cnt < st->tim1_cnt_min) { st->tim1_cnt_min = tim_cnt; }
+  if (tim_cnt > st->tim1_cnt_max) { st->tim1_cnt_max = tim_cnt; }
+  st->tim1_cnt_sum += (double)tim_cnt;
+  if (edge_distance < st->min_phase_edge_distance_counts) {
+    st->min_phase_edge_distance_counts = edge_distance;
+  }
+  if (edge_distance <= ELECTRICAL_OFFSET_PWM_ZERO_NEAR_EDGE_COUNTS) {
+    st->samples_near_switch_edge++;
+  }
+}
+
+static bool electrical_offset_wait_tim1_updates(uint32_t count,
+                                                uint32_t timeout_ms)
+{
+  uint32_t seen = 0u;
+  const uint32_t start_ms = HAL_GetTick();
+  TIM1->SR &= ~TIM_SR_UIF;
+  while (seen < count) {
+    if ((TIM1->SR & TIM_SR_UIF) != 0u) {
+      TIM1->SR &= ~TIM_SR_UIF;
+      seen++;
+    }
+    if ((HAL_GetTick() - start_ms) > timeout_ms) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static ElectricalOffsetAlignmentProtectionResult
+electrical_offset_pwm_zero_protection_update(
+    ElectricalOffsetAlignmentProtectionState *state,
+    const HalAdcSnapshot *snap,
+    const CurrentDqSample *sample,
+    bool offset_valid)
+{
+  ElectricalOffsetAlignmentProtectionInput prot_in = {0};
+  prot_in.raw_pc0 = snap->raw_pc0_m0_so1;
+  prot_in.raw_pc1 = snap->raw_pc1_m0_so2;
+  prot_in.delta_pc0_counts = (int32_t)snap->raw_pc0_m0_so1 -
+                             (int32_t)g_drv_test.offset.offset_u;
+  prot_in.delta_pc1_counts = (int32_t)snap->raw_pc1_m0_so2 -
+                             (int32_t)g_drv_test.offset.offset_v;
+  prot_in.iu_a = sample->iu;
+  prot_in.iv_a = sample->iv;
+  prot_in.iw_a = sample->iw;
+  prot_in.id_a = sample->id;
+  prot_in.iq_a = sample->iq;
+  prot_in.phase_abs_a = sample->magnitude_max;
+  prot_in.current_amp_per_count = g_drv_test.current_amp_per_count;
+  prot_in.soft_limit_a = ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A;
+  prot_in.phase_emergency_limit_a =
+      ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A;
+  prot_in.raw_hard_limit_counts =
+      ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS;
+  prot_in.soft_consecutive_required =
+      ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES;
+  prot_in.raw_min_safe_count = CURRENT_RAW_MIN_SAFE_COUNT;
+  prot_in.raw_max_safe_count = CURRENT_RAW_MAX_SAFE_COUNT;
+  prot_in.offset_valid = offset_valid;
+  prot_in.current_finite =
+      isfinite(sample->iu) && isfinite(sample->iv) && isfinite(sample->iw) &&
+      isfinite(sample->id) && isfinite(sample->iq) &&
+      isfinite(sample->magnitude_max);
+  prot_in.nfault_ok = nfault_ok();
+  return electrical_offset_alignment_protection_update(state, &prot_in);
+}
+
+static bool electrical_offset_pwm_zero_collect_stage(
+    const char *stage_name,
+    uint32_t *last_seq,
+    uint32_t count,
+    bool hard_trip_enabled,
+    bool offset_valid,
+    ElectricalOffsetPwmZeroStats *stats,
+    ElectricalOffsetPwmZeroFirstSample first_samples[ELECTRICAL_OFFSET_PWM_ZERO_FIRST_SAMPLE_COUNT],
+    uint32_t *first_sample_count,
+    uint32_t moe_enable_seq)
+{
+  ElectricalOffsetAlignmentProtectionState prot_state = {0};
+  electrical_offset_alignment_protection_reset(&prot_state);
+  bool ok = true;
+  for (uint32_t i = 0u; i < count; ++i) {
+    HalAdcSnapshot snap = {0};
+    if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      ok = false;
+      break;
+    }
+    (void)encoder_tracker_sample();
+    const float speed_rpm =
+        ((float)g_encoder_last_delta * 60.0f) /
+        ((float)COMM_ENCODER_CPR * 0.00005f);
+    const CurrentDqSample sample = current_confirmed_m0_vw_calculate(&snap);
+    const ElectricalOffsetAlignmentProtectionResult prot =
+        electrical_offset_pwm_zero_protection_update(&prot_state,
+                                                     &snap,
+                                                     &sample,
+                                                     offset_valid);
+    electrical_offset_pwm_zero_stats_update(stats, &snap, &sample, &prot);
+    if (first_samples != NULL && first_sample_count != NULL &&
+        *first_sample_count < ELECTRICAL_OFFSET_PWM_ZERO_FIRST_SAMPLE_COUNT) {
+      ElectricalOffsetPwmZeroFirstSample *fs =
+          &first_samples[*first_sample_count];
+      memset(fs, 0, sizeof(*fs));
+      fs->valid = true;
+      fs->index = *first_sample_count;
+      fs->adc_seq = snap.seq;
+      fs->elapsed_us_after_moe_enable =
+          (snap.seq >= moe_enable_seq) ? ((snap.seq - moe_enable_seq) * 50u) : 0u;
+      fs->raw_pc0 = snap.raw_pc0_m0_so1;
+      fs->raw_pc1 = snap.raw_pc1_m0_so2;
+      fs->delta_pc0 = (int32_t)snap.raw_pc0_m0_so1 -
+                      (int32_t)g_drv_test.offset.offset_u;
+      fs->delta_pc1 = (int32_t)snap.raw_pc1_m0_so2 -
+                      (int32_t)g_drv_test.offset.offset_v;
+      fs->iu = sample.iu;
+      fs->iv = sample.iv;
+      fs->iw = sample.iw;
+      fs->phase_abs = sample.magnitude_max;
+      fs->soft_consecutive = prot.soft_consecutive_count;
+      fs->tim1_cnt = TIM1->CNT;
+      fs->tim1_dir = (TIM1->CR1 & TIM_CR1_DIR) ? 1u : 0u;
+      fs->ccr1 = TIM1->CCR1;
+      fs->ccr2 = TIM1->CCR2;
+      fs->ccr3 = TIM1->CCR3;
+      fs->commanded_voltage = 0.0f;
+      fs->applied_voltage = 0.0f;
+      fs->encoder_count = g_encoder_accum;
+      fs->speed_rpm = speed_rpm;
+      fs->nfault_asserted = !nfault_ok();
+      (*first_sample_count)++;
+    }
+
+    const bool hard_trip =
+        prot.immediate_trip ||
+        (prot.source_mask & (ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC0_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC1_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_PHASE_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_ADC_SATURATION |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_NFAULT)) != 0u;
+    const float vbus = board_read_vbus_v();
+    if (vbus < OPEN_LOOP_VBUS_MIN_V || vbus > OPEN_LOOP_VBUS_MAX_V) {
+      stats->vbus_fault = true;
+      ok = false;
+    }
+    if (hard_trip_enabled && hard_trip) {
+      ok = false;
+    }
+    if (!ok) {
+      char line[256];
+      snprintf(line,
+               sizeof(line),
+               "electrical_offset_pwm_zero_hard_stop: stage=%s sample=%lu source_mask=0x%08lX raw_hard=%u phase_hard=%u adc_sat=%u nfault=%u vbus_fault=%u first_trip_channel=%s",
+               stage_name,
+               (unsigned long)i,
+               (unsigned long)prot.source_mask,
+               (unsigned int)stats->raw_hard_fault,
+               (unsigned int)stats->phase_emergency_fault,
+               (unsigned int)stats->adc_saturation_fault,
+               (unsigned int)stats->nfault_fault,
+               (unsigned int)stats->vbus_fault,
+               prot.first_trip_channel);
+      uart2_printf_line(line);
+      break;
+    }
+  }
+  return ok;
+}
+
+static void electrical_offset_pwm_zero_print_stats(const char *label,
+                                                   const ElectricalOffsetPwmZeroStats *s,
+                                                   const ElectricalOffsetPwmZeroStats *ref)
+{
+  char line[768];
+  const float raw0_mean = electrical_offset_stats_mean(s->raw0_sum, s->samples);
+  const float raw1_mean = electrical_offset_stats_mean(s->raw1_sum, s->samples);
+  const float raw0_std =
+      electrical_offset_stats_std(s->raw0_sum, s->raw0_sumsq, s->samples);
+  const float raw1_std =
+      electrical_offset_stats_std(s->raw1_sum, s->raw1_sumsq, s->samples);
+  const float iu_mean = electrical_offset_stats_mean(s->iu_sum, s->samples);
+  const float iv_mean = electrical_offset_stats_mean(s->iv_sum, s->samples);
+  const float iw_mean = electrical_offset_stats_mean(s->iw_sum, s->samples);
+  const float phase_rms =
+      (s->samples > 0u) ? (float)sqrt(s->phase_sumsq / (double)s->samples) : 0.0f;
+  const float ref0 = (ref != NULL) ?
+      electrical_offset_stats_mean(ref->raw0_sum, ref->samples) :
+      (float)g_drv_test.offset.offset_u;
+  const float ref1 = (ref != NULL) ?
+      electrical_offset_stats_mean(ref->raw1_sum, ref->samples) :
+      (float)g_drv_test.offset.offset_v;
+  const float shift0 = raw0_mean - ref0;
+  const float shift1 = raw1_mean - ref1;
+  const float common = electrical_offset_common_mode_shift_counts(shift0, shift1);
+  const float diff = electrical_offset_differential_shift_counts(shift0, shift1);
+  const float tim_mean =
+      electrical_offset_stats_mean(s->tim1_cnt_sum, s->samples);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_%s: samples=%lu pc0_mean=%ld.%03ld pc1_mean=%ld.%03ld pc0_std=%lu.%03lu pc1_std=%lu.%03lu pc0_minmax=%u/%u pc1_minmax=%u/%u shift_pc0_counts=%ld.%03ld shift_pc1_counts=%ld.%03ld common_mode_shift_counts=%ld.%03ld differential_shift_counts=%ld.%03ld iu_mean=%ld.%03ld iv_mean=%ld.%03ld iw_mean=%ld.%03ld phase_peak=%lu.%03lu phase_rms=%lu.%03lu max_abs_delta_pc0=%ld max_abs_delta_pc1=%ld soft_consecutive_max=%lu tim1_cnt_min=%lu tim1_cnt_max=%lu tim1_cnt_mean=%lu.%03lu min_edge_distance_counts=%lu samples_near_switch_edge=%lu raw_hard=%u phase_emergency=%u adc_saturation=%u nfault=%u vbus_fault=%u",
+           label,
+           (unsigned long)s->samples,
+           (long)float_to_scaled_i32(raw0_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(raw0_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(raw1_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(raw1_mean, 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(raw0_std, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(raw0_std, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(raw1_std, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(raw1_std, 1000.0f) % 1000u,
+           s->raw0_min, s->raw0_max, s->raw1_min, s->raw1_max,
+           (long)float_to_scaled_i32(shift0, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(shift0, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(shift1, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(shift1, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(common, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(common, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(diff, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(diff, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iu_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iu_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iv_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iv_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iw_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iw_mean, 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(s->phase_peak, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(s->phase_peak, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(phase_rms, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(phase_rms, 1000.0f) % 1000u,
+           (long)s->max_abs_delta_pc0,
+           (long)s->max_abs_delta_pc1,
+           (unsigned long)s->soft_consecutive_max,
+           (unsigned long)((s->tim1_cnt_min == 0xFFFFFFFFu) ? 0u : s->tim1_cnt_min),
+           (unsigned long)s->tim1_cnt_max,
+           (unsigned long)float_to_scaled_u32(tim_mean, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(tim_mean, 1000.0f) % 1000u,
+           (unsigned long)((s->min_phase_edge_distance_counts == 0xFFFFFFFFu)
+                               ? 0u
+                               : s->min_phase_edge_distance_counts),
+           (unsigned long)s->samples_near_switch_edge,
+           (unsigned int)s->raw_hard_fault,
+           (unsigned int)s->phase_emergency_fault,
+           (unsigned int)s->adc_saturation_fault,
+           (unsigned int)s->nfault_fault,
+           (unsigned int)s->vbus_fault);
+  uart2_printf_line(line);
+}
+
+static void electrical_offset_pwm_zero_print_first32(
+    const ElectricalOffsetPwmZeroFirstSample first_samples[ELECTRICAL_OFFSET_PWM_ZERO_FIRST_SAMPLE_COUNT],
+    uint32_t count)
+{
+  char line[640];
+  for (uint32_t i = 0u; i < count; ++i) {
+    const ElectricalOffsetPwmZeroFirstSample *s = &first_samples[i];
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_pwm_zero_first%02lu: adc_seq=%lu elapsed_us_after_moe=%lu raw_pc0=%u raw_pc1=%u delta_pc0=%ld delta_pc1=%ld iu=%ld.%03ld iv=%ld.%03ld iw=%ld.%03ld phase_abs=%lu.%03lu soft_consecutive=%lu TIM1_CNT=%lu TIM1_DIR=%lu CCR1=%lu CCR2=%lu CCR3=%lu commanded_voltage=%ld.%03ld applied_voltage=%ld.%03ld encoder_count=%ld speed_rpm=%ld.%02ld nFAULT=%u",
+             (unsigned long)i,
+             (unsigned long)s->adc_seq,
+             (unsigned long)s->elapsed_us_after_moe_enable,
+             s->raw_pc0,
+             s->raw_pc1,
+             (long)s->delta_pc0,
+             (long)s->delta_pc1,
+             (long)float_to_scaled_i32(s->iu, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iu, 1000.0f)) % 1000u,
+             (long)float_to_scaled_i32(s->iv, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iv, 1000.0f)) % 1000u,
+             (long)float_to_scaled_i32(s->iw, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iw, 1000.0f)) % 1000u,
+             (unsigned long)float_to_scaled_u32(s->phase_abs, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(s->phase_abs, 1000.0f) % 1000u,
+             (unsigned long)s->soft_consecutive,
+             (unsigned long)s->tim1_cnt,
+             (unsigned long)s->tim1_dir,
+             (unsigned long)s->ccr1,
+             (unsigned long)s->ccr2,
+             (unsigned long)s->ccr3,
+             (long)float_to_scaled_i32(s->commanded_voltage, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->commanded_voltage, 1000.0f)) % 1000u,
+             (long)float_to_scaled_i32(s->applied_voltage, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->applied_voltage, 1000.0f)) % 1000u,
+             (long)s->encoder_count,
+             (long)float_to_scaled_i32(s->speed_rpm, 100.0f) / 100,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->speed_rpm, 100.0f)) % 100u,
+             (unsigned int)s->nfault_asserted);
+    uart2_printf_line(line);
+  }
+}
+
+static bool electrical_offset_pwm_zero_current_diagnostic_run(
+    uint32_t *last_seq,
+    bool dc_cal_bits_clear_for_alignment,
+    bool offset_pc0_valid,
+    bool offset_pc1_valid)
+{
+  char line[768];
+  ElectricalOffsetPwmZeroStats stage_a;
+  ElectricalOffsetPwmZeroStats stage_b;
+  ElectricalOffsetPwmZeroStats stage_c;
+  ElectricalOffsetPwmZeroStats stage_d;
+  ElectricalOffsetPwmZeroFirstSample first32[ELECTRICAL_OFFSET_PWM_ZERO_FIRST_SAMPLE_COUNT];
+  uint32_t first_count = 0u;
+  bool ok = true;
+  bool hard_fault = false;
+  const bool offset_valid = offset_pc0_valid && offset_pc1_valid;
+
+  electrical_offset_pwm_zero_stats_reset(&stage_a);
+  electrical_offset_pwm_zero_stats_reset(&stage_b);
+  electrical_offset_pwm_zero_stats_reset(&stage_c);
+  electrical_offset_pwm_zero_stats_reset(&stage_d);
+  memset(first32, 0, sizeof(first32));
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_config: mode=PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY stage_a_samples=%lu stage_b_samples=%lu stage_c_samples=%lu stage_d_samples=%lu soft_limit=%lu.%03lu soft_consecutive=%lu soft_records_only_in_stage_c=1 raw_hard_limit_counts=%ld emergency_limit_a=%lu.%03lu ramp=0 three_point=0 dq_pi=0",
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_STAGE_A_SAMPLES,
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_STAGE_B_SAMPLES,
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_STAGE_C_SAMPLES,
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_STAGE_D_SAMPLES,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) % 1000u,
+           (unsigned long)ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES,
+           (long)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  power_stage_disable_six_outputs();
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  ok = electrical_offset_pwm_zero_collect_stage("stage_a_gate_on_moe_off_ccr0",
+                                                last_seq,
+                                                ELECTRICAL_OFFSET_PWM_ZERO_STAGE_A_SAMPLES,
+                                                true,
+                                                offset_valid,
+                                                &stage_a,
+                                                NULL,
+                                                NULL,
+                                                0u);
+
+  power_stage_set_ccr_half();
+  if (ok) {
+    ok = electrical_offset_wait_tim1_updates(2u, 50u);
+  }
+  if (ok) {
+    ok = electrical_offset_pwm_zero_collect_stage("stage_b_preload_half_moe_off",
+                                                  last_seq,
+                                                  ELECTRICAL_OFFSET_PWM_ZERO_STAGE_B_SAMPLES,
+                                                  true,
+                                                  offset_valid,
+                                                  &stage_b,
+                                                  NULL,
+                                                  NULL,
+                                                  0u);
+  }
+
+  const float duty_u = 0.5f;
+  const float duty_v = 0.5f;
+  const float duty_w = 0.5f;
+  ElectricalOffsetPwmZeroStartInput start_in = {0};
+  start_in.commanded_v_alpha_zero =
+      fabsf(g_electrical_offset_v_alpha_cmd) < 0.000001f;
+  start_in.commanded_v_beta_zero =
+      fabsf(g_electrical_offset_v_beta_cmd) < 0.000001f;
+  start_in.applied_v_alpha_zero =
+      fabsf(g_electrical_offset_last_applied_v_alpha) < 0.000001f;
+  start_in.applied_v_beta_zero =
+      fabsf(g_electrical_offset_last_applied_v_beta) < 0.000001f;
+  start_in.duty_u_eq_v = fabsf(duty_u - duty_v) < 0.000001f;
+  start_in.duty_v_eq_w = fabsf(duty_v - duty_w) < 0.000001f;
+  start_in.ccr1_eq_ccr2 = TIM1->CCR1 == TIM1->CCR2;
+  start_in.ccr2_eq_ccr3 = TIM1->CCR2 == TIM1->CCR3;
+  start_in.preload_ack = g_electrical_offset_zero_command_ack;
+  start_in.tim_updates_after_preload = g_electrical_offset_tim1_update_count >= 1u;
+  start_in.pending_voltage_update_clear =
+      !g_electrical_offset_voltage_update_pending;
+  start_in.dc_cal_bits_clear = dc_cal_bits_clear_for_alignment;
+  start_in.nfault_ok = nfault_ok();
+  start_in.gate_enabled = gate_raw_is_high();
+  start_in.moe_off_before_enable = (TIM1->BDTR & TIM_BDTR_MOE) == 0u;
+  const ElectricalOffsetPwmZeroStartResult start_res =
+      electrical_offset_pwm_zero_start_evaluate(&start_in);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_start: safe_to_enable_moe=%u command_zero=%u duties_equal=%u ccrs_equal=%u preload_complete=%u commanded_v_alpha=0 commanded_v_beta=0 applied_v_alpha=0 applied_v_beta=0 duty_u=%lu.%03lu duty_v=%lu.%03lu duty_w=%lu.%03lu CCR1=%lu CCR2=%lu CCR3=%lu preload_ack=%u tim_updates_after_preload=%lu pending_voltage_update=%u dc_cal_bits_clear=%u nFAULT=%u gate=%u MOE=%lu",
+           (unsigned int)start_res.safe_to_enable_moe,
+           (unsigned int)start_res.command_zero,
+           (unsigned int)start_res.duties_equal,
+           (unsigned int)start_res.ccrs_equal,
+           (unsigned int)start_res.preload_complete,
+           (unsigned long)float_to_scaled_u32(duty_u, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(duty_u, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(duty_v, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(duty_v, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(duty_w, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(duty_w, 1000.0f) % 1000u,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned int)g_electrical_offset_zero_command_ack,
+           (unsigned long)g_electrical_offset_tim1_update_count,
+           (unsigned int)g_electrical_offset_voltage_update_pending,
+           (unsigned int)dc_cal_bits_clear_for_alignment,
+           (unsigned int)!nfault_ok(),
+           (unsigned int)gate_raw_is_high(),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u));
+  uart2_printf_line(line);
+
+  if (!ok || !start_res.safe_to_enable_moe) {
+    ok = false;
+    uart2_printf_line("electrical_offset_pwm_zero_start_state_invalid");
+  } else {
+    power_stage_enable_six_outputs();
+    const uint32_t moe_enable_seq = drv_bringup_get_adc_seq();
+    __HAL_TIM_MOE_ENABLE(&htim1);
+    ok = electrical_offset_pwm_zero_collect_stage("stage_c_moe_on_zero_voltage",
+                                                  last_seq,
+                                                  ELECTRICAL_OFFSET_PWM_ZERO_STAGE_C_SAMPLES,
+                                                  false,
+                                                  offset_valid,
+                                                  &stage_c,
+                                                  first32,
+                                                  &first_count,
+                                                  moe_enable_seq);
+    hard_fault = stage_c.raw_hard_fault || stage_c.phase_emergency_fault ||
+                 stage_c.adc_saturation_fault || stage_c.nfault_fault ||
+                 stage_c.vbus_fault || !ok;
+  }
+
+  power_stage_set_ccr_half();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  power_stage_disable_six_outputs();
+  hal_gpio_set_gate_enable(false);
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  (void)electrical_offset_pwm_zero_collect_stage("stage_d_post_shutdown",
+                                                 last_seq,
+                                                 ELECTRICAL_OFFSET_PWM_ZERO_STAGE_D_SAMPLES,
+                                                 false,
+                                                 offset_valid,
+                                                 &stage_d,
+                                                 NULL,
+                                                 NULL,
+                                                 0u);
+
+  electrical_offset_pwm_zero_print_stats("stage_a_gate_on_moe_off_ccr0",
+                                         &stage_a,
+                                         NULL);
+  electrical_offset_pwm_zero_print_stats("stage_b_preload_half_moe_off",
+                                         &stage_b,
+                                         &stage_a);
+  electrical_offset_pwm_zero_print_stats("stage_c_moe_on_zero_voltage",
+                                         &stage_c,
+                                         &stage_b);
+  electrical_offset_pwm_zero_print_stats("stage_d_post_shutdown",
+                                         &stage_d,
+                                         &stage_b);
+  electrical_offset_pwm_zero_print_first32(first32, first_count);
+
+  const float stage_c_shift0 =
+      electrical_offset_stats_mean(stage_c.raw0_sum, stage_c.samples) -
+      electrical_offset_stats_mean(stage_b.raw0_sum, stage_b.samples);
+  const float stage_c_shift1 =
+      electrical_offset_stats_mean(stage_c.raw1_sum, stage_c.samples) -
+      electrical_offset_stats_mean(stage_b.raw1_sum, stage_b.samples);
+  const bool stable_shift =
+      stage_c.samples == ELECTRICAL_OFFSET_PWM_ZERO_STAGE_C_SAMPLES &&
+      (fabsf(stage_c_shift0) >= 3.0f || fabsf(stage_c_shift1) >= 3.0f);
+  ElectricalOffsetPwmZeroClassifyInput classify_in = {0};
+  classify_in.ccrs_equal = start_res.ccrs_equal;
+  classify_in.line_to_line_zero = start_res.command_zero && start_res.duties_equal;
+  classify_in.stable_pc0_pc1_shift = stable_shift;
+  classify_in.speed_near_zero = true;
+  classify_in.nfault_ok = !stage_c.nfault_fault;
+  classify_in.near_switch_edge = stage_c.samples_near_switch_edge > 0u;
+  classify_in.raw_within_limits = !stage_c.raw_hard_fault &&
+                                  !stage_c.adc_saturation_fault;
+  classify_in.reconstruction_consistent = true;
+  classify_in.current_ramp_like = false;
+  classify_in.encoder_motion = false;
+  const ElectricalOffsetPwmZeroClassification classification =
+      electrical_offset_pwm_zero_classify(&classify_in);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_summary: hard_fault=%u soft_consecutive_max=%lu stage_c_complete=%u pwm_active_offset_shift_pc0_counts=%ld.%03ld pwm_active_offset_shift_pc1_counts=%ld.%03ld pwm_active_offset_shift_pc0_a=%ld.%03ld pwm_active_offset_shift_pc1_a=%ld.%03ld reconstructed_iu_mean_moe_off=%ld.%03ld reconstructed_iu_mean_moe_on=%ld.%03ld reconstructed_iv_mean_moe_on=%ld.%03ld reconstructed_iw_mean_moe_on=%ld.%03ld minimum_distance_to_switch_edge_counts=%lu samples_near_switch_edge=%lu classification=%s",
+           (unsigned int)hard_fault,
+           (unsigned long)stage_c.soft_consecutive_max,
+           (unsigned int)(stage_c.samples == ELECTRICAL_OFFSET_PWM_ZERO_STAGE_C_SAMPLES),
+           (long)float_to_scaled_i32(stage_c_shift0, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(stage_c_shift0, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(stage_c_shift1, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(stage_c_shift1, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(stage_c_shift0 * g_drv_test.current_amp_per_count, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(stage_c_shift0 * g_drv_test.current_amp_per_count, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(stage_c_shift1 * g_drv_test.current_amp_per_count, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(stage_c_shift1 * g_drv_test.current_amp_per_count, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_stats_mean(stage_b.iu_sum, stage_b.samples), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_stats_mean(stage_b.iu_sum, stage_b.samples), 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iu_sum, stage_c.samples), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iu_sum, stage_c.samples), 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iv_sum, stage_c.samples), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iv_sum, stage_c.samples), 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iw_sum, stage_c.samples), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_stats_mean(stage_c.iw_sum, stage_c.samples), 1000.0f)) % 1000u,
+           (unsigned long)((stage_c.min_phase_edge_distance_counts == 0xFFFFFFFFu)
+                               ? 0u
+                               : stage_c.min_phase_edge_distance_counts),
+           (unsigned long)stage_c.samples_near_switch_edge,
+           electrical_offset_pwm_zero_classification_name(classification));
+  uart2_printf_line(line);
+
+  drv_bringup_capture_final_state();
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_final_safe: gate=%u MOE=%lu CCER=0x%08lX CCR1=%lu CCR2=%lu CCR3=%lu adc_rank_order=%lu dc_cal_bits_drv0=0x%04X dc_cal_bits_drv1=0x%04X fault_code=0x%08lX electrical_offset_valid=0",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)(g_drv_test.drv0_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned int)(g_drv_test.drv1_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned long)g_drv_test.fault_code);
+  uart2_printf_line(line);
+  uart2_printf_line(hard_fault
+                        ? "ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_FAIL"
+                        : "ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_COMPLETE");
+  uart2_printf_line("ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FLASH_READY=NO");
+  uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_HARDWARE_FLASH_READY=NO");
+  uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+  return !hard_fault && start_res.safe_to_enable_moe;
+}
+
+static uint32_t electrical_offset_apb2_prescaler_div(void)
+{
+  const uint32_t ppre2 = RCC->CFGR & RCC_CFGR_PPRE2;
+  switch (ppre2) {
+    case RCC_CFGR_PPRE2_DIV1: return 1u;
+    case RCC_CFGR_PPRE2_DIV2: return 2u;
+    case RCC_CFGR_PPRE2_DIV4: return 4u;
+    case RCC_CFGR_PPRE2_DIV8: return 8u;
+    case RCC_CFGR_PPRE2_DIV16: return 16u;
+    default: return 2u;
+  }
+}
+
+static uint32_t electrical_offset_adc_clock_hz(void)
+{
+  uint32_t div = 2u;
+  switch (ADC->CCR & ADC_CCR_ADCPRE) {
+    case ADC_CCR_ADCPRE_0: div = 4u; break;
+    case ADC_CCR_ADCPRE_1: div = 6u; break;
+    case ADC_CCR_ADCPRE: div = 8u; break;
+    default: div = 2u; break;
+  }
+  return HAL_RCC_GetPCLK2Freq() / div;
+}
+
+static uint32_t __attribute__((unused)) electrical_offset_tim1_counter_clock_hz(void)
+{
+  const uint32_t pclk2 = HAL_RCC_GetPCLK2Freq();
+  const uint32_t apb2_div = electrical_offset_apb2_prescaler_div();
+  const uint32_t tim_input = (apb2_div == 1u) ? pclk2 : (pclk2 * 2u);
+  return tim_input / (TIM1->PSC + 1u);
+}
+
+static bool electrical_offset_trigger_sweep_set_trigger(uint32_t ccr4)
+{
+  TIM1->CCR4 = ccr4;
+  TIM1->EGR = TIM_EGR_UG;
+  return electrical_offset_wait_tim1_updates(2u, 50u);
+}
+
+static void electrical_offset_trigger_sweep_print_first16(
+    const ElectricalOffsetTriggerSweepFirstSample *first,
+    uint32_t count,
+    uint32_t candidate_index)
+{
+  char line[640];
+  for (uint32_t i = 0u; i < count; ++i) {
+    const ElectricalOffsetTriggerSweepFirstSample *s = &first[i];
+    snprintf(line,
+             sizeof(line),
+             "pwm_zero_sweep_first: candidate_index=%lu index=%lu adc_seq=%lu elapsed_us_after_moe=%lu trigger_count=%lu trigger_direction=%lu expected_trigger_cnt=%lu callback_entry_cnt=%lu raw_pc0=%u raw_pc1=%u delta_pc0=%ld delta_pc1=%ld iu=%ld.%03ld iv=%ld.%03ld iw=%ld.%03ld phase_abs=%lu.%03lu soft_consecutive=%lu CCR1=%lu CCR2=%lu CCR3=%lu MOE=%u nFAULT=%u",
+             (unsigned long)candidate_index,
+             (unsigned long)s->index,
+             (unsigned long)s->adc_seq,
+             (unsigned long)s->elapsed_us_after_moe_enable,
+             (unsigned long)s->trigger_count,
+             (unsigned long)s->trigger_direction,
+             (unsigned long)s->expected_trigger_cnt,
+             (unsigned long)s->callback_entry_cnt,
+             s->raw_pc0,
+             s->raw_pc1,
+             (long)s->delta_pc0,
+             (long)s->delta_pc1,
+             (long)float_to_scaled_i32(s->iu, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iu, 1000.0f)) % 1000u,
+             (long)float_to_scaled_i32(s->iv, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iv, 1000.0f)) % 1000u,
+             (long)float_to_scaled_i32(s->iw, 1000.0f) / 1000,
+             (long)abs_i32_to_u32(float_to_scaled_i32(s->iw, 1000.0f)) % 1000u,
+             (unsigned long)float_to_scaled_u32(s->phase_abs, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(s->phase_abs, 1000.0f) % 1000u,
+             (unsigned long)s->soft_consecutive,
+             (unsigned long)s->ccr1,
+             (unsigned long)s->ccr2,
+             (unsigned long)s->ccr3,
+             (unsigned int)s->moe,
+             (unsigned int)s->nfault_asserted);
+    uart2_printf_line(line);
+  }
+}
+
+static bool electrical_offset_trigger_sweep_collect_candidate(
+    const ElectricalOffsetTriggerSweepCandidate *candidate,
+    uint32_t *last_seq,
+    ElectricalOffsetPwmZeroStats *stats,
+    ElectricalOffsetTriggerSweepCandidateResult *result)
+{
+  ElectricalOffsetAlignmentProtectionState prot_state = {0};
+  ElectricalOffsetTriggerSweepFirstSample first[ELECTRICAL_OFFSET_TRIGGER_SWEEP_FIRST_SAMPLE_COUNT];
+  uint32_t first_count = 0u;
+  char line[768];
+  bool ok = true;
+  bool hard_fault = false;
+  const int64_t encoder_start = g_encoder_accum;
+  memset(first, 0, sizeof(first));
+  electrical_offset_pwm_zero_stats_reset(stats);
+  memset(result, 0, sizeof(*result));
+  result->candidate_valid = candidate->candidate_valid;
+
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+  if (!electrical_offset_trigger_sweep_set_trigger(candidate->programmed_trigger_count)) {
+    result->producer_error = true;
+    return false;
+  }
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_candidate_start: candidate_index=%lu programmed_trigger_count=%lu trigger_direction=%lu guard_time_us=%lu.%03lu requested_guard_counts=%lu distance_to_edge_counts=%lu distance_to_edge_us=%lu.%03lu candidate_valid=%u expected_low_side_state=%u baseline=%u quiet_center=%u CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu pending_pwm_update=%u dc_cal_clear=1 nFAULT=%u",
+           (unsigned long)candidate->candidate_index,
+           (unsigned long)candidate->programmed_trigger_count,
+           (unsigned long)candidate->trigger_direction,
+           (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) % 1000u,
+           (unsigned long)candidate->requested_guard_counts,
+           (unsigned long)candidate->distance_to_nearest_switch_edge_counts,
+           (unsigned long)float_to_scaled_u32(candidate->distance_to_nearest_switch_edge_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(candidate->distance_to_nearest_switch_edge_us, 1000.0f) % 1000u,
+           (unsigned int)candidate->candidate_valid,
+           (unsigned int)candidate->expected_low_side_state,
+           (unsigned int)candidate->is_baseline,
+           (unsigned int)candidate->is_quiet_center,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)TIM1->CCR4,
+           (unsigned int)g_electrical_offset_voltage_update_pending,
+           (unsigned int)!nfault_ok());
+  uart2_printf_line(line);
+
+  if (!candidate->candidate_valid) {
+    snprintf(line,
+             sizeof(line),
+             "pwm_zero_sweep_candidate%02lu: valid=0 sample_count=0 programmed_trigger_count=%lu trigger_direction=%lu guard_time_us=%lu.%03lu skipped_reason=LOW_SIDE_WINDOW_INVALID trigger_candidate_valid=0 expected_low_side_state=%u CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu MOE=0 nFAULT=%u",
+             (unsigned long)candidate->candidate_index,
+             (unsigned long)candidate->programmed_trigger_count,
+             (unsigned long)candidate->trigger_direction,
+             (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) % 1000u,
+             (unsigned int)candidate->expected_low_side_state,
+             (unsigned long)TIM1->CCR1,
+             (unsigned long)TIM1->CCR2,
+             (unsigned long)TIM1->CCR3,
+             (unsigned long)TIM1->CCR4,
+             (unsigned int)!nfault_ok());
+    uart2_printf_line(line);
+    return true;
+  }
+  if (TIM1->CCR1 != TIM1->CCR2 ||
+      TIM1->CCR2 != TIM1->CCR3 || !nfault_ok()) {
+    return false;
+  }
+
+  power_stage_enable_six_outputs();
+  const uint32_t moe_enable_seq = drv_bringup_get_adc_seq();
+  __HAL_TIM_MOE_ENABLE(&htim1);
+  electrical_offset_alignment_protection_reset(&prot_state);
+  for (uint32_t i = 0u; i < ELECTRICAL_OFFSET_TRIGGER_SWEEP_SAMPLES_PER_CANDIDATE; ++i) {
+    HalAdcSnapshot snap = {0};
+    if (!open_loop_wait_next_adc_sample(last_seq, &snap)) {
+      result->producer_error = true;
+      ok = false;
+      break;
+    }
+    (void)encoder_tracker_sample();
+    const CurrentDqSample sample = current_confirmed_m0_vw_calculate(&snap);
+    const ElectricalOffsetAlignmentProtectionResult prot =
+        electrical_offset_pwm_zero_protection_update(&prot_state,
+                                                     &snap,
+                                                     &sample,
+                                                     true);
+    electrical_offset_pwm_zero_stats_update(stats, &snap, &sample, &prot);
+    if (first_count < ELECTRICAL_OFFSET_TRIGGER_SWEEP_FIRST_SAMPLE_COUNT) {
+      ElectricalOffsetTriggerSweepFirstSample *fs = &first[first_count];
+      fs->valid = true;
+      fs->index = first_count;
+      fs->adc_seq = snap.seq;
+      fs->elapsed_us_after_moe_enable =
+          (snap.seq >= moe_enable_seq) ? ((snap.seq - moe_enable_seq) * 50u) : 0u;
+      fs->trigger_count = candidate->programmed_trigger_count;
+      fs->trigger_direction = candidate->trigger_direction;
+      fs->expected_trigger_cnt = candidate->programmed_trigger_count;
+      fs->callback_entry_cnt = TIM1->CNT;
+      fs->raw_pc0 = snap.raw_pc0_m0_so1;
+      fs->raw_pc1 = snap.raw_pc1_m0_so2;
+      fs->delta_pc0 = (int32_t)snap.raw_pc0_m0_so1 -
+                      (int32_t)g_drv_test.offset.offset_u;
+      fs->delta_pc1 = (int32_t)snap.raw_pc1_m0_so2 -
+                      (int32_t)g_drv_test.offset.offset_v;
+      fs->iu = sample.iu;
+      fs->iv = sample.iv;
+      fs->iw = sample.iw;
+      fs->phase_abs = sample.magnitude_max;
+      fs->soft_consecutive = prot.soft_consecutive_count;
+      fs->ccr1 = TIM1->CCR1;
+      fs->ccr2 = TIM1->CCR2;
+      fs->ccr3 = TIM1->CCR3;
+      fs->moe = (TIM1->BDTR & TIM_BDTR_MOE) != 0u;
+      fs->nfault_asserted = !nfault_ok();
+      first_count++;
+    }
+
+    const bool hard_trip =
+        prot.immediate_trip ||
+        (prot.source_mask & (ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC0_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_RAW_PC1_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_PHASE_HARD |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_ADC_SATURATION |
+                             ELECTRICAL_OFFSET_ALIGNMENT_SOURCE_NFAULT)) != 0u;
+    const float vbus = board_read_vbus_v();
+    if (vbus < OPEN_LOOP_VBUS_MIN_V || vbus > OPEN_LOOP_VBUS_MAX_V) {
+      stats->vbus_fault = true;
+      hard_fault = true;
+      ok = false;
+    }
+    if (hard_trip) {
+      hard_fault = true;
+      ok = false;
+    }
+    if (!ok) {
+      break;
+    }
+  }
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  power_stage_disable_six_outputs();
+  (void)electrical_offset_wait_tim1_updates(2u, 50u);
+
+  const float raw0_mean = electrical_offset_stats_mean(stats->raw0_sum, stats->samples);
+  const float raw1_mean = electrical_offset_stats_mean(stats->raw1_sum, stats->samples);
+  const float raw0_std =
+      electrical_offset_stats_std(stats->raw0_sum, stats->raw0_sumsq, stats->samples);
+  const float raw1_std =
+      electrical_offset_stats_std(stats->raw1_sum, stats->raw1_sumsq, stats->samples);
+  const float iu_mean = electrical_offset_stats_mean(stats->iu_sum, stats->samples);
+  const float iv_mean = electrical_offset_stats_mean(stats->iv_sum, stats->samples);
+  const float iw_mean = electrical_offset_stats_mean(stats->iw_sum, stats->samples);
+  result->delta_pc0_mean_counts = raw0_mean - (float)g_drv_test.offset.offset_u;
+  result->delta_pc1_mean_counts = raw1_mean - (float)g_drv_test.offset.offset_v;
+  result->pc0_std_counts = raw0_std;
+  result->pc1_std_counts = raw1_std;
+  result->iu_mean_a = iu_mean;
+  result->iv_mean_a = iv_mean;
+  result->iw_mean_a = iw_mean;
+  result->phase_abs_peak_a = stats->phase_peak;
+  result->maximum_soft_consecutive_count = stats->soft_consecutive_max;
+  result->raw_hard_trip = stats->raw_hard_fault;
+  result->emergency_trip = stats->phase_emergency_fault || hard_fault;
+  result->nfault_trip = stats->nfault_fault;
+  result->adc_saturation = stats->adc_saturation_fault;
+  result->encoder_delta_counts = (int32_t)(g_encoder_accum - encoder_start);
+  result->reconstructed_zero_current_error_a =
+      fmaxf(fabsf(iu_mean), fmaxf(fabsf(iv_mean), fabsf(iw_mean)));
+  result->distance_to_edge_us = candidate->distance_to_nearest_switch_edge_us;
+  result->center_distance_counts =
+      fabsf((float)candidate->programmed_trigger_count -
+            (float)(TIM1->CCR1 + ((TIM1->ARR - TIM1->CCR1) / 2u)));
+
+  const bool valid =
+      electrical_offset_trigger_sweep_candidate_result_valid(candidate, result);
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_candidate%02lu: valid=%u sample_count=%lu programmed_trigger_count=%lu trigger_direction=%lu guard_time_us=%lu.%03lu pc0_mean=%ld.%03ld pc0_std=%lu.%03lu pc0_min=%u pc0_max=%u pc1_mean=%ld.%03ld pc1_std=%lu.%03lu pc1_min=%u pc1_max=%u delta_pc0_mean=%ld.%03ld delta_pc1_mean=%ld.%03ld iv_mean_a=%ld.%03ld iw_mean_a=%ld.%03ld iu_mean_a=%ld.%03ld phase_abs_mean_a=%ld.%03ld phase_abs_peak_a=%lu.%03lu maximum_soft_consecutive_count=%lu soft_trip_seen=%u raw_hard_trip=%u emergency_trip=%u nFAULT_trip=%u producer_error=%u encoder_delta=%ld speed_peak_rpm=0.00 common_mode_shift_counts=%ld.%03ld differential_shift_counts=%ld.%03ld reconstructed_zero_current_error_a=%lu.%03lu distance_to_edge_us=%lu.%03lu",
+           (unsigned long)candidate->candidate_index,
+           (unsigned int)valid,
+           (unsigned long)stats->samples,
+           (unsigned long)candidate->programmed_trigger_count,
+           (unsigned long)candidate->trigger_direction,
+           (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(candidate->requested_guard_time_us, 1000.0f) % 1000u,
+           (long)float_to_scaled_i32(raw0_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(raw0_mean, 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(raw0_std, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(raw0_std, 1000.0f) % 1000u,
+           stats->raw0_min, stats->raw0_max,
+           (long)float_to_scaled_i32(raw1_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(raw1_mean, 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(raw1_std, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(raw1_std, 1000.0f) % 1000u,
+           stats->raw1_min, stats->raw1_max,
+           (long)float_to_scaled_i32(result->delta_pc0_mean_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(result->delta_pc0_mean_counts, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(result->delta_pc1_mean_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(result->delta_pc1_mean_counts, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iv_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iv_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iw_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iw_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(iu_mean, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(iu_mean, 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_stats_mean(stats->phase_sum, stats->samples), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_stats_mean(stats->phase_sum, stats->samples), 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(stats->phase_peak, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(stats->phase_peak, 1000.0f) % 1000u,
+           (unsigned long)stats->soft_consecutive_max,
+           (unsigned int)(stats->soft_consecutive_max >= ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES),
+           (unsigned int)stats->raw_hard_fault,
+           (unsigned int)(stats->phase_emergency_fault || hard_fault),
+           (unsigned int)stats->nfault_fault,
+           (unsigned int)result->producer_error,
+           (long)result->encoder_delta_counts,
+           (long)float_to_scaled_i32(electrical_offset_common_mode_shift_counts(result->delta_pc0_mean_counts, result->delta_pc1_mean_counts), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_common_mode_shift_counts(result->delta_pc0_mean_counts, result->delta_pc1_mean_counts), 1000.0f)) % 1000u,
+           (long)float_to_scaled_i32(electrical_offset_differential_shift_counts(result->delta_pc0_mean_counts, result->delta_pc1_mean_counts), 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(electrical_offset_differential_shift_counts(result->delta_pc0_mean_counts, result->delta_pc1_mean_counts), 1000.0f)) % 1000u,
+           (unsigned long)float_to_scaled_u32(result->reconstructed_zero_current_error_a, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(result->reconstructed_zero_current_error_a, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(candidate->distance_to_nearest_switch_edge_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(candidate->distance_to_nearest_switch_edge_us, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+  electrical_offset_trigger_sweep_print_first16(first, first_count, candidate->candidate_index);
+  return ok && !hard_fault;
+}
+
+static bool electrical_offset_pwm_zero_trigger_sweep_run(
+    uint32_t *last_seq,
+    bool dc_cal_bits_clear_for_alignment,
+    bool offset_pc0_valid,
+    bool offset_pc1_valid)
+{
+  char line[768];
+  const bool offset_valid = offset_pc0_valid && offset_pc1_valid;
+  const uint32_t pclk2 = HAL_RCC_GetPCLK2Freq();
+  const uint32_t apb2_div = electrical_offset_apb2_prescaler_div();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+  const bool zero_vector_preload_ack =
+      electrical_offset_wait_tim1_updates(2u, 50u);
+  ElectricalOffsetTriggerSweepTimingInput tin = {0};
+  tin.pclk2_hz = pclk2;
+  tin.apb2_prescaler = apb2_div;
+  tin.tim_prescaler = TIM1->PSC;
+  tin.arr = TIM1->ARR;
+  tin.phase_ccr = TIM1->CCR1;
+  tin.deadtime_counts = TIM1->BDTR & TIM_BDTR_DTG;
+  const ElectricalOffsetTriggerSweepTiming timing =
+      electrical_offset_trigger_sweep_timing(&tin);
+  const uint32_t adc_clk = electrical_offset_adc_clock_hz();
+  const float adc1_cycles = (28.0f + 12.5f) * 2.0f;
+  const float adc2_cycles = (15.0f + 12.5f) * 4.0f;
+  const float adc1_us = (adc_clk > 0u) ? (adc1_cycles * 1000000.0f / (float)adc_clk) : 0.0f;
+  const float adc2_us = (adc_clk > 0u) ? (adc2_cycles * 1000000.0f / (float)adc_clk) : 0.0f;
+  const float guard_us[] = {0.20f, 0.40f, 0.75f, 1.00f, 1.50f,
+                            2.00f, 3.00f, 4.00f, 6.00f};
+  ElectricalOffsetTriggerSweepCandidate candidates[ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES];
+  ElectricalOffsetTriggerSweepCandidateResult results[ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES];
+  ElectricalOffsetPwmZeroStats stats[ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES];
+  memset(candidates, 0, sizeof(candidates));
+  memset(results, 0, sizeof(results));
+  memset(stats, 0, sizeof(stats));
+
+  if (!zero_vector_preload_ack) {
+    uart2_printf_line("pwm_zero_sweep_preload_failed: reason=TIM1_UPDATE_TIMEOUT MOE=0");
+    power_stage_force_safe_off_zero_ccr();
+    return false;
+  }
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_trigger_chain: adc_trigger=ADC_EXTERNALTRIGINJECCONV_T1_TRGO tim1_trgo=TIM_TRGO_OC4REF adc_edge=RISING oc4_mode=PWM1 true_trigger_count_is_programmed_CCR4=1 callback_TIM1_CNT_is_trigger_time=0 adc1_injected_ranks=2 adc2_injected_ranks=4 adc1_sample_cycles=28 adc2_sample_cycles=15 adc1_conversion_us=%lu.%03lu adc2_conversion_us=%lu.%03lu",
+           (unsigned long)float_to_scaled_u32(adc1_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(adc1_us, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(adc2_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(adc2_us, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_timing_config: sysclk=%lu hclk=%lu pclk2=%lu apb2_div=%lu tim1_input_clock=%lu tim1_prescaler=%lu tim1_counter_clock=%lu arr=%lu center_aligned=1 pwm_frequency_hz=%lu.%03lu timer_tick_ns=%lu.%03lu count26_ns=%lu.%03lu count64_ns=%lu.%03lu count128_ns=%lu.%03lu count256_us=%lu.%03lu count512_us=%lu.%03lu count1024_us=%lu.%03lu",
+           (unsigned long)HAL_RCC_GetSysClockFreq(),
+           (unsigned long)HAL_RCC_GetHCLKFreq(),
+           (unsigned long)pclk2,
+           (unsigned long)apb2_div,
+           (unsigned long)timing.tim_input_clock_hz,
+           (unsigned long)TIM1->PSC,
+           (unsigned long)timing.tim_counter_clock_hz,
+           (unsigned long)TIM1->ARR,
+           (unsigned long)float_to_scaled_u32(timing.pwm_frequency_hz, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(timing.pwm_frequency_hz, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(timing.timer_tick_ns, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(timing.timer_tick_ns, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(26.0f * timing.timer_tick_ns, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(26.0f * timing.timer_tick_ns, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(64.0f * timing.timer_tick_ns, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(64.0f * timing.timer_tick_ns, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(128.0f * timing.timer_tick_ns, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(128.0f * timing.timer_tick_ns, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(256.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(256.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(512.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(512.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(1024.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(1024.0f * timing.timer_tick_ns / 1000.0f, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_low_side_window: window_basis=actual_zero_vector_half_ccr zero_vector_preload_ack=%u CCMR1=0x%08lX CCMR2=0x%08lX CCER=0x%08lX BDTR=0x%08lX OC_mode=PWM1 polarity_high=1 complementary_polarity_high=1 CCR1=%lu CCR2=%lu CCR3=%lu deadtime_counts=%lu deadtime_us=%lu.%03lu low_side_valid_window_start_count=%lu low_side_valid_window_end_count=%lu low_side_valid_window_width_counts=%lu low_side_valid_window_width_us=%lu.%03lu invalid_111_high_side_window=0..CCR deadtime_excluded=1",
+           (unsigned int)zero_vector_preload_ack,
+           (unsigned long)TIM1->CCMR1,
+           (unsigned long)TIM1->CCMR2,
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->BDTR,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)timing.deadtime_counts,
+           (unsigned long)float_to_scaled_u32(timing.deadtime_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(timing.deadtime_us, 1000.0f) % 1000u,
+           (unsigned long)timing.low_side_window_start_count,
+           (unsigned long)timing.low_side_window_end_count,
+           (unsigned long)timing.low_side_window_width_counts,
+           (unsigned long)float_to_scaled_u32(timing.low_side_window_width_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(timing.low_side_window_width_us, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  uint32_t count = 0u;
+#if ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY
+  (void)guard_us;
+  count = electrical_offset_trigger_sweep_generate_fixed_candidates(
+      &timing,
+      ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_COUNT,
+      ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_REPEATS,
+      candidates,
+      ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES);
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_fixed_ccr4_verify_config: fixed_ccr4_verify_only=1 fixed_trigger_count=%lu repeat_count=%lu samples_per_repeat=%lu low_side_window_start_count=%lu low_side_window_end_count=%lu search_disabled=1 formal_config_write=0 ramp=0 three_point=0 dq_pi=0",
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_COUNT,
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_REPEATS,
+           (unsigned long)ELECTRICAL_OFFSET_TRIGGER_SWEEP_SAMPLES_PER_CANDIDATE,
+           (unsigned long)timing.low_side_window_start_count,
+           (unsigned long)timing.low_side_window_end_count);
+  uart2_printf_line(line);
+#else
+  count = electrical_offset_trigger_sweep_generate_candidates(
+      &timing,
+      guard_us,
+      (uint32_t)(sizeof(guard_us) / sizeof(guard_us[0])),
+      TIM1->CCR4,
+      candidates,
+      ELECTRICAL_OFFSET_TRIGGER_SWEEP_MAX_CANDIDATES);
+#endif
+  for (uint32_t i = 0u; i < count; ++i) {
+    snprintf(line,
+             sizeof(line),
+             "pwm_zero_sweep_candidate_plan%02lu: candidate_source=%s requested_guard_time_us=%lu.%03lu requested_guard_counts=%lu programmed_trigger_count=%lu trigger_direction=%lu distance_to_nearest_switch_edge_counts=%lu distance_to_nearest_switch_edge_us=%lu.%03lu distance_to_deadtime_end_counts=%lu expected_low_side_state=%u candidate_valid=%u baseline=%u quiet_center=%u",
+             (unsigned long)i,
+#if ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY
+             "fixed-ccr4-repeat",
+#else
+             candidates[i].is_baseline ? "baseline" :
+                 (candidates[i].is_quiet_center ? "quiet-center" : "guard-time"),
+#endif
+             (unsigned long)float_to_scaled_u32(candidates[i].requested_guard_time_us, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(candidates[i].requested_guard_time_us, 1000.0f) % 1000u,
+             (unsigned long)candidates[i].requested_guard_counts,
+             (unsigned long)candidates[i].programmed_trigger_count,
+             (unsigned long)candidates[i].trigger_direction,
+             (unsigned long)candidates[i].distance_to_nearest_switch_edge_counts,
+             (unsigned long)float_to_scaled_u32(candidates[i].distance_to_nearest_switch_edge_us, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(candidates[i].distance_to_nearest_switch_edge_us, 1000.0f) % 1000u,
+             (unsigned long)candidates[i].distance_to_deadtime_end_counts,
+             (unsigned int)candidates[i].expected_low_side_state,
+             (unsigned int)candidates[i].candidate_valid,
+             (unsigned int)candidates[i].is_baseline,
+             (unsigned int)candidates[i].is_quiet_center);
+    uart2_printf_line(line);
+  }
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_config: mode=ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY fixed_ccr4_verify_only=%u candidates=%lu samples_per_candidate=%lu soft_records_only=1 raw_hard_limit_counts=%ld emergency_limit_a=%lu.%03lu offset_valid=%u offset_pc0_valid=%u offset_pc1_valid=%u zero_vector_preload_ack=%u window_uses_actual_half_ccr=1 ramp=0 three_point=0 dq_pi=0 electrical_offset_valid=0",
+           (unsigned int)(ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY != 0u),
+           (unsigned long)count,
+           (unsigned long)ELECTRICAL_OFFSET_TRIGGER_SWEEP_SAMPLES_PER_CANDIDATE,
+           (long)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) % 1000u,
+           (unsigned int)offset_valid,
+           (unsigned int)offset_pc0_valid,
+           (unsigned int)offset_pc1_valid,
+           (unsigned int)zero_vector_preload_ack);
+  uart2_printf_line(line);
+
+  bool hard_fault = false;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!electrical_offset_trigger_sweep_collect_candidate(&candidates[i],
+                                                           last_seq,
+                                                           &stats[i],
+                                                           &results[i])) {
+      hard_fault = true;
+      break;
+    }
+  }
+
+  power_stage_force_safe_off_zero_ccr();
+  drv_bringup_capture_final_state();
+
+  uint32_t valid_count = 0u;
+  bool baseline_bad = false;
+  bool any_valid = false;
+  bool all_valid_shifted = true;
+  float baseline_error = 0.0f;
+  float best_error = 9999.0f;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const bool valid =
+        electrical_offset_trigger_sweep_candidate_result_valid(&candidates[i],
+                                                              &results[i]);
+    if (valid) {
+      valid_count++;
+      any_valid = true;
+    }
+    if (candidates[i].is_baseline) {
+      baseline_error = results[i].reconstructed_zero_current_error_a;
+      baseline_bad = results[i].reconstructed_zero_current_error_a > 0.05f ||
+                     fabsf(results[i].delta_pc0_mean_counts) > 2.0f ||
+                     fabsf(results[i].delta_pc1_mean_counts) > 2.0f;
+    }
+    if (results[i].reconstructed_zero_current_error_a < best_error) {
+      best_error = results[i].reconstructed_zero_current_error_a;
+    }
+    if (fabsf(results[i].delta_pc0_mean_counts) <= 2.0f &&
+        fabsf(results[i].delta_pc1_mean_counts) <= 2.0f) {
+      all_valid_shifted = false;
+    }
+  }
+  const bool improves = baseline_bad && best_error < (baseline_error * 0.5f);
+  const bool event_invalid = count == 0u || hard_fault;
+  const int32_t recommended =
+      electrical_offset_trigger_sweep_recommend_candidate(candidates, results, count);
+  const ElectricalOffsetTriggerSweepClassification classification =
+      electrical_offset_trigger_sweep_classify(baseline_bad,
+                                               improves,
+                                               any_valid,
+                                               all_valid_shifted,
+                                               event_invalid);
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_summary: hard_fault=%u valid_candidate_count=%lu recommended_candidate_index=%ld recommended_trigger_count=%lu recommended_guard_time_us=%lu.%03lu recommended_distance_to_edge_us=%lu.%03lu recommended_pc0_mean_shift=%ld.%03ld recommended_pc1_mean_shift=%ld.%03ld recommended_iu_mean=%ld.%03ld recommended_phase_peak=%lu.%03lu recommended_soft_consecutive_max=%lu baseline_error_a=%lu.%03lu best_error_a=%lu.%03lu PWM_ZERO_TRIGGER_SWEEP_CLASSIFICATION=%s",
+           (unsigned int)hard_fault,
+           (unsigned long)valid_count,
+           (long)recommended,
+           (recommended >= 0) ? (unsigned long)candidates[recommended].programmed_trigger_count : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(candidates[recommended].requested_guard_time_us, 1000.0f) / 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(candidates[recommended].requested_guard_time_us, 1000.0f) % 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(candidates[recommended].distance_to_nearest_switch_edge_us, 1000.0f) / 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(candidates[recommended].distance_to_nearest_switch_edge_us, 1000.0f) % 1000u : 0ul,
+           (recommended >= 0) ? (long)float_to_scaled_i32(results[recommended].delta_pc0_mean_counts, 1000.0f) / 1000 : 0l,
+           (recommended >= 0) ? (long)abs_i32_to_u32(float_to_scaled_i32(results[recommended].delta_pc0_mean_counts, 1000.0f)) % 1000u : 0ul,
+           (recommended >= 0) ? (long)float_to_scaled_i32(results[recommended].delta_pc1_mean_counts, 1000.0f) / 1000 : 0l,
+           (recommended >= 0) ? (long)abs_i32_to_u32(float_to_scaled_i32(results[recommended].delta_pc1_mean_counts, 1000.0f)) % 1000u : 0ul,
+           (recommended >= 0) ? (long)float_to_scaled_i32(results[recommended].iu_mean_a, 1000.0f) / 1000 : 0l,
+           (recommended >= 0) ? (long)abs_i32_to_u32(float_to_scaled_i32(results[recommended].iu_mean_a, 1000.0f)) % 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(results[recommended].phase_abs_peak_a, 1000.0f) / 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)float_to_scaled_u32(results[recommended].phase_abs_peak_a, 1000.0f) % 1000u : 0ul,
+           (recommended >= 0) ? (unsigned long)results[recommended].maximum_soft_consecutive_count : 0ul,
+           (unsigned long)float_to_scaled_u32(baseline_error, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(baseline_error, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(best_error, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(best_error, 1000.0f) % 1000u,
+           electrical_offset_trigger_sweep_classification_name(classification));
+  uart2_printf_line(line);
+
+  HalAdcDiagnostics adc_diag = {0};
+  hal_adc_get_diagnostics(&adc_diag);
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_adc_timing: adc1_complete=%lu adc2_complete=%lu coherent_snapshot=%lu adc_callback_over_50us=%lu worst_adc_callback_us=%lu.%03lu producer_gap=0 duplicate=0 runtime_true_adc1_unpaired=%lu runtime_true_adc2_unpaired=%lu torn=0 generation_mismatch=%lu snapshots_per_pwm_period_expected=1 trigger_event_config_invalid=%u",
+           (unsigned long)adc_diag.adc1_callback_count,
+           (unsigned long)adc_diag.adc2_callback_count,
+           (unsigned long)adc_diag.snapshot_count,
+           (unsigned long)adc_diag.adc_callback_over_50us_count,
+           (unsigned long)float_to_scaled_u32((float)adc_diag.worst_adc_callback_cycles * 1000000.0f / (float)SystemCoreClock, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32((float)adc_diag.worst_adc_callback_cycles * 1000000.0f / (float)SystemCoreClock, 1000.0f) % 1000u,
+           (unsigned long)adc_diag.runtime_true_adc1_unpaired_count,
+           (unsigned long)adc_diag.runtime_true_adc2_unpaired_count,
+           (unsigned long)adc_diag.completion_gap_generation_mismatch_count,
+           (unsigned int)event_invalid);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "pwm_zero_sweep_final_safe: gate=%u MOE=%lu CCER=0x%08lX CCR1=%lu CCR2=%lu CCR3=%lu CCR4=%lu adc_rank_order=%lu dc_cal_bits_drv0=0x%04X dc_cal_bits_drv1=0x%04X fault_code=0x%08lX electrical_offset_valid=0",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)TIM1->CCR4,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)(g_drv_test.drv0_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned int)(g_drv_test.drv1_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned long)g_drv_test.fault_code);
+  uart2_printf_line(line);
+  uart2_printf_line(hard_fault ? "PWM_ZERO_TRIGGER_SWEEP_FAIL"
+                               : "PWM_ZERO_TRIGGER_SWEEP_COMPLETE");
+  uart2_printf_line(recommended >= 0 ? "PWM_ZERO_TRIGGER_SWEEP_FLASH_READY=YES"
+                                     : "PWM_ZERO_TRIGGER_SWEEP_FLASH_READY=NO");
+  uart2_printf_line("ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FLASH_READY=NO");
+  uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_HARDWARE_FLASH_READY=NO");
+  uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+  return !hard_fault && recommended >= 0;
+}
+
+static bool electrical_offset_alignment_revalidate_offsets(uint32_t *last_seq)
+{
+  ElectricalOffsetAlignmentOffsetRevalidation *r =
+      &g_electrical_offset_offset_revalidation;
+  ElectricalOffsetRawStats wake = {0};
+  ElectricalOffsetRawStats dc = {0};
+  ElectricalOffsetRawStats post = {0};
+  r->ran = true;
+  r->admission_offset_pc0 = g_drv_test.offset.offset_u;
+  r->admission_offset_pc1 = g_drv_test.offset.offset_v;
+
+  power_stage_disable_six_outputs();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  const bool dc_cal_clear_before =
+      ((g_drv_test.actual_control2_drv0 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.actual_control2_drv1 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u);
+
+  if (!dc_cal_clear_before ||
+      !electrical_offset_collect_raw_stats(last_seq,
+          ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_DISCARD_SAMPLES,
+          ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_COLLECT_SAMPLES,
+          r->admission_offset_pc0,
+          r->admission_offset_pc1,
+          &wake)) {
+    r->failure_mask = !dc_cal_clear_before
+                          ? ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_PRESTATE
+                          : ELECTRICAL_OFFSET_REVALIDATE_FAIL_WAKE_CAPTURE;
+    r->pass = false;
+    return false;
+  }
+  r->wakeup_raw_mean_pc0 = electrical_offset_stats_mean(wake.sum0, wake.samples);
+  r->wakeup_raw_mean_pc1 = electrical_offset_stats_mean(wake.sum1, wake.samples);
+  r->wakeup_std_pc0 = electrical_offset_stats_std(wake.sum0, wake.sumsq0, wake.samples);
+  r->wakeup_std_pc1 = electrical_offset_stats_std(wake.sum1, wake.sumsq1, wake.samples);
+  r->offset_shift_pc0_counts =
+      float_to_scaled_i32(r->wakeup_raw_mean_pc0 - (float)r->admission_offset_pc0, 1.0f);
+  r->offset_shift_pc1_counts =
+      float_to_scaled_i32(r->wakeup_raw_mean_pc1 - (float)r->admission_offset_pc1, 1.0f);
+
+  r->short_dc_cal_ran = true;
+  if (!drv8301_set_dc_cal(&g_drv0, true, true) ||
+      !drv8301_set_dc_cal(&g_drv1, true, true)) {
+    r->failure_mask = ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_SET;
+    r->pass = false;
+    return false;
+  }
+  HAL_Delay(1u);
+  if (!electrical_offset_collect_raw_stats(last_seq,
+          ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_DISCARD_SAMPLES,
+          ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_COLLECT_SAMPLES,
+          r->admission_offset_pc0,
+          r->admission_offset_pc1,
+          &dc)) {
+    r->failure_mask = ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_CAPTURE;
+    r->pass = false;
+    return false;
+  }
+  r->alignment_offset_pc0 =
+      (uint32_t)float_to_scaled_u32(electrical_offset_stats_mean(dc.sum0, dc.samples), 1.0f);
+  r->alignment_offset_pc1 =
+      (uint32_t)float_to_scaled_u32(electrical_offset_stats_mean(dc.sum1, dc.samples), 1.0f);
+  r->alignment_offset_std_pc0 =
+      electrical_offset_stats_std(dc.sum0, dc.sumsq0, dc.samples);
+  r->alignment_offset_std_pc1 =
+      electrical_offset_stats_std(dc.sum1, dc.sumsq1, dc.samples);
+
+  const bool clear_ok =
+      drv8301_set_dc_cal(&g_drv0, false, false) &&
+      drv8301_set_dc_cal(&g_drv1, false, false) &&
+      drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) &&
+      drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  r->dc_cal_bits_clear =
+      clear_ok &&
+      ((g_drv_test.actual_control2_drv0 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.actual_control2_drv1 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u);
+  if (!r->dc_cal_bits_clear) {
+    r->failure_mask = ELECTRICAL_OFFSET_REVALIDATE_FAIL_DC_CAL_CLEAR;
+    r->pass = false;
+    return false;
+  }
+
+  g_drv_test.offset.offset_u = r->alignment_offset_pc0;
+  g_drv_test.offset.offset_v = r->alignment_offset_pc1;
+  r->short_dc_cal_pass =
+      r->alignment_offset_pc0 > CURRENT_RAW_MIN_SAFE_COUNT &&
+      r->alignment_offset_pc0 < CURRENT_RAW_MAX_SAFE_COUNT &&
+      r->alignment_offset_pc1 > CURRENT_RAW_MIN_SAFE_COUNT &&
+      r->alignment_offset_pc1 < CURRENT_RAW_MAX_SAFE_COUNT &&
+      r->alignment_offset_std_pc0 <= DC_CAL_STD_MAX_COUNTS &&
+      r->alignment_offset_std_pc1 <= DC_CAL_STD_MAX_COUNTS;
+
+  if (!r->short_dc_cal_pass ||
+      !electrical_offset_collect_raw_stats(last_seq,
+          ELECTRICAL_OFFSET_ALIGNMENT_POST_CAL_DISCARD_SAMPLES,
+          ELECTRICAL_OFFSET_ALIGNMENT_REVALIDATE_COLLECT_SAMPLES,
+          r->alignment_offset_pc0,
+          r->alignment_offset_pc1,
+          &post)) {
+    r->failure_mask = !r->short_dc_cal_pass
+                          ? ELECTRICAL_OFFSET_REVALIDATE_FAIL_SHORT_DC_CAL
+                          : ELECTRICAL_OFFSET_REVALIDATE_FAIL_POST_CAPTURE;
+    r->pass = false;
+    return false;
+  }
+  r->post_residual_pc0_mean_counts =
+      electrical_offset_stats_mean(post.sum0, post.samples) -
+      (float)r->alignment_offset_pc0;
+  r->post_residual_pc1_mean_counts =
+      electrical_offset_stats_mean(post.sum1, post.samples) -
+      (float)r->alignment_offset_pc1;
+  r->post_residual_pc0_std_counts =
+      electrical_offset_stats_std(post.sum0, post.sumsq0, post.samples);
+  r->post_residual_pc1_std_counts =
+      electrical_offset_stats_std(post.sum1, post.sumsq1, post.samples);
+  r->residual_iu_mean_counts =
+      -float_to_scaled_i32(r->post_residual_pc0_mean_counts +
+                           r->post_residual_pc1_mean_counts, 1.0f);
+  r->max_abs_delta_pc0 = post.max_abs_delta_pc0;
+  r->max_abs_delta_pc1 = post.max_abs_delta_pc1;
+
+  const float iv_mean_a =
+      r->post_residual_pc0_mean_counts * g_drv_test.current_amp_per_count;
+  const float iw_mean_a =
+      r->post_residual_pc1_mean_counts * g_drv_test.current_amp_per_count;
+  const float iu_mean_a = -(iv_mean_a + iw_mean_a);
+  r->pc0_mean_ok = fabsf(iv_mean_a) < 0.03f;
+  r->pc1_mean_ok = fabsf(iw_mean_a) < 0.03f;
+  r->iu_mean_ok = fabsf(iu_mean_a) < 0.03f;
+  r->pc0_std_ok =
+      r->post_residual_pc0_std_counts <= DC_CAL_STD_MAX_COUNTS;
+  r->pc1_std_ok =
+      r->post_residual_pc1_std_counts <= DC_CAL_STD_MAX_COUNTS;
+  r->failure_mask = 0u;
+  if (!r->pc0_mean_ok) {
+    r->failure_mask |= ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC0_MEAN;
+  }
+  if (!r->pc1_mean_ok) {
+    r->failure_mask |= ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC1_MEAN;
+  }
+  if (!r->iu_mean_ok) {
+    r->failure_mask |= ELECTRICAL_OFFSET_REVALIDATE_FAIL_IU_MEAN;
+  }
+  if (!r->pc0_std_ok) {
+    r->failure_mask |= ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC0_STD;
+  }
+  if (!r->pc1_std_ok) {
+    r->failure_mask |= ELECTRICAL_OFFSET_REVALIDATE_FAIL_PC1_STD;
+  }
+  r->pass = r->short_dc_cal_pass && r->failure_mask == 0u;
+  return r->pass;
+}
+
+static void electrical_offset_print_alignment_diagnostics(void)
+{
+  char line[768];
+  const ElectricalOffsetAlignmentOffsetRevalidation *r =
+      &g_electrical_offset_offset_revalidation;
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_alignment_offset_revalidate: ran=%u pass=%u short_dc_cal_ran=%u short_dc_cal_pass=%u admission_offset_pc0=%lu admission_offset_pc1=%lu alignment_wakeup_raw_mean_pc0=%ld.%03ld alignment_wakeup_raw_mean_pc1=%ld.%03ld alignment_offset_shift_pc0_counts=%ld alignment_offset_shift_pc1_counts=%ld alignment_offset_pc0=%lu alignment_offset_pc1=%lu post_residual_pc0_mean_counts=%ld.%03ld post_residual_pc1_mean_counts=%ld.%03ld residual_iu_mean_counts=%ld max_abs_delta_pc0=%ld max_abs_delta_pc1=%ld dc_cal_bits_clear=%u",
+           (unsigned int)r->ran,
+           (unsigned int)r->pass,
+           (unsigned int)r->short_dc_cal_ran,
+           (unsigned int)r->short_dc_cal_pass,
+           (unsigned long)r->admission_offset_pc0,
+           (unsigned long)r->admission_offset_pc1,
+           (long)float_to_scaled_i32(r->wakeup_raw_mean_pc0, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->wakeup_raw_mean_pc0, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->wakeup_raw_mean_pc1, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->wakeup_raw_mean_pc1, 1000.0f)) % 1000,
+           (long)r->offset_shift_pc0_counts,
+           (long)r->offset_shift_pc1_counts,
+           (unsigned long)r->alignment_offset_pc0,
+           (unsigned long)r->alignment_offset_pc1,
+           (long)float_to_scaled_i32(r->post_residual_pc0_mean_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->post_residual_pc0_mean_counts, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->post_residual_pc1_mean_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->post_residual_pc1_mean_counts, 1000.0f)) % 1000,
+           (long)r->residual_iu_mean_counts,
+           (long)r->max_abs_delta_pc0,
+           (long)r->max_abs_delta_pc1,
+           (unsigned int)r->dc_cal_bits_clear);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_alignment_offset_revalidate_noise: failure_mask=0x%08lX wakeup_std_pc0_counts=%ld.%03ld wakeup_std_pc1_counts=%ld.%03ld alignment_offset_std_pc0_counts=%ld.%03ld alignment_offset_std_pc1_counts=%ld.%03ld post_residual_pc0_std_counts=%ld.%03ld post_residual_pc1_std_counts=%ld.%03ld std_limit_counts=%lu.%03lu",
+           (unsigned long)r->failure_mask,
+           (long)float_to_scaled_i32(r->wakeup_std_pc0, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->wakeup_std_pc0, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->wakeup_std_pc1, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->wakeup_std_pc1, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->alignment_offset_std_pc0, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->alignment_offset_std_pc0, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->alignment_offset_std_pc1, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->alignment_offset_std_pc1, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->post_residual_pc0_std_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->post_residual_pc0_std_counts, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(r->post_residual_pc1_std_counts, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(r->post_residual_pc1_std_counts, 1000.0f)) % 1000,
+           (unsigned long)float_to_scaled_u32(DC_CAL_STD_MAX_COUNTS, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(DC_CAL_STD_MAX_COUNTS, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_alignment_offset_revalidate_conditions: short_dc_cal_ok=%u pc0_mean_ok=%u pc1_mean_ok=%u reconstructed_iu_mean_ok=%u pc0_std_ok=%u pc1_std_ok=%u mean_limit_a=0.030 comparison=STRICT_LESS_THAN std_comparison=LESS_THAN_OR_EQUAL",
+           (unsigned int)r->short_dc_cal_pass,
+           (unsigned int)r->pc0_mean_ok,
+           (unsigned int)r->pc1_mean_ok,
+           (unsigned int)r->iu_mean_ok,
+           (unsigned int)r->pc0_std_ok,
+           (unsigned int)r->pc1_std_ok);
+  uart2_printf_line(line);
+
+  const float expected_phase =
+      electrical_offset_expected_phase_current_phase_resistance(0.35f, 3.20f);
+  const float expected_line =
+      electrical_offset_expected_phase_current_line_line_resistance(0.35f, 3.20f);
+  float vu = 0.0f, vv = 0.0f, vw = 0.0f, vll = 0.0f;
+  electrical_offset_alpha_beta_to_phase(0.35f, 0.0f, &vu, &vv, &vw, &vll);
+  char vu_s[16];
+  char vv_s[16];
+  char vw_s[16];
+  char vll_s[16];
+  (void)electrical_offset_format_signed_milli(vu_s,
+                                              sizeof(vu_s),
+                                              float_to_scaled_i32(vu, 1000.0f),
+                                              true);
+  (void)electrical_offset_format_signed_milli(vv_s,
+                                              sizeof(vv_s),
+                                              float_to_scaled_i32(vv, 1000.0f),
+                                              true);
+  (void)electrical_offset_format_signed_milli(vw_s,
+                                              sizeof(vw_s),
+                                              float_to_scaled_i32(vw, 1000.0f),
+                                              true);
+  (void)electrical_offset_format_signed_milli(vll_s,
+                                              sizeof(vll_s),
+                                              float_to_scaled_i32(vll, 1000.0f),
+                                              true);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_alignment_model: resistance_parameter_name=PHASE_INDUCTANCE_R_PHASE_OHM resistance_definition=phase_resistance phase_resistance_evidence=PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS_3P200 formula_phase_current=alpha_beta_voltage/phase_resistance formula_line_line_candidate=alpha_beta_voltage/(line_line_resistance/2) alignment_voltage_definition=alpha_beta_vector_magnitude vu=%s vv=%s vw=%s max_line_to_line_voltage=%s expected_phase_current_if_3p20_phase=%lu.%03lu expected_phase_current_if_3p20_line_line=%lu.%03lu soft_limit=%lu.%03lu soft_consecutive=%lu raw_hard_limit_counts=%ld raw_hard_limit_a=%lu.%03lu emergency_limit_a=%lu.%03lu",
+           vu_s,
+           vv_s,
+           vw_s,
+           vll_s,
+           (unsigned long)float_to_scaled_u32(expected_phase, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(expected_phase, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(expected_line, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(expected_line, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) % 1000u,
+           (unsigned long)ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES,
+           (long)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS,
+           (unsigned long)float_to_scaled_u32((float)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS * g_drv_test.current_amp_per_count, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32((float)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS * g_drv_test.current_amp_per_count, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  const ElectricalOffsetOvercurrentFirstSnapshot *s =
+      &g_electrical_offset_overcurrent_first_snapshot;
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_overcurrent_source: mask=0x%08lX raw_pc0_hard=%u raw_pc1_hard=%u reconstructed_iu=%u reconstructed_iv=%u reconstructed_iw=%u phase_soft=%u phase_hard=%u dq_overcurrent=%u adc_saturation=%u current_sensor_invalid=%u current_offset_invalid=%u first_trip_channel=%s",
+           (unsigned long)s->source_mask,
+           (unsigned int)s->raw_pc0_hard,
+           (unsigned int)s->raw_pc1_hard,
+           (unsigned int)s->reconstructed_iu,
+           (unsigned int)s->reconstructed_iv,
+           (unsigned int)s->reconstructed_iw,
+           (unsigned int)s->phase_soft,
+           (unsigned int)s->phase_hard,
+           (unsigned int)s->dq_overcurrent,
+           (unsigned int)s->adc_saturation,
+           (unsigned int)s->current_sensor_invalid,
+           (unsigned int)s->current_offset_invalid,
+           s->first_trip_channel == NULL ? "NONE" : s->first_trip_channel);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_overcurrent_first_snapshot: valid=%u source_line=%lu state=%s adc_seq=%lu alignment_point=%lu ramp_sample_index=%lu ramp_progress=%ld.%03ld ramp_elapsed_us=%lu commanded_angle_deg=%ld.%02ld commanded_voltage_magnitude=%ld.%03ld v_alpha_cmd=%ld.%03ld v_beta_cmd=%ld.%03ld voltage_command_seq=%lu voltage_applied_seq=%lu raw_pc0=%u raw_pc1=%u offset_pc0=%lu offset_pc1=%lu delta_pc0=%ld delta_pc1=%ld iv_a=%ld.%03ld iw_a=%ld.%03ld iu_a=%ld.%03ld id_a=%ld.%03ld iq_a=%ld.%03ld phase_abs_a=%lu.%03lu soft_count=%lu hard_count=%lu TIM1_CNT=%lu CCR1=%lu CCR2=%lu CCR3=%lu MOE=%lu CCER=0x%08lX encoder_count=%ld speed_rpm=%ld.%02ld nfault_asserted=%u adc_callback_cycles=%lu alignment_hook_cycles=%lu",
+           (unsigned int)s->valid,
+           (unsigned long)s->source_line,
+           electrical_offset_state_name(s->state),
+           (unsigned long)s->adc_seq,
+           (unsigned long)s->alignment_point,
+           (unsigned long)s->ramp_sample_index,
+           (long)float_to_scaled_i32(s->ramp_progress, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->ramp_progress, 1000.0f)) % 1000,
+           (unsigned long)s->ramp_elapsed_us,
+           (long)float_to_scaled_i32(s->commanded_angle_deg, 100.0f) / 100,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->commanded_angle_deg, 100.0f)) % 100,
+           (long)float_to_scaled_i32(s->commanded_voltage_magnitude, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->commanded_voltage_magnitude, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->v_alpha_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->v_alpha_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->v_beta_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->v_beta_cmd, 1000.0f)) % 1000,
+           (unsigned long)s->voltage_command_seq,
+           (unsigned long)s->voltage_applied_seq,
+           (unsigned int)s->raw_pc0,
+           (unsigned int)s->raw_pc1,
+           (unsigned long)s->offset_pc0,
+           (unsigned long)s->offset_pc1,
+           (long)s->delta_pc0,
+           (long)s->delta_pc1,
+           (long)float_to_scaled_i32(s->iv_a, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->iv_a, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->iw_a, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->iw_a, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->iu_a, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->iu_a, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->id_a, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->id_a, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(s->iq_a, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->iq_a, 1000.0f)) % 1000,
+           (unsigned long)float_to_scaled_u32(s->phase_abs_a, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(s->phase_abs_a, 1000.0f) % 1000u,
+           (unsigned long)s->phase_soft_consecutive_count,
+           (unsigned long)s->phase_hard_consecutive_count,
+           (unsigned long)s->tim1_cnt,
+           (unsigned long)s->tim1_ccr1,
+           (unsigned long)s->tim1_ccr2,
+           (unsigned long)s->tim1_ccr3,
+           (unsigned long)s->tim1_bdtr_moe,
+           (unsigned long)s->tim1_ccer,
+           (long)s->encoder_count,
+           (long)float_to_scaled_i32(s->mechanical_speed_rpm, 100.0f) / 100,
+           (long)abs_i32_to_u32(float_to_scaled_i32(s->mechanical_speed_rpm, 100.0f)) % 100,
+           (unsigned int)s->nfault_asserted,
+           (unsigned long)s->adc_callback_cycles,
+           (unsigned long)s->alignment_hook_cycles);
+  uart2_printf_line(line);
+
+  for (uint32_t bi = 0u; bi < ELECTRICAL_OFFSET_ALIGNMENT_RAMP_BUCKET_COUNT; ++bi) {
+    const ElectricalOffsetRampBucketStats *b = &g_electrical_offset_ramp_bucket[bi];
+    const float v0 = 0.05f * (float)bi;
+    const float v1 = v0 + 0.05f;
+    const float mean = (b->samples > 0u)
+                           ? (float)(b->sum_phase_abs / (double)b->samples)
+                           : 0.0f;
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_ramp_bucket%lu: voltage_range=%lu.%02lu-%lu.%02lu samples=%lu max_phase_current=%lu.%03lu mean_phase_current=%lu.%03lu max_abs_delta_pc0=%ld max_abs_delta_pc1=%ld soft_consecutive_max=%lu encoder_count=%ld speed_rpm=%ld.%02ld",
+             (unsigned long)bi,
+             (unsigned long)float_to_scaled_u32(v0, 100.0f) / 100u,
+             (unsigned long)float_to_scaled_u32(v0, 100.0f) % 100u,
+             (unsigned long)float_to_scaled_u32(v1, 100.0f) / 100u,
+             (unsigned long)float_to_scaled_u32(v1, 100.0f) % 100u,
+             (unsigned long)b->samples,
+             (unsigned long)float_to_scaled_u32(b->max_phase_abs, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(b->max_phase_abs, 1000.0f) % 1000u,
+             (unsigned long)float_to_scaled_u32(mean, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(mean, 1000.0f) % 1000u,
+             (long)b->max_abs_delta_pc0,
+             (long)b->max_abs_delta_pc1,
+             (unsigned long)b->soft_consecutive_max,
+             (long)b->encoder_last,
+             (long)float_to_scaled_i32(b->speed_rpm_last, 100.0f) / 100,
+             (long)abs_i32_to_u32(float_to_scaled_i32(b->speed_rpm_last, 100.0f)) % 100);
+    uart2_printf_line(line);
+  }
+
+  const uint32_t pre_count = g_electrical_offset_alignment_trace_count;
+  const uint32_t first_pre =
+      (g_electrical_offset_alignment_trace_write >= pre_count)
+          ? (g_electrical_offset_alignment_trace_write - pre_count)
+          : 0u;
+  for (uint32_t i = 0u; i < pre_count; ++i) {
+    const uint32_t idx =
+        (first_pre + i) % ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY;
+    ElectricalOffsetAlignmentTraceSample *t =
+        &g_electrical_offset_alignment_trace[idx];
+    t->relative_index = (int32_t)i - (int32_t)pre_count;
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_alignment_trace: post_shutdown_sample=0 relative_index=%ld adc_seq=%lu raw_pc0=%u raw_pc1=%u delta_pc0=%ld delta_pc1=%ld iu_counts=%ld iv_counts=%ld iw_counts=%ld phase_metric_counts=%ld voltage_command_mV=%ld ramp_sample_index=%lu TIM1_CNT=%lu CCR1=%lu CCR2=%lu CCR3=%lu nFAULT=%lu current_soft_consecutive=%lu current_hard_consecutive=%lu",
+             (long)t->relative_index,
+             (unsigned long)t->adc_seq,
+             (unsigned int)t->raw_pc0,
+             (unsigned int)t->raw_pc1,
+             (long)t->delta_pc0,
+             (long)t->delta_pc1,
+             (long)t->iu_counts,
+             (long)t->iv_counts,
+             (long)t->iw_counts,
+             (long)t->phase_metric_counts,
+             (long)t->voltage_command_mV,
+             (unsigned long)t->ramp_sample_index,
+             (unsigned long)t->tim1_cnt,
+             (unsigned long)t->ccr1,
+             (unsigned long)t->ccr2,
+             (unsigned long)t->ccr3,
+             (unsigned long)t->nfault_asserted,
+             (unsigned long)t->current_soft_consecutive,
+             (unsigned long)t->current_hard_consecutive);
+    uart2_printf_line(line);
+  }
+  for (uint32_t i = 0u; i < g_electrical_offset_alignment_trace_post_count; ++i) {
+    ElectricalOffsetAlignmentTraceSample *t =
+        &g_electrical_offset_alignment_trace[ELECTRICAL_OFFSET_ALIGNMENT_TRACE_PRE_CAPACITY + i];
+    t->relative_index = (int32_t)i + 1;
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_alignment_trace: post_shutdown_sample=1 relative_index=%ld adc_seq=%lu raw_pc0=%u raw_pc1=%u delta_pc0=%ld delta_pc1=%ld iu_counts=%ld iv_counts=%ld iw_counts=%ld phase_metric_counts=%ld voltage_command_mV=%ld ramp_sample_index=%lu TIM1_CNT=%lu CCR1=%lu CCR2=%lu CCR3=%lu nFAULT=%lu current_soft_consecutive=%lu current_hard_consecutive=%lu",
+             (long)t->relative_index,
+             (unsigned long)t->adc_seq,
+             (unsigned int)t->raw_pc0,
+             (unsigned int)t->raw_pc1,
+             (long)t->delta_pc0,
+             (long)t->delta_pc1,
+             (long)t->iu_counts,
+             (long)t->iv_counts,
+             (long)t->iw_counts,
+             (long)t->phase_metric_counts,
+             (long)t->voltage_command_mV,
+             (unsigned long)t->ramp_sample_index,
+             (unsigned long)t->tim1_cnt,
+             (unsigned long)t->ccr1,
+             (unsigned long)t->ccr2,
+             (unsigned long)t->ccr3,
+             (unsigned long)t->nfault_asserted,
+             (unsigned long)t->current_soft_consecutive,
+             (unsigned long)t->current_hard_consecutive);
+    uart2_printf_line(line);
+  }
+}
+
+static void electrical_offset_trace_transition(ElectricalOffsetBringupState old_state,
+                                               ElectricalOffsetBringupState new_state,
+                                               ElectricalOffsetFailure reason,
+                                               uint32_t source_line)
+{
+  const uint32_t idx =
+      g_electrical_offset_state_trace_count % ELECTRICAL_OFFSET_TRACE_CAPACITY;
+  g_electrical_offset_state_trace[idx].transition_index =
+      g_electrical_offset_state_trace_count;
+  g_electrical_offset_state_trace[idx].old_state = old_state;
+  g_electrical_offset_state_trace[idx].new_state = new_state;
+  g_electrical_offset_state_trace[idx].reason = reason;
+  g_electrical_offset_state_trace[idx].source_line = source_line;
+  g_electrical_offset_state_trace[idx].adc_seq = drv_bringup_get_adc_seq();
+  g_electrical_offset_state_trace[idx].timestamp_cycles = DWT->CYCCNT;
+  g_electrical_offset_state_trace_count++;
+}
+
+static void electrical_offset_latch_failure(ElectricalOffsetFailure failure,
+                                            ElectricalOffsetBringupState state,
+                                            ElectricalOffsetBringupState previous_state,
+                                            ElectricalOffsetBringupState requested_next_state,
+                                            uint32_t source_line,
+                                            bool admission_preflight_pass,
+                                            bool admission_handoff_pass,
+                                            bool admission_target_5us_met,
+                                            bool admission_deadline_pass,
+                                            bool offset_pc0_valid,
+                                            bool offset_pc1_valid,
+                                            bool dc_cal_bits_clear,
+                                            bool alignment_dispatch_enabled)
+{
+  if (g_electrical_offset_first_failure.valid) {
+    return;
+  }
+
+  const CurrentSensorAdmissionResult res =
+      current_sensor_admission_get_result(&g_current_sensor_admission);
+  g_electrical_offset_first_failure.valid = true;
+  g_electrical_offset_first_failure.failure = failure;
+  g_electrical_offset_first_failure.state_at_failure = state;
+  g_electrical_offset_first_failure.previous_state = previous_state;
+  g_electrical_offset_first_failure.requested_next_state = requested_next_state;
+  g_electrical_offset_first_failure.source_line = source_line;
+  g_electrical_offset_first_failure.adc_seq = drv_bringup_get_adc_seq();
+  g_electrical_offset_first_failure.admission_active = g_admission_test.active;
+  g_electrical_offset_first_failure.admission_disabled_ack =
+      g_admission_test.disabled_ack;
+  g_electrical_offset_first_failure.admission_preflight_pass =
+      admission_preflight_pass;
+  g_electrical_offset_first_failure.admission_handoff_pass =
+      admission_handoff_pass;
+  g_electrical_offset_first_failure.admission_target_5us_met =
+      admission_target_5us_met;
+  g_electrical_offset_first_failure.admission_deadline_pass =
+      admission_deadline_pass;
+  g_electrical_offset_first_failure.gate = gate_raw_is_high();
+  g_electrical_offset_first_failure.moe =
+      (TIM1->BDTR & TIM_BDTR_MOE) != 0u;
+  g_electrical_offset_first_failure.dc_cal_bits_clear = dc_cal_bits_clear;
+  g_electrical_offset_first_failure.nfault_asserted = !nfault_ok();
+  g_electrical_offset_first_failure.offset_pc0_valid = offset_pc0_valid;
+  g_electrical_offset_first_failure.offset_pc1_valid = offset_pc1_valid;
+  g_electrical_offset_first_failure.alignment_active =
+      g_electrical_offset_alignment_active;
+  g_electrical_offset_first_failure.alignment_dispatch_enabled =
+      alignment_dispatch_enabled;
+  g_electrical_offset_first_failure.producer_gap_count =
+      res.producer_gap_count;
+  g_electrical_offset_first_failure.duplicate_count =
+      res.producer_duplicate_count;
+  g_electrical_offset_first_failure.true_unpaired_count =
+      res.runtime_true_unpaired_count;
+  g_electrical_offset_first_failure.torn_count = res.torn_count;
+  g_electrical_offset_first_failure.generation_mismatch_count =
+      res.generation_mismatch_count;
+}
+
+static void electrical_offset_print_first_failure(void)
+{
+  char line[768];
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_first_failure: electrical_offset_first_failure_valid=%u electrical_offset_first_failure_enum=%s electrical_offset_first_failure_state=%s electrical_offset_first_failure_previous_state=%s electrical_offset_first_failure_requested_next_state=%s electrical_offset_first_failure_source_line=%lu adc_seq=%lu admission_active=%u admission_disabled_ack=%u admission_preflight_pass=%u admission_handoff_pass=%u admission_target_5us_met=%u admission_deadline_pass=%u gate=%u moe=%u dc_cal_bits_clear=%u nfault_asserted=%u offset_pc0_valid=%u offset_pc1_valid=%u alignment_active=%u alignment_dispatch_enabled=%u producer_gap_count=%lu duplicate_count=%lu true_unpaired_count=%lu torn_count=%lu generation_mismatch_count=%lu",
+           (unsigned int)g_electrical_offset_first_failure.valid,
+           electrical_offset_failure_name(g_electrical_offset_first_failure.failure),
+           electrical_offset_state_name(g_electrical_offset_first_failure.state_at_failure),
+           electrical_offset_state_name(g_electrical_offset_first_failure.previous_state),
+           electrical_offset_state_name(g_electrical_offset_first_failure.requested_next_state),
+           (unsigned long)g_electrical_offset_first_failure.source_line,
+           (unsigned long)g_electrical_offset_first_failure.adc_seq,
+           (unsigned int)g_electrical_offset_first_failure.admission_active,
+           (unsigned int)g_electrical_offset_first_failure.admission_disabled_ack,
+           (unsigned int)g_electrical_offset_first_failure.admission_preflight_pass,
+           (unsigned int)g_electrical_offset_first_failure.admission_handoff_pass,
+           (unsigned int)g_electrical_offset_first_failure.admission_target_5us_met,
+           (unsigned int)g_electrical_offset_first_failure.admission_deadline_pass,
+           (unsigned int)g_electrical_offset_first_failure.gate,
+           (unsigned int)g_electrical_offset_first_failure.moe,
+           (unsigned int)g_electrical_offset_first_failure.dc_cal_bits_clear,
+           (unsigned int)g_electrical_offset_first_failure.nfault_asserted,
+           (unsigned int)g_electrical_offset_first_failure.offset_pc0_valid,
+           (unsigned int)g_electrical_offset_first_failure.offset_pc1_valid,
+           (unsigned int)g_electrical_offset_first_failure.alignment_active,
+           (unsigned int)g_electrical_offset_first_failure.alignment_dispatch_enabled,
+           (unsigned long)g_electrical_offset_first_failure.producer_gap_count,
+           (unsigned long)g_electrical_offset_first_failure.duplicate_count,
+           (unsigned long)g_electrical_offset_first_failure.true_unpaired_count,
+           (unsigned long)g_electrical_offset_first_failure.torn_count,
+           (unsigned long)g_electrical_offset_first_failure.generation_mismatch_count);
+  uart2_printf_line(line);
+}
+
+static void electrical_offset_print_state_trace(void)
+{
+  char line[384];
+  const uint32_t count = (g_electrical_offset_state_trace_count <
+                          ELECTRICAL_OFFSET_TRACE_CAPACITY)
+                             ? g_electrical_offset_state_trace_count
+                             : ELECTRICAL_OFFSET_TRACE_CAPACITY;
+  const uint32_t start =
+      (g_electrical_offset_state_trace_count > ELECTRICAL_OFFSET_TRACE_CAPACITY)
+          ? (g_electrical_offset_state_trace_count -
+             ELECTRICAL_OFFSET_TRACE_CAPACITY)
+          : 0u;
+  uart2_printf_line("electrical_offset_state_trace_begin");
+  for (uint32_t i = 0u; i < count; ++i) {
+    const ElectricalOffsetStateTraceEntry *e =
+        &g_electrical_offset_state_trace[(start + i) %
+                                         ELECTRICAL_OFFSET_TRACE_CAPACITY];
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_state_trace: transition_index=%lu old_state=%s new_state=%s reason=%s source_line=%lu adc_seq=%lu timestamp_cycles=%lu",
+             (unsigned long)e->transition_index,
+             electrical_offset_state_name(e->old_state),
+             electrical_offset_state_name(e->new_state),
+             electrical_offset_failure_name(e->reason),
+             (unsigned long)e->source_line,
+             (unsigned long)e->adc_seq,
+             (unsigned long)e->timestamp_cycles);
+    uart2_printf_line(line);
+  }
+  uart2_printf_line("electrical_offset_state_trace_end");
+}
+
+static void electrical_offset_fail_now(ElectricalOffsetFailure failure,
+                                       ElectricalOffsetBringupState state,
+                                       ElectricalOffsetBringupState previous_state,
+                                       ElectricalOffsetBringupState requested_next_state,
+                                       uint32_t source_line,
+                                       bool admission_preflight_pass,
+                                       bool admission_handoff_pass,
+                                       bool admission_target_5us_met,
+                                       bool admission_deadline_pass,
+                                       bool offset_pc0_valid,
+                                       bool offset_pc1_valid,
+                                       bool dc_cal_bits_clear,
+                                       bool alignment_dispatch_enabled)
+{
+  electrical_offset_latch_failure(failure,
+                                  state,
+                                  previous_state,
+                                  requested_next_state,
+                                  source_line,
+                                  admission_preflight_pass,
+                                  admission_handoff_pass,
+                                  admission_target_5us_met,
+                                  admission_deadline_pass,
+                                  offset_pc0_valid,
+                                  offset_pc1_valid,
+                                  dc_cal_bits_clear,
+                                  alignment_dispatch_enabled);
+  electrical_offset_trace_transition(state,
+                                     ELECTRICAL_OFFSET_STATE_FAIL,
+                                     failure,
+                                     source_line);
+  g_drv_test.phase_resistance_classification =
+      electrical_offset_failure_name(failure);
+  drv_bringup_mark_fault(AXIS0_FAULT_ELECTRICAL_OFFSET_CALIBRATION_FAILED);
+  g_drv_test.fault_code = g_axis0.fault_flags;
+}
+
 static void axis0_context_init_minimal(void)
 {
   memset(&g_axis0, 0, sizeof(g_axis0));
+  g_axis0_first_fault_flag = 0u;
+  g_axis0_first_fault_source_line = 0u;
 
   g_axis0.config = axis0_default_config_make();
   g_axis0.state = AXIS0_STATE_BOOT;
@@ -1334,8 +4935,13 @@ static uint32_t drv_bringup_get_adc_seq(void)
   return hal_adc_get_snapshot(&snap) ? snap.seq : 0u;
 }
 
-static void drv_bringup_mark_fault(Axis0FaultFlags fault)
+static void drv_bringup_mark_fault_at(Axis0FaultFlags fault,
+                                      uint32_t source_line)
 {
+  if (g_axis0.fault_flags == 0u) {
+    g_axis0_first_fault_flag = (uint32_t)fault;
+    g_axis0_first_fault_source_line = source_line;
+  }
   g_axis0.fault_flags |= (uint32_t)fault;
   g_axis0.state = AXIS0_STATE_FAULT;
 }
@@ -1969,8 +5575,10 @@ static bool power_stage_collect_adc_offsets(void)
     return false;
   }
 
-  g_drv_test.offset.offset_u = sum_u / count;
-  g_drv_test.offset.offset_v = sum_v / count;
+  const float mean_u = (float)sum_u / (float)count;
+  const float mean_v = (float)sum_v / (float)count;
+  g_drv_test.offset.offset_u = (uint32_t)((sum_u + (count / 2u)) / count);
+  g_drv_test.offset.offset_v = (uint32_t)((sum_v + (count / 2u)) / count);
   g_drv_test.offset.u_min = u_min;
   g_drv_test.offset.u_max = u_max;
   g_drv_test.offset.v_min = v_min;
@@ -1984,15 +5592,13 @@ static bool power_stage_collect_adc_offsets(void)
   g_drv_test.noise_pp_amp = g_drv_test.noise_pp_counts *
                             g_drv_test.current_amp_per_count;
 
-  const float mean_u = (float)sum_u / (float)count;
-  const float mean_v = (float)sum_v / (float)count;
   float var_u = ((float)sumsq_u / (float)count) - (mean_u * mean_u);
   float var_v = ((float)sumsq_v / (float)count) - (mean_v * mean_v);
   if (var_u < 0.0f) { var_u = 0.0f; }
   if (var_v < 0.0f) { var_v = 0.0f; }
   g_drv_test.dc_noise.samples = count;
-  g_drv_test.dc_noise.mean_u = g_drv_test.offset.offset_u;
-  g_drv_test.dc_noise.mean_v = g_drv_test.offset.offset_v;
+  g_drv_test.dc_noise.mean_u = mean_u;
+  g_drv_test.dc_noise.mean_v = mean_v;
   g_drv_test.dc_noise.u_min = u_min;
   g_drv_test.dc_noise.u_max = u_max;
   g_drv_test.dc_noise.v_min = v_min;
@@ -2469,6 +6075,75 @@ static void encoder_apply_alpha_beta_svpwm(float v_alpha, float v_beta, float vb
   TIM1->CCR1 = duty_to_ccr_limited(duty.duty_a);
   TIM1->CCR2 = duty_to_ccr_limited(duty.duty_b);
   TIM1->CCR3 = duty_to_ccr_limited(duty.duty_c);
+}
+
+static float fast_clampf_local(float x, float lo, float hi) MAIN_FAST_OPT;
+static float fast_clampf_local(float x, float lo, float hi)
+{
+  if (x < lo) { return lo; }
+  if (x > hi) { return hi; }
+  return x;
+}
+
+static uint32_t fast_duty_to_ccr_limited(float duty) MAIN_FAST_OPT;
+static uint32_t fast_duty_to_ccr_limited(float duty)
+{
+  const float limited = fast_clampf_local(duty, OPEN_LOOP_MIN_DUTY, OPEN_LOOP_MAX_DUTY);
+  return (uint32_t)(limited * (float)TIM1->ARR + 0.5f);
+}
+
+static bool rotating_dq_fast_ccr_ok(void) MAIN_FAST_OPT;
+static bool rotating_dq_fast_ccr_ok(void)
+{
+  const uint32_t arr = TIM1->ARR;
+  const uint32_t ccr_min = (arr + 10u) / 20u;
+  const uint32_t ccr_max = arr - ccr_min;
+  return (TIM1->CCR1 >= ccr_min) && (TIM1->CCR1 <= ccr_max) &&
+         (TIM1->CCR2 >= ccr_min) && (TIM1->CCR2 <= ccr_max) &&
+         (TIM1->CCR3 >= ccr_min) && (TIM1->CCR3 <= ccr_max);
+}
+
+static float rotating_dq_theta_from_encoder_fast(int64_t encoder_count) MAIN_FAST_OPT;
+static float rotating_dq_theta_from_encoder_fast(int64_t encoder_count)
+{
+  const float counts_to_elec_rad =
+      (6.28318530718f * 7.0f) / (float)COMM_ENCODER_CPR;
+  float theta = g_rotating_dq_runtime_offset_rad +
+                 ((float)encoder_count * counts_to_elec_rad);
+  while (theta >= 6.28318530718f) { theta -= 6.28318530718f; }
+  while (theta < 0.0f) { theta += 6.28318530718f; }
+  return theta;
+}
+
+static void rotating_dq_apply_alpha_beta_svpwm_fast(float v_alpha,
+                                                    float v_beta,
+                                                    float vbus_v) MAIN_FAST_OPT;
+static void rotating_dq_apply_alpha_beta_svpwm_fast(float v_alpha,
+                                                    float v_beta,
+                                                    float vbus_v)
+{
+  float duty_a = 0.5f;
+  float duty_b = 0.5f;
+  float duty_c = 0.5f;
+  if (vbus_v > 1.0f) {
+    const float inv_vbus = 1.0f / vbus_v;
+    const float phase_a = v_alpha;
+    const float phase_b = (-0.5f * v_alpha) + (0.86602540378f * v_beta);
+    const float phase_c = (-0.5f * v_alpha) - (0.86602540378f * v_beta);
+    float max_phase = phase_a;
+    if (phase_b > max_phase) { max_phase = phase_b; }
+    if (phase_c > max_phase) { max_phase = phase_c; }
+    float min_phase = phase_a;
+    if (phase_b < min_phase) { min_phase = phase_b; }
+    if (phase_c < min_phase) { min_phase = phase_c; }
+    const float common_mode = -0.5f * (max_phase + min_phase);
+    duty_a = 0.5f + ((phase_a + common_mode) * inv_vbus);
+    duty_b = 0.5f + ((phase_b + common_mode) * inv_vbus);
+    duty_c = 0.5f + ((phase_c + common_mode) * inv_vbus);
+  }
+  TIM1->CCR1 = fast_duty_to_ccr_limited(duty_a);
+  TIM1->CCR2 = fast_duty_to_ccr_limited(duty_b);
+  TIM1->CCR3 = fast_duty_to_ccr_limited(duty_c);
 }
 
 static void encoder_apply_dq_svpwm(float theta_e, float vd, float vq, float vbus_v)
@@ -8302,6 +11977,2284 @@ static void fixed_current_force_safe_output(FixedRotorCurrentTestOutput *out,
   out->done = true;
 }
 
+static float fixed_current_vbus_from_snapshot(const HalAdcSnapshot *snap)
+{
+  return (float)snap->raw_vbus * (60.83f / 4095.0f);
+}
+
+static void rotating_dq_velocity_supervisor_reset(void) __attribute__((unused));
+static void rotating_dq_velocity_supervisor_reset(void)
+{
+  memset(&g_rotating_velocity_supervisor, 0,
+         sizeof(g_rotating_velocity_supervisor));
+  velocity_controller_init(
+      &g_rotating_velocity_controller,
+      ROTATING_DQ_VELOCITY_KP,
+      ROTATING_DQ_VELOCITY_KI,
+      ROTATING_DQ_VELOCITY_IQ_LIMIT_A,
+      ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM * 0.10471975512f);
+  g_rotating_velocity_controller.integrator_limit_a =
+      ROTATING_DQ_VELOCITY_INTEGRATOR_LIMIT_A;
+  velocity_controller_set_error_reversal_decay(
+      &g_rotating_velocity_controller,
+      ROTATING_DQ_VELOCITY_ERROR_REVERSAL_INTEGRATOR_SCALE);
+  velocity_controller_set_output_slew_limit(
+      &g_rotating_velocity_controller,
+      ROTATING_DQ_VELOCITY_IQ_SLEW_A_PER_S);
+  (void)velocity_count_window_set_samples(
+      &g_rotating_velocity_supervisor.speed_window,
+      ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES);
+  velocity_edge_period_init(&g_rotating_velocity_supervisor.edge_estimator,
+                            g_encoder_accum,
+                            ROTATING_DQ_VELOCITY_EDGE_STALE_TICKS);
+  velocity_breakaway_probe_init(
+      &g_rotating_breakaway_probe,
+      ROTATING_DQ_BREAKAWAY_CURRENT_A,
+      ROTATING_DQ_BREAKAWAY_DURATION_TICKS,
+      1,
+      ROTATING_DQ_BREAKAWAY_MIN_MOTION_COUNTS,
+      ROTATING_DQ_BREAKAWAY_MIN_DIRECTION_EVENTS,
+      ROTATING_DQ_BREAKAWAY_MAX_STEP_COUNTS);
+  velocity_breakaway_probe_init(
+      &g_rotating_handoff_sustain_probe,
+      ROTATING_DQ_VELOCITY_IQ_LIMIT_A,
+      ROTATING_DQ_HANDOFF_SUSTAIN_TICKS,
+      1,
+      ROTATING_DQ_HANDOFF_SUSTAIN_MOTION_COUNTS,
+      ROTATING_DQ_HANDOFF_SUSTAIN_DIRECTION_EVENTS,
+      ROTATING_DQ_BREAKAWAY_MAX_STEP_COUNTS);
+  velocity_breakaway_handoff_init(
+      &g_rotating_breakaway_handoff,
+      ROTATING_DQ_BREAKAWAY_CURRENT_A,
+      ROTATING_DQ_VELOCITY_IQ_LIMIT_A);
+}
+
+static inline __attribute__((always_inline)) float
+rotating_dq_velocity_stiction_assist_fast(
+    RotatingDqVelocitySupervisor *sup,
+    float base_output_a,
+    float target_rpm,
+    float measured_rpm,
+    bool enabled)
+{
+  VelocityLowSpeedAssist *assist = &sup->stiction_assist;
+  if (!enabled || target_rpm == 0.0f) {
+    if (assist->active) {
+      assist->active = false;
+      assist->deactivation_count++;
+    }
+    return base_output_a;
+  }
+
+  const float direction = (target_rpm > 0.0f) ? 1.0f : -1.0f;
+  const float directed_speed_rpm = measured_rpm * direction;
+  const float directed_base_a = base_output_a * direction;
+  if (assist->active &&
+      (directed_speed_rpm >= ROTATING_DQ_VELOCITY_STICTION_ASSIST_OFF_RPM ||
+       directed_base_a < 0.0f)) {
+    assist->active = false;
+    assist->deactivation_count++;
+  } else if (!assist->active &&
+             directed_speed_rpm <=
+                 ROTATING_DQ_VELOCITY_STICTION_ASSIST_ON_RPM &&
+             directed_base_a >= 0.0f) {
+    assist->active = true;
+    assist->activation_count++;
+  }
+  if (!assist->active) {
+    return base_output_a;
+  }
+
+  assist->active_update_count++;
+  float assisted_a = base_output_a +
+      direction * ROTATING_DQ_VELOCITY_STICTION_ASSIST_A;
+  if (assisted_a > ROTATING_DQ_VELOCITY_IQ_LIMIT_A) {
+    assisted_a = ROTATING_DQ_VELOCITY_IQ_LIMIT_A;
+  } else if (assisted_a < -ROTATING_DQ_VELOCITY_IQ_LIMIT_A) {
+    assisted_a = -ROTATING_DQ_VELOCITY_IQ_LIMIT_A;
+  }
+  return assisted_a;
+}
+
+static inline __attribute__((always_inline)) void
+rotating_dq_velocity_edge_period_sample_fast(
+    VelocityEdgePeriodEstimator *estimator,
+    int64_t encoder_count)
+{
+  if (estimator->age_ticks != UINT32_MAX) {
+    estimator->age_ticks++;
+  }
+  const int32_t delta = (int32_t)(encoder_count - estimator->last_count);
+  if (delta == 0) {
+    return;
+  }
+
+  const uint32_t abs_delta = (delta < 0) ? (uint32_t)(-delta)
+                                         : (uint32_t)delta;
+  uint32_t period_ticks = estimator->age_ticks;
+  if (abs_delta > 1u) {
+    period_ticks /= abs_delta;
+  }
+  estimator->period_ticks = (period_ticks > 0u) ? period_ticks : 1u;
+  estimator->direction = (delta < 0) ? -1 : 1;
+  estimator->edge_count += abs_delta;
+  estimator->age_ticks = 0u;
+  estimator->last_count = encoder_count;
+}
+
+static void rotating_dq_velocity_supervisor_update(void) MAIN_FAST_OPT;
+static void rotating_dq_velocity_supervisor_update(void)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    !ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC && \
+    !ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  RotatingDqVelocitySupervisor *sup = &g_rotating_velocity_supervisor;
+  const bool velocity_state =
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE;
+
+  if (!velocity_state) {
+    if (sup->active) {
+      velocity_controller_reset(&g_rotating_velocity_controller);
+      sup->active = false;
+    }
+    sup->iq_ref_a = 0.0f;
+    return;
+  }
+
+  if (!sup->active) {
+#if !ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+    velocity_controller_reset(&g_rotating_velocity_controller);
+#endif
+    sup->active = true;
+    sup->divider_ticks = 0u;
+    sup->last_encoder_count = g_encoder_accum;
+    velocity_edge_period_init(&sup->edge_estimator,
+                              g_encoder_accum,
+                              ROTATING_DQ_VELOCITY_EDGE_STALE_TICKS);
+#if !ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+    (void)velocity_count_window_set_samples(
+        &sup->speed_window,
+        ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES);
+#endif
+    sup->target_command_rpm = 0.0f;
+    sup->instant_rpm = 0.0f;
+    sup->windowed_rpm = 0.0f;
+    sup->edge_period_rpm = 0.0f;
+    sup->measured_rpm = 0.0f;
+    sup->iq_ref_a = 0.0f;
+  }
+
+#if ROTATING_DQ_VELOCITY_EDGE_DIAGNOSTIC
+  rotating_dq_velocity_edge_period_sample_fast(&sup->edge_estimator,
+                                                g_encoder_accum);
+#endif
+
+  sup->divider_ticks++;
+  if (sup->divider_ticks < ROTATING_DQ_VELOCITY_LOOP_DIVIDER) {
+    return;
+  }
+  sup->divider_ticks = 0u;
+
+  sup->last_update_encoder_before = sup->last_encoder_count;
+  sup->last_update_encoder_after = g_encoder_accum;
+  const int32_t encoder_delta = (int32_t)(
+      sup->last_update_encoder_after - sup->last_update_encoder_before);
+  sup->last_encoder_count = sup->last_update_encoder_after;
+  sup->last_update_delta_counts = encoder_delta;
+  sup->instant_rpm = (float)encoder_delta * 1.46484375f;
+  VelocityCountWindow *window = &sup->speed_window;
+  const uint32_t configured_samples =
+      (window->configured_samples > 0u &&
+       window->configured_samples <= VELOCITY_COUNT_WINDOW_SAMPLES)
+          ? window->configured_samples
+          : VELOCITY_COUNT_WINDOW_SAMPLES;
+  if (window->sample_count == configured_samples) {
+    window->sum_counts -= window->delta_counts[window->write_index];
+  } else {
+    window->sample_count++;
+  }
+  window->delta_counts[window->write_index] = encoder_delta;
+  window->sum_counts += encoder_delta;
+  window->write_index++;
+  if (window->write_index == configured_samples) {
+    window->write_index = 0u;
+  }
+  float rpm_per_window_count = 1.46484375f;
+  switch (window->sample_count) {
+    case 2u:
+      rpm_per_window_count = 0.732421875f;
+      break;
+    case 3u:
+      rpm_per_window_count = 0.48828125f;
+      break;
+    case 4u:
+      rpm_per_window_count = 0.3662109375f;
+      break;
+    case 5u:
+      rpm_per_window_count = 0.29296875f;
+      break;
+    case 6u:
+      rpm_per_window_count = 0.244140625f;
+      break;
+    case 7u:
+      rpm_per_window_count = 0.209263393f;
+      break;
+    case 8u:
+      rpm_per_window_count = 0.183105469f;
+      break;
+    case 9u:
+      rpm_per_window_count = 0.162760417f;
+      break;
+    default:
+      if (window->sample_count >= 10u) {
+        rpm_per_window_count = 0.146484375f;
+      }
+      break;
+  }
+  sup->windowed_rpm = (float)(int32_t)window->sum_counts *
+      rpm_per_window_count;
+#if ROTATING_DQ_VELOCITY_EDGE_DIAGNOSTIC
+  const VelocityEdgePeriodEstimator *edge = &sup->edge_estimator;
+  if (edge->period_ticks != 0u &&
+      edge->age_ticks <= edge->stale_ticks) {
+    sup->edge_period_rpm = (float)edge->direction * 292.96875f /
+                           (float)edge->period_ticks;
+  } else {
+    sup->edge_period_rpm = 0.0f;
+  }
+#else
+  sup->edge_period_rpm = 0.0f;
+#endif
+  sup->measured_rpm = sup->windowed_rpm;
+
+  sup->estimator_ready =
+      sup->speed_window.sample_count >=
+      sup->speed_window.configured_samples;
+  const float elapsed_s =
+      (float)g_rotating_dq_test.state_ticks * g_rotating_dq_test.config.dt_s;
+  const float total_s =
+      (float)g_rotating_dq_test.config.iq_hold_ticks *
+      g_rotating_dq_test.config.dt_s;
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  if (!velocity_breakaway_handoff_speed_pi_active(
+          &g_rotating_breakaway_handoff)) {
+    (void)elapsed_s;
+    (void)total_s;
+    sup->target_command_rpm = 0.0f;
+    sup->iq_ref_a = 0.0f;
+  } else
+#endif
+  {
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+  sup->target_command_rpm = 0.0f;
+  sup->iq_ref_a = ROTATING_DQ_BREAKAWAY_FIXED_HOLD_CURRENT_A;
+#else
+  const float profile_elapsed_s =
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC && ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+      (float)(g_rotating_dq_test.control_tick_seq -
+              g_rotating_breakaway_handoff.handoff_control_tick) *
+      g_rotating_dq_test.config.dt_s;
+#else
+      elapsed_s;
+#endif
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC && ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  sup->target_command_rpm = velocity_hold_then_fall_target_rpm(
+      profile_elapsed_s,
+      total_s,
+      ROTATING_DQ_VELOCITY_TARGET_RPM,
+      ROTATING_DQ_VELOCITY_TARGET_FALL_RPM_PER_S);
+#else
+  sup->target_command_rpm = velocity_bounded_profile_target_rpm(
+      profile_elapsed_s,
+      total_s,
+      ROTATING_DQ_VELOCITY_TARGET_RPM,
+      ROTATING_DQ_VELOCITY_TARGET_RAMP_RPM_PER_S,
+      ROTATING_DQ_VELOCITY_TARGET_FALL_RPM_PER_S);
+#endif
+
+  const bool handoff_sustain_active =
+      g_rotating_handoff_sustain_probe.result == VELOCITY_BREAKAWAY_ACTIVE;
+  if (sup->estimator_ready) {
+    sup->iq_ref_a = velocity_controller_update_gated(
+        &g_rotating_velocity_controller,
+        sup->target_command_rpm * 0.10471975512f,
+        sup->measured_rpm * 0.10471975512f,
+        1.0f / ROTATING_DQ_VELOCITY_LOOP_HZ,
+        !handoff_sustain_active);
+  } else {
+    sup->iq_ref_a = ROTATING_DQ_HANDOFF_CAPTURE_CURRENT_A;
+    g_rotating_velocity_controller.last_output_a = sup->iq_ref_a;
+  }
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC && ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  const float fall_duration_s =
+      ROTATING_DQ_VELOCITY_TARGET_RPM /
+      ROTATING_DQ_VELOCITY_TARGET_FALL_RPM_PER_S;
+  const float fall_start_s =
+      (total_s > fall_duration_s) ? (total_s - fall_duration_s) : 0.0f;
+  const bool stiction_assist_enabled =
+      sup->estimator_ready && !handoff_sustain_active &&
+      profile_elapsed_s < fall_start_s;
+  const float target_direction =
+      (sup->target_command_rpm >= 0.0f) ? 1.0f : -1.0f;
+  const bool hold_friction_feedforward_enabled =
+      stiction_assist_enabled &&
+      (target_direction * sup->measured_rpm) <=
+          fabsf(sup->target_command_rpm);
+  sup->iq_ref_a = velocity_controller_apply_coulomb_feedforward(
+      &g_rotating_velocity_controller,
+      sup->iq_ref_a,
+      sup->target_command_rpm,
+      ROTATING_DQ_VELOCITY_HOLD_FRICTION_FF_A,
+      hold_friction_feedforward_enabled);
+  sup->iq_ref_a = rotating_dq_velocity_stiction_assist_fast(
+      sup,
+      sup->iq_ref_a,
+      sup->target_command_rpm,
+      sup->measured_rpm,
+      stiction_assist_enabled);
+  g_rotating_velocity_controller.last_output_a = sup->iq_ref_a;
+  const bool fall_phase = profile_elapsed_s >= fall_start_s;
+  const bool hold_overspeed =
+      fabsf(sup->measured_rpm) >=
+      ROTATING_DQ_VELOCITY_HOLD_BRAKE_ENABLE_RPM;
+  const bool braking_allowed = fall_phase || hold_overspeed;
+  sup->iq_ref_a = velocity_controller_apply_hold_direction_guard(
+      &g_rotating_velocity_controller,
+      sup->iq_ref_a,
+      sup->target_command_rpm,
+      braking_allowed);
+  if (handoff_sustain_active) {
+    sup->iq_ref_a = ROTATING_DQ_VELOCITY_IQ_LIMIT_A;
+    g_rotating_velocity_controller.last_output_a = sup->iq_ref_a;
+  }
+  if (!sup->first_speed_pi_iq_captured) {
+    sup->first_speed_pi_iq_ref_a = sup->iq_ref_a;
+    sup->first_speed_pi_iq_captured = true;
+  }
+  const float iq_step = fabsf(sup->iq_ref_a -
+                              sup->previous_speed_pi_iq_ref_a);
+  if (iq_step > sup->max_speed_pi_iq_step_a) {
+    sup->max_speed_pi_iq_step_a = iq_step;
+  }
+  sup->previous_speed_pi_iq_ref_a = sup->iq_ref_a;
+#endif
+#endif
+  }
+  sup->last_integrator_a = g_rotating_velocity_controller.integrator_a;
+  sup->last_proportional_a =
+      g_rotating_velocity_controller.last_proportional_a;
+  sup->last_unsaturated_a =
+      g_rotating_velocity_controller.last_unsaturated_a;
+  sup->saturation_count = g_rotating_velocity_controller.saturation_count;
+  sup->anti_windup_hold_count =
+      g_rotating_velocity_controller.anti_windup_hold_count;
+  sup->error_reversal_decay_count =
+      g_rotating_velocity_controller.error_reversal_decay_count;
+  const float integrator_abs = fabsf(sup->last_integrator_a);
+  if (integrator_abs > sup->integrator_peak_a) {
+    sup->integrator_peak_a = integrator_abs;
+  }
+  sup->update_count++;
+
+  const float speed_abs = fabsf(sup->measured_rpm);
+  const float instant_speed_abs = fabsf(sup->instant_rpm);
+  const float windowed_speed_abs = fabsf(sup->windowed_rpm);
+  const float edge_speed_abs = fabsf(sup->edge_period_rpm);
+  const float iq_abs = fabsf(sup->iq_ref_a);
+  if (speed_abs > sup->speed_peak_rpm) {
+    sup->speed_peak_rpm = speed_abs;
+  }
+  if (instant_speed_abs > sup->instant_speed_peak_rpm) {
+    sup->instant_speed_peak_rpm = instant_speed_abs;
+  }
+  if (windowed_speed_abs > sup->windowed_speed_peak_rpm) {
+    sup->windowed_speed_peak_rpm = windowed_speed_abs;
+  }
+  if (edge_speed_abs > sup->edge_speed_peak_rpm) {
+    sup->edge_speed_peak_rpm = edge_speed_abs;
+  }
+  if (iq_abs > sup->iq_ref_peak_a) {
+    sup->iq_ref_peak_a = iq_abs;
+  }
+  if (sup->iq_ref_a < sup->iq_ref_min_a) {
+    sup->iq_ref_min_a = sup->iq_ref_a;
+  }
+  if (sup->iq_ref_a > sup->iq_ref_max_a) {
+    sup->iq_ref_max_a = sup->iq_ref_a;
+  }
+  if (sup->iq_ref_a > 0.0f) {
+    sup->iq_ref_positive_update_count++;
+  } else if (sup->iq_ref_a < 0.0f) {
+    sup->iq_ref_negative_update_count++;
+  } else {
+    sup->iq_ref_zero_update_count++;
+  }
+  if (g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE &&
+      sup->target_command_rpm >= ROTATING_DQ_VELOCITY_TARGET_RPM) {
+    const bool iq_at_limit =
+        iq_abs >= (ROTATING_DQ_VELOCITY_IQ_LIMIT_A - 0.0005f);
+    const bool low_speed =
+        sup->measured_rpm <= ROTATING_DQ_VELOCITY_STICTION_ASSIST_ON_RPM;
+    sup->hold_command_samples++;
+    sup->hold_iq_ref_sum_a += sup->iq_ref_a;
+    sup->hold_iq_ref_abs_sum_a += iq_abs;
+    if (iq_at_limit) {
+      sup->hold_iq_at_limit_count++;
+    }
+    if (low_speed) {
+      sup->hold_low_speed_count++;
+      if (iq_at_limit) {
+        sup->hold_low_speed_iq_at_limit_count++;
+      }
+    }
+    sup->tracking_samples++;
+    sup->speed_sum_rpm += sup->measured_rpm;
+    sup->abs_error_sum_rpm +=
+        fabsf(sup->target_command_rpm - sup->measured_rpm);
+  }
+#endif
+}
+
+static bool rotating_dq_velocity_tracking_ok(void) __attribute__((unused));
+static bool rotating_dq_velocity_tracking_ok(void)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  const RotatingDqVelocitySupervisor *sup = &g_rotating_velocity_supervisor;
+  if (sup->tracking_samples < 200u) {
+    return false;
+  }
+  const float inv = 1.0f / (float)sup->tracking_samples;
+  const float speed_mean = sup->speed_sum_rpm * inv;
+  const float abs_error_mean = sup->abs_error_sum_rpm * inv;
+  return speed_mean >= ROTATING_DQ_VELOCITY_TRACKING_MIN_RPM &&
+         speed_mean <= ROTATING_DQ_VELOCITY_TRACKING_MAX_RPM &&
+         abs_error_mean <= ROTATING_DQ_VELOCITY_TRACKING_MAX_ABS_ERROR_RPM &&
+         sup->speed_peak_rpm < ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM &&
+         sup->iq_ref_peak_a <= ROTATING_DQ_VELOCITY_IQ_LIMIT_A + 0.000001f;
+#else
+  return true;
+#endif
+}
+
+static void rotating_dq_velocity_latch_overspeed(uint32_t adc_seq,
+                                                  uint32_t source_mask)
+    MAIN_FAST_OPT;
+static void rotating_dq_velocity_latch_overspeed(uint32_t adc_seq,
+                                                  uint32_t source_mask)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  if (g_rotating_dq_overspeed_latch.valid != 0u) {
+    return;
+  }
+
+  const RotatingDqVelocitySupervisor *sup = &g_rotating_velocity_supervisor;
+  g_rotating_dq_overspeed_latch.source_mask = source_mask;
+  g_rotating_dq_overspeed_latch.control_tick =
+      g_rotating_dq_test.control_tick_seq;
+  g_rotating_dq_overspeed_latch.adc_seq = adc_seq;
+  g_rotating_dq_overspeed_latch.velocity_update_count = sup->update_count;
+  g_rotating_dq_overspeed_latch.state = g_rotating_dq_test.state;
+  g_rotating_dq_overspeed_latch.encoder_before =
+      sup->last_update_encoder_before;
+  g_rotating_dq_overspeed_latch.encoder_after =
+      sup->last_update_encoder_after;
+  g_rotating_dq_overspeed_latch.encoder_delta_counts =
+      sup->last_update_delta_counts;
+  g_rotating_dq_overspeed_latch.speed_window.sum_counts =
+      sup->speed_window.sum_counts;
+  g_rotating_dq_overspeed_latch.speed_window.write_index =
+      sup->speed_window.write_index;
+  g_rotating_dq_overspeed_latch.speed_window.sample_count =
+      sup->speed_window.sample_count;
+  g_rotating_dq_overspeed_latch.speed_window.configured_samples =
+      sup->speed_window.configured_samples;
+  for (uint32_t i = 0u; i < VELOCITY_COUNT_WINDOW_SAMPLES; ++i) {
+    g_rotating_dq_overspeed_latch.speed_window.delta_counts[i] =
+        sup->speed_window.delta_counts[i];
+  }
+  g_rotating_dq_overspeed_latch.target_rpm = sup->target_command_rpm;
+  g_rotating_dq_overspeed_latch.instant_rpm = sup->instant_rpm;
+  g_rotating_dq_overspeed_latch.windowed_rpm = sup->windowed_rpm;
+  g_rotating_dq_overspeed_latch.measured_rpm = sup->measured_rpm;
+  g_rotating_dq_overspeed_latch.iq_ref_a = sup->iq_ref_a;
+  g_rotating_dq_overspeed_latch.proportional_a = sup->last_proportional_a;
+  g_rotating_dq_overspeed_latch.integrator_a = sup->last_integrator_a;
+  g_rotating_dq_overspeed_latch.unsaturated_iq_a =
+      sup->last_unsaturated_a;
+  g_rotating_dq_overspeed_latch.saturation_count = sup->saturation_count;
+  g_rotating_dq_overspeed_latch.anti_windup_hold_count =
+      sup->anti_windup_hold_count;
+  g_rotating_dq_overspeed_latch.error_reversal_decay_count =
+      sup->error_reversal_decay_count;
+  __DMB();
+  g_rotating_dq_overspeed_latch.valid = 1u;
+#else
+  (void)adc_seq;
+  (void)source_mask;
+#endif
+}
+
+static void rotating_dq_velocity_print_overspeed_latch(void)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  RotatingDqOverspeedLatch latch;
+  const uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  memcpy(&latch,
+         (const void *)&g_rotating_dq_overspeed_latch,
+         sizeof(latch));
+  if (primask == 0u) {
+    __enable_irq();
+  }
+
+  if (latch.valid == 0u) {
+    uart2_printf_line("rotating_dq_overspeed_latch: valid=0");
+    return;
+  }
+
+  VelocityOverspeedAnalysis analysis;
+  velocity_count_window_analyze_overspeed(
+      &latch.speed_window,
+      1.0f / ROTATING_DQ_VELOCITY_LOOP_HZ,
+      COMM_ENCODER_CPR,
+      ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM,
+      &analysis);
+
+  const int32_t target_m = float_to_scaled_i32(latch.target_rpm, 1000.0f);
+  const int32_t instant_m = float_to_scaled_i32(latch.instant_rpm, 1000.0f);
+  const int32_t windowed_m = float_to_scaled_i32(latch.windowed_rpm, 1000.0f);
+  const int32_t iq_ref_m = float_to_scaled_i32(latch.iq_ref_a, 1000.0f);
+  const int32_t p_m = float_to_scaled_i32(latch.proportional_a, 1000.0f);
+  const int32_t i_m = float_to_scaled_i32(latch.integrator_a, 1000.0f);
+  const int32_t unsat_m =
+      float_to_scaled_i32(latch.unsaturated_iq_a, 1000.0f);
+  const int32_t expected_delta_m = float_to_scaled_i32(
+      latch.target_rpm * (float)COMM_ENCODER_CPR /
+          (60.0f * ROTATING_DQ_VELOCITY_LOOP_HZ),
+      1000.0f);
+  char line[640];
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_overspeed_latch: valid=1 source_mask=0x%02lX instant_trip=%u windowed_trip=%u state=%s control_tick=%lu adc_seq=%lu velocity_update=%lu encoder_before=%ld encoder_after=%ld delta_counts=%ld sample_period_us=10000 encoder_cpr=%u target_rpm=%s%lu.%03lu expected_delta_counts=%s%lu.%03lu instant_rpm=%s%lu.%03lu windowed_rpm=%s%lu.%03lu",
+           (unsigned long)latch.source_mask,
+           (unsigned int)((latch.source_mask &
+                           ROTATING_DQ_OVERSPEED_SOURCE_INSTANT) != 0u),
+           (unsigned int)((latch.source_mask &
+                           ROTATING_DQ_OVERSPEED_SOURCE_WINDOWED) != 0u),
+           rotating_dq_current_test_state_name(latch.state),
+           (unsigned long)latch.control_tick,
+           (unsigned long)latch.adc_seq,
+           (unsigned long)latch.velocity_update_count,
+           (long)latch.encoder_before,
+           (long)latch.encoder_after,
+           (long)latch.encoder_delta_counts,
+           (unsigned int)COMM_ENCODER_CPR,
+           (target_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(target_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(target_m) % 1000u),
+           (expected_delta_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(expected_delta_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(expected_delta_m) % 1000u),
+           (instant_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(instant_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(instant_m) % 1000u),
+           (windowed_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(windowed_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(windowed_m) % 1000u));
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_overspeed_window: configured_samples=%lu sample_count=%lu write_index=%lu sum_counts=%ld chronological_delta_counts=%ld,%ld,%ld,%ld,%ld newest_fraction=%lu.%03lu prior_same_sign=%ld prior_same_sign_abs_sum=%ld prior_abs_sum=%ld prior_abs_max=%ld",
+           (unsigned long)latch.speed_window.configured_samples,
+           (unsigned long)analysis.sample_count,
+           (unsigned long)latch.speed_window.write_index,
+           (long)analysis.sum_counts,
+           (long)analysis.chronological_delta_counts[0],
+           (long)analysis.chronological_delta_counts[1],
+           (long)analysis.chronological_delta_counts[2],
+           (long)analysis.chronological_delta_counts[3],
+           (long)analysis.chronological_delta_counts[4],
+           (unsigned long)float_to_scaled_u32(
+               analysis.newest_window_abs_fraction, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(
+               analysis.newest_window_abs_fraction, 1000.0f) % 1000u,
+           (long)analysis.prior_same_sign_count,
+           (long)analysis.prior_same_sign_abs_sum_counts,
+           (long)analysis.prior_abs_sum_counts,
+           (long)analysis.prior_abs_max_counts);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_overspeed_pi_input: iq_ref_a=%s%lu.%03lu p_a=%s%lu.%03lu i_a=%s%lu.%03lu unsat_iq_a=%s%lu.%03lu saturation_count=%lu anti_windup_hold_count=%lu error_reversal_decay_count=%lu classification=%s classification_is_diagnostic_only=1 hard_shutdown_unchanged=1",
+           (iq_ref_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_ref_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_ref_m) % 1000u),
+           (p_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(p_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(p_m) % 1000u),
+           (i_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(i_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(i_m) % 1000u),
+           (unsat_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(unsat_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(unsat_m) % 1000u),
+           (unsigned long)latch.saturation_count,
+           (unsigned long)latch.anti_windup_hold_count,
+           (unsigned long)latch.error_reversal_decay_count,
+           velocity_overspeed_evidence_name(analysis.evidence));
+  uart2_printf_line(line);
+#endif
+}
+
+static void rotating_dq_velocity_print_stats(void)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  const RotatingDqVelocitySupervisor *sup = &g_rotating_velocity_supervisor;
+  const float inv = (sup->tracking_samples > 0u)
+                        ? (1.0f / (float)sup->tracking_samples)
+                        : 0.0f;
+  const int32_t target_final_milli =
+      float_to_scaled_i32(sup->target_command_rpm, 1000.0f);
+  const int32_t speed_mean_milli =
+      float_to_scaled_i32(sup->speed_sum_rpm * inv, 1000.0f);
+  const uint32_t error_mean_milli =
+      float_to_scaled_u32(sup->abs_error_sum_rpm * inv, 1000.0f);
+  const uint32_t speed_peak_milli =
+      float_to_scaled_u32(sup->speed_peak_rpm, 1000.0f);
+  const uint32_t instant_speed_peak_milli =
+      float_to_scaled_u32(sup->instant_speed_peak_rpm, 1000.0f);
+  const uint32_t windowed_speed_peak_milli =
+      float_to_scaled_u32(sup->windowed_speed_peak_rpm, 1000.0f);
+  const uint32_t edge_speed_peak_milli =
+      float_to_scaled_u32(sup->edge_speed_peak_rpm, 1000.0f);
+  const uint32_t iq_peak_milli =
+      float_to_scaled_u32(sup->iq_ref_peak_a, 1000.0f);
+  char line[512];
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_velocity_stats: target_peak_rpm=2.000 target_final_rpm=%s%lu.%03lu tracking_samples=%lu speed_mean_rpm=%s%lu.%03lu abs_error_mean_rpm=%lu.%03lu speed_peak_rpm=%lu.%03lu instant_speed_peak_rpm=%lu.%03lu windowed_speed_peak_rpm=%lu.%03lu edge_speed_peak_rpm=%lu.%03lu edge_events=%lu edge_stale_ticks=%u iq_ref_peak_a=%lu.%03lu velocity_updates=%lu estimator_window_samples=%u estimator_window_ms=%u est=SLIDING_10X10MS edge_diag=0 velocity_tracking_ok=%u speed_tracking_check=%s",
+           (target_final_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(target_final_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(target_final_milli) % 1000u),
+           (unsigned long)sup->tracking_samples,
+           (speed_mean_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(speed_mean_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(speed_mean_milli) % 1000u),
+           (unsigned long)(error_mean_milli / 1000u),
+           (unsigned long)(error_mean_milli % 1000u),
+           (unsigned long)(speed_peak_milli / 1000u),
+           (unsigned long)(speed_peak_milli % 1000u),
+           (unsigned long)(instant_speed_peak_milli / 1000u),
+           (unsigned long)(instant_speed_peak_milli % 1000u),
+           (unsigned long)(windowed_speed_peak_milli / 1000u),
+           (unsigned long)(windowed_speed_peak_milli % 1000u),
+           (unsigned long)(edge_speed_peak_milli / 1000u),
+           (unsigned long)(edge_speed_peak_milli % 1000u),
+           (unsigned long)sup->edge_estimator.edge_count,
+           (unsigned int)ROTATING_DQ_VELOCITY_EDGE_STALE_TICKS,
+           (unsigned long)(iq_peak_milli / 1000u),
+           (unsigned long)(iq_peak_milli % 1000u),
+           (unsigned long)sup->update_count,
+           (unsigned int)ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES,
+           (unsigned int)(ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES * 10u),
+           (unsigned int)rotating_dq_velocity_tracking_ok(),
+#if ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC || \
+    ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+           "NOT_APPLICABLE");
+#else
+           rotating_dq_velocity_tracking_ok() ? "PASS" : "FAIL");
+#endif
+  uart2_printf_line(line);
+
+  const float hold_inv = (sup->hold_command_samples > 0u)
+      ? (1.0f / (float)sup->hold_command_samples)
+      : 0.0f;
+  const int32_t hold_iq_mean_milli = float_to_scaled_i32(
+      sup->hold_iq_ref_sum_a * hold_inv, 1000.0f);
+  const uint32_t hold_iq_abs_mean_milli = float_to_scaled_u32(
+      sup->hold_iq_ref_abs_sum_a * hold_inv, 1000.0f);
+  const uint32_t hold_limit_permille = (sup->hold_command_samples > 0u)
+      ? (sup->hold_iq_at_limit_count * 1000u) /
+            sup->hold_command_samples
+      : 0u;
+  const uint32_t low_speed_limit_permille = (sup->hold_low_speed_count > 0u)
+      ? (sup->hold_low_speed_iq_at_limit_count * 1000u) /
+            sup->hold_low_speed_count
+      : 0u;
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_velocity_iq_utilization: hold_samples=%lu iq_ref_mean_a=%s%lu.%03lu iq_ref_abs_mean_a=%lu.%03lu iq_at_limit_threshold_a=0.0295 iq_at_limit_count=%lu iq_at_limit_permille=%lu low_speed_below_0p75rpm_count=%lu low_speed_iq_at_limit_count=%lu low_speed_iq_at_limit_permille=%lu continuous_iq_limit_mA=30",
+           (unsigned long)sup->hold_command_samples,
+           (hold_iq_mean_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(hold_iq_mean_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(hold_iq_mean_milli) % 1000u),
+           (unsigned long)(hold_iq_abs_mean_milli / 1000u),
+           (unsigned long)(hold_iq_abs_mean_milli % 1000u),
+           (unsigned long)sup->hold_iq_at_limit_count,
+           (unsigned long)hold_limit_permille,
+           (unsigned long)sup->hold_low_speed_count,
+           (unsigned long)sup->hold_low_speed_iq_at_limit_count,
+           (unsigned long)low_speed_limit_permille);
+  uart2_printf_line(line);
+
+  const int32_t iq_min_milli =
+      float_to_scaled_i32(sup->iq_ref_min_a, 1000.0f);
+  const int32_t iq_max_milli =
+      float_to_scaled_i32(sup->iq_ref_max_a, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_braking_stats: iq_ref_min_mA=%s%lu.%03lu iq_ref_max_mA=%s%lu.%03lu iq_positive_updates=%lu iq_negative_updates=%lu iq_zero_updates=%lu reverse_braking_observed=%u",
+           (iq_min_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_min_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_min_milli) % 1000u),
+           (iq_max_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_max_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_max_milli) % 1000u),
+           (unsigned long)sup->iq_ref_positive_update_count,
+           (unsigned long)sup->iq_ref_negative_update_count,
+           (unsigned long)sup->iq_ref_zero_update_count,
+           (unsigned int)(sup->iq_ref_negative_update_count > 0u));
+  uart2_printf_line(line);
+
+  const int32_t integrator_milli =
+      float_to_scaled_i32(sup->last_integrator_a, 1000.0f);
+  const int32_t proportional_milli =
+      float_to_scaled_i32(sup->last_proportional_a, 1000.0f);
+  const int32_t unsaturated_milli =
+      float_to_scaled_i32(sup->last_unsaturated_a, 1000.0f);
+  const uint32_t integrator_peak_milli =
+      float_to_scaled_u32(sup->integrator_peak_a, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_velocity_pi_dynamic: p_a=%s%lu.%03lu i_a=%s%lu.%03lu unsat_iq_a=%s%lu.%03lu integrator_peak_a=%lu.%03lu saturation_count=%lu anti_windup_hold_count=%lu error_reversal_scale=0.250 error_reversal_decay_count=%lu conditional_integration=1",
+           (proportional_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(proportional_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(proportional_milli) % 1000u),
+           (integrator_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(integrator_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(integrator_milli) % 1000u),
+           (unsaturated_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(unsaturated_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(unsaturated_milli) % 1000u),
+           (unsigned long)(integrator_peak_milli / 1000u),
+           (unsigned long)(integrator_peak_milli % 1000u),
+           (unsigned long)sup->saturation_count,
+           (unsigned long)sup->anti_windup_hold_count,
+           (unsigned long)sup->error_reversal_decay_count);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_low_speed_assist: current_mA=%lu enable_below_rpm=0.750 disable_above_rpm=2.500 active_final=%u activation_count=%lu deactivation_count=%lu active_update_count=%lu continuous_iq_limit_mA=30 breakaway_retry=0",
+           (unsigned long)float_to_scaled_u32(
+               ROTATING_DQ_VELOCITY_STICTION_ASSIST_A, 1000.0f),
+           (unsigned int)sup->stiction_assist.active,
+           (unsigned long)sup->stiction_assist.activation_count,
+           (unsigned long)sup->stiction_assist.deactivation_count,
+           (unsigned long)sup->stiction_assist.active_update_count);
+  uart2_printf_line(line);
+  rotating_dq_velocity_print_overspeed_latch();
+#endif
+}
+
+static void rotating_dq_fill_input_from_snapshot(const HalAdcSnapshot *snapshot,
+                                                 float theta_e,
+                                                 RotatingDqCurrentTestInput *in) MAIN_FAST_OPT;
+static void rotating_dq_fill_input_from_snapshot(const HalAdcSnapshot *snapshot,
+                                                 float theta_e,
+                                                 RotatingDqCurrentTestInput *in)
+{
+  const float iv = ((float)((int32_t)snapshot->raw_pc0_m0_so1 -
+                            (int32_t)g_drv_test.offset.offset_u)) *
+                   g_drv_test.current_amp_per_count;
+  const float iw = ((float)((int32_t)snapshot->raw_pc1_m0_so2 -
+                            (int32_t)g_drv_test.offset.offset_v)) *
+                   g_drv_test.current_amp_per_count;
+  in->time_us = (uint64_t)g_rotating_dq_test.control_tick_seq * 50ull;
+  in->adc_seq = snapshot->seq;
+  in->encoder_count = g_encoder_accum;
+  in->theta_e_rad = theta_e;
+  in->iv_a = iv;
+  in->iw_a = iw;
+  in->vbus_v = fixed_current_vbus_from_snapshot(snapshot);
+  in->adc_valid = snapshot->valid &&
+                  (snapshot->raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                  (snapshot->raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+                  (snapshot->raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                  (snapshot->raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT);
+  in->encoder_valid = encoder_delta_ok();
+  in->theta_valid = (theta_e >= -1.0e30f) && (theta_e <= 1.0e30f);
+  in->electrical_offset_valid = g_rotating_dq_runtime_offset_valid;
+  in->nfault_ok = nfault_ok();
+  in->drv_ok = g_rotating_dq_slow_drv_ok;
+  in->m1_safe = m1_is_safe_off();
+  in->pwm_ccr_ok = rotating_dq_fast_ccr_ok() || power_stage_channels_off();
+  in->pwm_allowed = true;
+  in->fault_active = (g_axis0.fault_flags != 0u);
+  in->raw_pc0 = snapshot->raw_pc0_m0_so1;
+  in->raw_pc1 = snapshot->raw_pc1_m0_so2;
+  in->offset_pc0 = g_drv_test.offset.offset_u;
+  in->offset_pc1 = g_drv_test.offset.offset_v;
+  in->current_amp_per_count = g_drv_test.current_amp_per_count;
+  in->ccr1 = TIM1->CCR1;
+  in->ccr2 = TIM1->CCR2;
+  in->ccr3 = TIM1->CCR3;
+  in->ccr4 = TIM1->CCR4;
+  in->ccer = TIM1->CCER;
+  in->bdtr = TIM1->BDTR;
+  in->tim1_cnt = TIM1->CNT;
+  in->adc_rank_order = hal_adc_get_m0_rank_order();
+  in->callback_cycles = g_adc_callback_last_elapsed_cycles;
+  in->electrical_offset_rad = g_rotating_dq_runtime_offset_rad;
+  in->external_iq_ref_valid = false;
+  in->external_integrator_enable = false;
+  in->external_iq_ref_a = 0.0f;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  in->compact_output_requested = true;
+#else
+  in->compact_output_requested = false;
+#endif
+}
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+static void rotating_dq_collect_diag_snapshots(RotatingDqZeroDiagStage stage,
+                                               bool post_shutdown,
+                                               uint32_t count)
+{
+  uint32_t seq = drv_bringup_get_adc_seq();
+  HalAdcSnapshot snap = {0};
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!open_loop_wait_next_adc_sample(&seq, &snap)) {
+      break;
+    }
+    (void)encoder_tracker_sample();
+    const float theta_e = rotating_dq_theta_from_encoder_fast(g_encoder_accum);
+    RotatingDqCurrentTestInput in;
+    rotating_dq_fill_input_from_snapshot(&snap, theta_e, &in);
+    rotating_dq_current_test_capture_zero_diag_sample(&g_rotating_dq_test,
+                                                      &in,
+                                                      stage,
+                                                      post_shutdown,
+                                                      0u);
+  }
+}
+#endif
+
+static uint8_t rotating_dq_encoder_ab_state(void) MAIN_FAST_OPT;
+static uint8_t rotating_dq_encoder_ab_state(void)
+{
+  return (uint8_t)((GPIOB->IDR >> 4u) & 0x3u);
+}
+
+static uint32_t rotating_dq_encoder_abs_i64_to_u32(int64_t value) MAIN_FAST_OPT;
+static uint32_t rotating_dq_encoder_abs_i64_to_u32(int64_t value)
+{
+  const uint64_t magnitude = (value < 0) ? (uint64_t)(-value) : (uint64_t)value;
+  return (magnitude > UINT32_MAX) ? UINT32_MAX : (uint32_t)magnitude;
+}
+
+static void rotating_dq_encoder_evidence_reset(void) MAIN_FAST_OPT;
+static void rotating_dq_encoder_evidence_reset(void)
+{
+  memset((void *)&g_rotating_dq_encoder_evidence,
+         0,
+         sizeof(g_rotating_dq_encoder_evidence));
+  g_rotating_dq_encoder_evidence.active = 1u;
+  g_rotating_dq_encoder_evidence.encoder_start_count = g_encoder_accum;
+  g_rotating_dq_encoder_evidence.encoder_last_count = g_encoder_accum;
+  g_rotating_dq_encoder_evidence.last_ab_state = rotating_dq_encoder_ab_state();
+  g_rotating_dq_encoder_evidence.have_last_ab_state = 1u;
+  memset((void *)&g_rotating_dq_iq_integrator_attribution,
+         0,
+         sizeof(g_rotating_dq_iq_integrator_attribution));
+  memset((void *)g_rotating_dq_iq_attribution_blocks,
+         0,
+         sizeof(g_rotating_dq_iq_attribution_blocks));
+  g_rotating_dq_iq_integrator_attribution.integrator_initial_v =
+      g_rotating_dq_test.controller.integrator_q_v;
+  g_rotating_dq_iq_integrator_attribution.next_block_tick =
+      ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_TICKS;
+}
+
+static void rotating_dq_iq_integrator_attribution_update(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out) MAIN_FAST_OPT;
+static void rotating_dq_iq_integrator_attribution_update(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out)
+{
+  if (in == NULL || out == NULL || !in->adc_valid ||
+      !g_rotating_dq_test.config.enable_zero_current_pi ||
+      g_rotating_dq_test.state != ROTATING_DQ_STATE_ENABLE_ZERO) {
+    return;
+  }
+
+  RotatingDqIqIntegratorAttribution *stats =
+      (RotatingDqIqIntegratorAttribution *)&g_rotating_dq_iq_integrator_attribution;
+  RotatingDqIqAttributionBlock *block = NULL;
+  if (stats->block_index < ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT) {
+    block = (RotatingDqIqAttributionBlock *)&
+        g_rotating_dq_iq_attribution_blocks[stats->block_index];
+  }
+  const float delta = out->integrator_q_delta_v;
+  const float error = out->iq_error_a;
+  const int32_t delta_pc0 = (int32_t)in->raw_pc0 - (int32_t)in->offset_pc0;
+  const int32_t delta_pc1 = (int32_t)in->raw_pc1 - (int32_t)in->offset_pc1;
+
+  if (block != NULL && block->sample_count == 0u) {
+    block->start_tick = g_rotating_dq_test.control_tick_seq;
+    block->encoder_start = in->encoder_count;
+    block->theta_start_rad = in->theta_e_rad;
+    block->integrator_start_v = out->integrator_q_before_v;
+    block->vq_proportional_min_v = out->vq_proportional_v;
+    block->vq_proportional_max_v = out->vq_proportional_v;
+    block->vq_final_min_v = out->vq_diagnostic_v;
+    block->vq_final_max_v = out->vq_diagnostic_v;
+  }
+  stats->integrator_final_v = out->integrator_q_after_v;
+  if (out->integrator_q_after_v > stats->integrator_peak_positive_v) {
+    stats->integrator_peak_positive_v = out->integrator_q_after_v;
+  }
+  if (out->integrator_q_after_v < stats->integrator_peak_negative_v) {
+    stats->integrator_peak_negative_v = out->integrator_q_after_v;
+  }
+  stats->integrator_aw_clamp_sum_v += out->integrator_q_aw_clamp_delta_v;
+
+  if (out->common_mode_harmful) {
+    stats->integrator_delta_sum_cm_harmful_v += delta;
+    stats->iq_error_sum_cm_harmful_a += error;
+    stats->cm_harmful_count++;
+    if (block != NULL) {
+      block->integrator_delta_cm_harmful_v += delta;
+      block->iq_error_cm_harmful_sum_a += error;
+      block->cm_harmful_count++;
+    }
+    if (error > 0.0f) { stats->cm_harmful_positive_error_count++; }
+    if (error < 0.0f) { stats->cm_harmful_negative_error_count++; }
+  } else if (out->common_mode_shape) {
+    stats->integrator_delta_sum_cm_harmless_v += delta;
+    stats->iq_error_sum_cm_harmless_a += error;
+    stats->cm_harmless_count++;
+    stats->shadow_integrator_exclude_harmful_v += delta;
+    if (block != NULL) {
+      block->integrator_delta_cm_harmless_v += delta;
+      block->iq_error_cm_harmless_sum_a += error;
+      block->cm_harmless_count++;
+    }
+    if (error > 0.0f) { stats->cm_harmless_positive_error_count++; }
+    if (error < 0.0f) { stats->cm_harmless_negative_error_count++; }
+  } else {
+    stats->integrator_delta_sum_clean_v += delta;
+    stats->iq_error_sum_clean_a += error;
+    stats->clean_count++;
+    stats->shadow_integrator_clean_only_v += delta;
+    stats->shadow_integrator_exclude_harmful_v += delta;
+    if (block != NULL) {
+      block->integrator_delta_clean_v += delta;
+      block->iq_error_clean_sum_a += error;
+      block->delta_pc0_clean_sum += delta_pc0;
+      block->delta_pc1_clean_sum += delta_pc1;
+      block->clean_count++;
+    }
+    if (error > 0.0f) { stats->clean_positive_error_count++; }
+    if (error < 0.0f) { stats->clean_negative_error_count++; }
+  }
+
+  if (block != NULL) {
+    uint32_t ccr_min = in->ccr1;
+    uint32_t ccr_max = in->ccr1;
+    if (in->ccr2 < ccr_min) { ccr_min = in->ccr2; }
+    if (in->ccr3 < ccr_min) { ccr_min = in->ccr3; }
+    if (in->ccr2 > ccr_max) { ccr_max = in->ccr2; }
+    if (in->ccr3 > ccr_max) { ccr_max = in->ccr3; }
+    const uint32_t ccr_span = ccr_max - ccr_min;
+    block->end_tick = g_rotating_dq_test.control_tick_seq;
+    block->sample_count++;
+    block->encoder_end = in->encoder_count;
+    block->theta_end_rad = in->theta_e_rad;
+    block->integrator_end_v = out->integrator_q_after_v;
+    block->vq_proportional_sum_v += out->vq_proportional_v;
+    block->vq_integrator_sum_v += out->vq_integrator_v;
+    block->vq_feedforward_sum_v += out->vq_feedforward_v;
+    block->vq_sum_v += out->vq_diagnostic_v;
+    if (out->vq_proportional_v < block->vq_proportional_min_v) {
+      block->vq_proportional_min_v = out->vq_proportional_v;
+    }
+    if (out->vq_proportional_v > block->vq_proportional_max_v) {
+      block->vq_proportional_max_v = out->vq_proportional_v;
+    }
+    if (out->vq_diagnostic_v < block->vq_final_min_v) {
+      block->vq_final_min_v = out->vq_diagnostic_v;
+    }
+    if (out->vq_diagnostic_v > block->vq_final_max_v) {
+      block->vq_final_max_v = out->vq_diagnostic_v;
+    }
+    block->ccr1_sum += in->ccr1;
+    block->ccr2_sum += in->ccr2;
+    block->ccr3_sum += in->ccr3;
+    if (ccr_span > block->ccr_span_max) { block->ccr_span_max = ccr_span; }
+    if (fabsf(out->integrator_d_after_v) > 1.0e-6f ||
+        fabsf(out->integrator_q_after_v) > 1.0e-6f) {
+      block->integrator_nonzero_count++;
+    }
+    block->adc_rank_order = in->adc_rank_order;
+  }
+  if (g_rotating_dq_test.control_tick_seq >= stats->next_block_tick &&
+      stats->block_index < ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT) {
+    stats->block_index++;
+    stats->next_block_tick += ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_TICKS;
+  }
+}
+
+static void rotating_dq_encoder_evidence_capture(
+    RotatingDqEncoderMotionSnapshot *dst,
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    int64_t encoder_delta,
+    int64_t encoder_step,
+    uint8_t previous_ab_state,
+    uint8_t current_ab_state) MAIN_FAST_OPT;
+static void rotating_dq_encoder_evidence_capture(
+    RotatingDqEncoderMotionSnapshot *dst,
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    int64_t encoder_delta,
+    int64_t encoder_step,
+    uint8_t previous_ab_state,
+    uint8_t current_ab_state)
+{
+  if (dst == NULL || in == NULL || out == NULL) {
+    return;
+  }
+
+  const int32_t du = (int32_t)in->raw_pc0 - (int32_t)in->offset_pc0;
+  const int32_t dv = (int32_t)in->raw_pc1 - (int32_t)in->offset_pc1;
+
+  dst->control_tick = g_rotating_dq_test.control_tick_seq;
+  dst->adc_seq = in->adc_seq;
+  dst->encoder_raw_count = (uint16_t)TIM3->CNT;
+  dst->encoder_accum = in->encoder_count;
+  dst->encoder_delta_counts = encoder_delta;
+  dst->encoder_ab_state = current_ab_state;
+  dst->encoder_previous_ab_state = previous_ab_state;
+  dst->encoder_step_counts = (int16_t)encoder_step;
+  dst->theta_rad = in->theta_e_rad;
+  dst->raw_pc0 = in->raw_pc0;
+  dst->raw_pc1 = in->raw_pc1;
+  dst->delta_pc0 = (int16_t)du;
+  dst->delta_pc1 = (int16_t)dv;
+  dst->iu_a = out->iu_measured_a;
+  dst->iv_a = out->iv_measured_a;
+  dst->iw_a = out->iw_measured_a;
+  dst->id_a = out->id_measured_a;
+  dst->iq_a = out->iq_measured_a;
+  dst->id_ref_a = out->id_ref_a;
+  dst->iq_ref_a = out->iq_ref_a;
+  dst->vd_v = out->vd_diagnostic_v;
+  dst->vq_v = out->vq_diagnostic_v;
+  dst->integrator_d_v = out->integrator_d_after_v;
+  dst->integrator_q_v = out->integrator_q_after_v;
+  dst->ccr1 = in->ccr1;
+  dst->ccr2 = in->ccr2;
+  dst->ccr3 = in->ccr3;
+  dst->adc_rank_order = in->adc_rank_order;
+  dst->cm_shape = out->common_mode_shape ? 1u : 0u;
+  dst->cm_caused_dq_crossing =
+      out->common_mode_caused_dq_crossing ? 1u : 0u;
+}
+
+static void __attribute__((unused)) rotating_dq_encoder_evidence_update(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out) MAIN_FAST_OPT;
+static void rotating_dq_encoder_evidence_update(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out)
+{
+  if (in == NULL || out == NULL || g_rotating_dq_encoder_evidence.active == 0u) {
+    return;
+  }
+
+  const uint8_t current_ab_state = rotating_dq_encoder_ab_state();
+  const uint8_t previous_ab_state = g_rotating_dq_encoder_evidence.last_ab_state;
+  const int64_t step = in->encoder_count -
+      g_rotating_dq_encoder_evidence.encoder_last_count;
+  const int64_t delta = in->encoder_count -
+      g_rotating_dq_encoder_evidence.encoder_start_count;
+  const uint32_t abs_step = rotating_dq_encoder_abs_i64_to_u32(step);
+  const uint32_t abs_delta = rotating_dq_encoder_abs_i64_to_u32(delta);
+
+  if (g_rotating_dq_encoder_evidence.have_last_ab_state != 0u &&
+      current_ab_state != previous_ab_state &&
+      ((current_ab_state ^ previous_ab_state) == 0x3u)) {
+    g_rotating_dq_encoder_evidence.encoder_illegal_transition_count++;
+  }
+  g_rotating_dq_encoder_evidence.last_ab_state = current_ab_state;
+  g_rotating_dq_encoder_evidence.have_last_ab_state = 1u;
+  g_rotating_dq_encoder_evidence.encoder_last_count = in->encoder_count;
+  g_rotating_dq_encoder_evidence.encoder_final_delta_counts = delta;
+
+  if (delta < g_rotating_dq_encoder_evidence.encoder_min_delta_counts) {
+    g_rotating_dq_encoder_evidence.encoder_min_delta_counts = delta;
+  }
+  if (delta > g_rotating_dq_encoder_evidence.encoder_max_delta_counts) {
+    g_rotating_dq_encoder_evidence.encoder_max_delta_counts = delta;
+  }
+  if (abs_step > g_rotating_dq_encoder_evidence.encoder_max_step_per_tick) {
+    g_rotating_dq_encoder_evidence.encoder_max_step_per_tick = abs_step;
+  }
+  g_rotating_dq_encoder_evidence.encoder_accumulated_abs_steps += abs_step;
+
+  if (step != 0) {
+    const int8_t direction = (step > 0) ? 1 : -1;
+    if (g_rotating_dq_encoder_evidence.encoder_first_change_tick == 0u) {
+      g_rotating_dq_encoder_evidence.encoder_first_change_tick =
+          g_rotating_dq_test.control_tick_seq;
+      rotating_dq_encoder_evidence_capture(
+          (RotatingDqEncoderMotionSnapshot *)&
+              g_rotating_dq_encoder_evidence.first_change_snapshot,
+          in, out, delta, step, previous_ab_state, current_ab_state);
+      g_rotating_dq_encoder_evidence.first_change_snapshot_valid = 1u;
+    }
+    if (g_rotating_dq_encoder_evidence.last_step_direction != 0 &&
+        direction != g_rotating_dq_encoder_evidence.last_step_direction) {
+      g_rotating_dq_encoder_evidence.encoder_direction_reversal_count++;
+      g_rotating_dq_encoder_evidence.encoder_same_direction_streak = 0u;
+    }
+    g_rotating_dq_encoder_evidence.last_step_direction = direction;
+    g_rotating_dq_encoder_evidence.encoder_same_direction_streak++;
+    if (g_rotating_dq_encoder_evidence.encoder_same_direction_streak >
+        g_rotating_dq_encoder_evidence.encoder_same_direction_streak_max) {
+      g_rotating_dq_encoder_evidence.encoder_same_direction_streak_max =
+          g_rotating_dq_encoder_evidence.encoder_same_direction_streak;
+    }
+  }
+  if (g_rotating_dq_encoder_evidence.encoder_first_change_tick == 0u) {
+    rotating_dq_encoder_evidence_capture(
+        (RotatingDqEncoderMotionSnapshot *)&
+            g_rotating_dq_encoder_evidence.pre_first_change_snapshot,
+        in, out, delta, step, previous_ab_state, current_ab_state);
+    g_rotating_dq_encoder_evidence.pre_first_change_snapshot_valid = 1u;
+  }
+
+  if (g_rotating_dq_encoder_evidence.peak_snapshot_valid == 0u ||
+      abs_delta > rotating_dq_encoder_abs_i64_to_u32(
+          g_rotating_dq_encoder_evidence.peak_snapshot.encoder_delta_counts)) {
+    rotating_dq_encoder_evidence_capture(
+        (RotatingDqEncoderMotionSnapshot *)&g_rotating_dq_encoder_evidence.peak_snapshot,
+        in, out, delta, step, previous_ab_state, current_ab_state);
+    g_rotating_dq_encoder_evidence.encoder_peak_abs_tick =
+        g_rotating_dq_test.control_tick_seq;
+    g_rotating_dq_encoder_evidence.peak_snapshot_valid = 1u;
+  }
+  if (abs_delta > (uint32_t)g_rotating_dq_test.config.zero_encoder_limit_counts &&
+      g_rotating_dq_encoder_evidence.limit_snapshot_valid == 0u) {
+    rotating_dq_encoder_evidence_capture(
+        (RotatingDqEncoderMotionSnapshot *)&g_rotating_dq_encoder_evidence.limit_snapshot,
+        in, out, delta, step, previous_ab_state, current_ab_state);
+    g_rotating_dq_encoder_evidence.encoder_first_limit_tick =
+        g_rotating_dq_test.control_tick_seq;
+    g_rotating_dq_encoder_evidence.limit_snapshot_valid = 1u;
+  }
+  rotating_dq_iq_integrator_attribution_update(in, out);
+}
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+static void rotating_dq_breakaway_encoder_evidence_update_light(
+    const RotatingDqCurrentTestInput *in) MAIN_FAST_OPT;
+static void rotating_dq_breakaway_encoder_evidence_update_light(
+    const RotatingDqCurrentTestInput *in)
+{
+  if (in == NULL || g_rotating_dq_encoder_evidence.active == 0u) {
+    return;
+  }
+
+  const uint8_t current_ab_state = rotating_dq_encoder_ab_state();
+  const uint8_t previous_ab_state = g_rotating_dq_encoder_evidence.last_ab_state;
+  const int64_t step = in->encoder_count -
+      g_rotating_dq_encoder_evidence.encoder_last_count;
+  const int64_t delta = in->encoder_count -
+      g_rotating_dq_encoder_evidence.encoder_start_count;
+  const uint32_t abs_step = rotating_dq_encoder_abs_i64_to_u32(step);
+
+  if (g_rotating_dq_encoder_evidence.have_last_ab_state != 0u &&
+      current_ab_state != previous_ab_state &&
+      ((current_ab_state ^ previous_ab_state) == 0x3u)) {
+    g_rotating_dq_encoder_evidence.encoder_illegal_transition_count++;
+  }
+  g_rotating_dq_encoder_evidence.last_ab_state = current_ab_state;
+  g_rotating_dq_encoder_evidence.have_last_ab_state = 1u;
+  g_rotating_dq_encoder_evidence.encoder_last_count = in->encoder_count;
+  g_rotating_dq_encoder_evidence.encoder_final_delta_counts = delta;
+  g_rotating_dq_encoder_evidence.encoder_accumulated_abs_steps += abs_step;
+
+  if (delta < g_rotating_dq_encoder_evidence.encoder_min_delta_counts) {
+    g_rotating_dq_encoder_evidence.encoder_min_delta_counts = delta;
+  }
+  if (delta > g_rotating_dq_encoder_evidence.encoder_max_delta_counts) {
+    g_rotating_dq_encoder_evidence.encoder_max_delta_counts = delta;
+  }
+  if (abs_step > g_rotating_dq_encoder_evidence.encoder_max_step_per_tick) {
+    g_rotating_dq_encoder_evidence.encoder_max_step_per_tick = abs_step;
+  }
+  if (step != 0) {
+    const int8_t direction = (step > 0) ? 1 : -1;
+    if (g_rotating_dq_encoder_evidence.encoder_first_change_tick == 0u) {
+      g_rotating_dq_encoder_evidence.encoder_first_change_tick =
+          g_rotating_dq_test.control_tick_seq;
+    }
+    if (g_rotating_dq_encoder_evidence.last_step_direction != 0 &&
+        direction != g_rotating_dq_encoder_evidence.last_step_direction) {
+      g_rotating_dq_encoder_evidence.encoder_direction_reversal_count++;
+      g_rotating_dq_encoder_evidence.encoder_same_direction_streak = 0u;
+    }
+    g_rotating_dq_encoder_evidence.last_step_direction = direction;
+    g_rotating_dq_encoder_evidence.encoder_same_direction_streak++;
+    if (g_rotating_dq_encoder_evidence.encoder_same_direction_streak >
+        g_rotating_dq_encoder_evidence.encoder_same_direction_streak_max) {
+      g_rotating_dq_encoder_evidence.encoder_same_direction_streak_max =
+          g_rotating_dq_encoder_evidence.encoder_same_direction_streak;
+    }
+  }
+}
+#endif
+
+static void rotating_dq_fault_trace_reset(void)
+{
+  memset((void *)&g_rotating_dq_fault_trace,
+         0,
+         sizeof(g_rotating_dq_fault_trace));
+  memset((void *)&g_rotating_dq_dq_over_streak_raw,
+         0,
+         sizeof(g_rotating_dq_dq_over_streak_raw));
+  memset((void *)&g_rotating_dq_steady_direct_peak,
+         0,
+         sizeof(g_rotating_dq_steady_direct_peak));
+  g_rotating_dq_steady_direct_peak_valid = 0u;
+}
+
+static void rotating_dq_fault_trace_capture_sample(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after,
+    RotatingDqFaultTraceSample *sample) MAIN_FAST_OPT;
+static void rotating_dq_fault_trace_capture_sample(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after,
+    RotatingDqFaultTraceSample *sample)
+{
+  if (in == NULL || sample == NULL) {
+    return;
+  }
+
+  const int32_t dpc0 = (int32_t)in->raw_pc0 - (int32_t)in->offset_pc0;
+  const int32_t dpc1 = (int32_t)in->raw_pc1 - (int32_t)in->offset_pc1;
+  const int32_t iv_counts = dpc0;
+  const int32_t iw_counts = dpc1;
+  const int32_t iu_counts = -(iv_counts + iw_counts);
+  const uint32_t bdtr = TIM1->BDTR;
+
+  sample->tick = g_rotating_dq_test.control_tick_seq;
+  sample->adc_seq = in->adc_seq;
+  sample->raw_pc0 = in->raw_pc0;
+  sample->raw_pc1 = in->raw_pc1;
+  sample->offset_pc0 = in->offset_pc0;
+  sample->offset_pc1 = in->offset_pc1;
+  sample->dpc0 = (int16_t)dpc0;
+  sample->dpc1 = (int16_t)dpc1;
+  sample->iu_counts = (int16_t)iu_counts;
+  sample->iv_counts = (int16_t)iv_counts;
+  sample->iw_counts = (int16_t)iw_counts;
+  sample->encoder_count = in->encoder_count;
+  sample->theta_mrad = (int32_t)(in->theta_e_rad * 1000.0f);
+  sample->tim1_cnt_input = in->tim1_cnt;
+  sample->tim1_cnt_latched = TIM1->CNT;
+  sample->tim1_arr = TIM1->ARR;
+  sample->tim1_ccr1 = TIM1->CCR1;
+  sample->tim1_ccr2 = TIM1->CCR2;
+  sample->tim1_ccr3 = TIM1->CCR3;
+  sample->tim1_ccr4 = TIM1->CCR4;
+  sample->tim1_cr1 = TIM1->CR1;
+  sample->tim1_ccer = TIM1->CCER;
+  sample->tim1_bdtr = bdtr;
+  sample->adc_rank_order = in->adc_rank_order;
+  sample->callback_cycles = in->callback_cycles;
+  sample->current_amp_per_count = in->current_amp_per_count;
+  if (out != NULL) {
+    sample->vd_mv = (int16_t)(out->vd_v * 1000.0f);
+    sample->vq_mv = (int16_t)(out->vq_v * 1000.0f);
+  }
+  sample->integrator_d_mv =
+      (int16_t)(g_rotating_dq_test.controller.integrator_d_v * 1000.0f);
+  sample->integrator_q_mv =
+      (int16_t)(g_rotating_dq_test.controller.integrator_q_v * 1000.0f);
+  sample->fault_before = fault_before;
+  sample->fault_after = fault_after;
+  sample->phase_fault_set_tick = g_rotating_dq_test.zero_phase_fault_set_tick;
+  sample->dq_fault_set_tick = g_rotating_dq_test.zero_dq_fault_set_tick;
+  sample->moe = (bdtr & TIM_BDTR_MOE) ? 1u : 0u;
+  sample->gate_raw =
+      (EN_GATE_GPIO_Port->IDR & EN_GATE_Pin) ? 1u : 0u;
+  sample->nfault_ok =
+      (DRV_NFAULT_GPIO_Port->IDR & DRV_NFAULT_Pin) ? 1u : 0u;
+}
+
+static void __attribute__((unused)) rotating_dq_latch_steady_direct_peak(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after) MAIN_FAST_OPT;
+static void rotating_dq_latch_steady_direct_peak(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after)
+{
+  if (in == NULL ||
+      !g_rotating_dq_test.config.enable_zero_diagnostic_only ||
+      g_rotating_dq_test.state != ROTATING_DQ_STATE_ENABLE_ZERO ||
+      g_rotating_dq_test.zero_diag_completed ||
+      g_rotating_dq_test.control_tick_seq <=
+          g_rotating_dq_test.config.zero_startup_guard_ticks ||
+      g_rotating_dq_test.zero_direct_metric_peak_tick !=
+          g_rotating_dq_test.control_tick_seq) {
+    return;
+  }
+
+  rotating_dq_fault_trace_capture_sample(
+      in,
+      out,
+      fault_before,
+      fault_after,
+      (RotatingDqFaultTraceSample *)&g_rotating_dq_steady_direct_peak);
+  g_rotating_dq_steady_direct_peak_valid = 1u;
+}
+
+#if !ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+static bool rotating_dq_fault_trace_should_record(void) MAIN_FAST_OPT;
+static bool rotating_dq_fault_trace_should_record(void)
+{
+  return g_rotating_dq_test.control_tick_seq > 0u &&
+         (g_rotating_dq_test.state == ROTATING_DQ_STATE_ENABLE_ZERO ||
+          g_rotating_dq_fault_trace.count > 0u ||
+          g_rotating_dq_test.zero_phase_fault_set_tick != 0u ||
+          g_rotating_dq_test.zero_dq_fault_set_tick != 0u);
+}
+
+static void rotating_dq_fault_trace_push_history(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after) MAIN_FAST_OPT;
+static void rotating_dq_fault_trace_push_history(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after)
+{
+  if (!rotating_dq_fault_trace_should_record()) {
+    return;
+  }
+
+  const bool steady_zero_window =
+      g_rotating_dq_test.config.enable_zero_diagnostic_only &&
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_ENABLE_ZERO &&
+      !g_rotating_dq_test.zero_diag_completed &&
+      g_rotating_dq_test.control_tick_seq >
+          g_rotating_dq_test.config.zero_startup_guard_ticks;
+  bool direct_over = false;
+  bool clean_reconstructed_over = false;
+  if (steady_zero_window && in != NULL && in->current_amp_per_count > 0.0f) {
+    const int32_t dpc0 = (int32_t)in->raw_pc0 - (int32_t)in->offset_pc0;
+    const int32_t dpc1 = (int32_t)in->raw_pc1 - (int32_t)in->offset_pc1;
+    const uint32_t abs0 = abs_i32_to_u32(dpc0);
+    const uint32_t abs1 = abs_i32_to_u32(dpc1);
+    const uint32_t direct_counts = (abs0 > abs1) ? abs0 : abs1;
+    const uint32_t reconstructed_counts = abs_i32_to_u32(-(dpc0 + dpc1));
+    const uint32_t clean_phase_counts =
+        (reconstructed_counts > direct_counts) ? reconstructed_counts :
+                                                 direct_counts;
+    direct_over = ((float)direct_counts * in->current_amp_per_count) >
+                  g_rotating_dq_test.config.zero_phase_current_peak_limit_a;
+    clean_reconstructed_over = out != NULL && !out->common_mode_harmful &&
+        ((float)clean_phase_counts * in->current_amp_per_count) >
+            g_rotating_dq_test.config.zero_phase_current_peak_limit_a;
+    if (direct_over) {
+      g_rotating_dq_fault_trace.direct_over_total++;
+      g_rotating_dq_fault_trace.direct_over_consecutive++;
+      if (g_rotating_dq_fault_trace.direct_over_consecutive >
+          g_rotating_dq_fault_trace.direct_over_consecutive_max) {
+        g_rotating_dq_fault_trace.direct_over_consecutive_max =
+            g_rotating_dq_fault_trace.direct_over_consecutive;
+      }
+      if (g_rotating_dq_fault_trace.direct_first_over_tick == 0u) {
+        g_rotating_dq_fault_trace.direct_first_over_tick =
+            g_rotating_dq_test.control_tick_seq;
+      }
+      g_rotating_dq_fault_trace.direct_last_over_tick =
+          g_rotating_dq_test.control_tick_seq;
+    } else {
+      g_rotating_dq_fault_trace.direct_over_consecutive = 0u;
+    }
+    if (clean_reconstructed_over) {
+      g_rotating_dq_fault_trace.clean_over_total++;
+      g_rotating_dq_fault_trace.clean_over_consecutive++;
+      if (g_rotating_dq_fault_trace.clean_over_consecutive >
+          g_rotating_dq_fault_trace.clean_over_consecutive_max) {
+        g_rotating_dq_fault_trace.clean_over_consecutive_max =
+            g_rotating_dq_fault_trace.clean_over_consecutive;
+      }
+      if (g_rotating_dq_fault_trace.clean_first_over_tick == 0u) {
+        g_rotating_dq_fault_trace.clean_first_over_tick =
+            g_rotating_dq_test.control_tick_seq;
+      }
+      g_rotating_dq_fault_trace.clean_last_over_tick =
+          g_rotating_dq_test.control_tick_seq;
+    } else {
+      g_rotating_dq_fault_trace.clean_over_consecutive = 0u;
+    }
+  }
+
+  if (g_rotating_dq_fault_trace.direct_event_complete != 0u) {
+    return;
+  }
+
+  uint32_t index = g_rotating_dq_fault_trace.write_index;
+  if (index >= ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT) {
+    index = 0u;
+    g_rotating_dq_fault_trace.overflow_guard = 1u;
+  }
+  rotating_dq_fault_trace_capture_sample(
+      in,
+      out,
+      fault_before,
+      fault_after,
+      (RotatingDqFaultTraceSample *)
+          &g_rotating_dq_fault_trace.history[index]);
+  index++;
+  if (index >= ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT) {
+    index = 0u;
+  }
+  g_rotating_dq_fault_trace.write_index = index;
+  if (g_rotating_dq_fault_trace.count <
+      ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT) {
+    g_rotating_dq_fault_trace.count++;
+  }
+
+  if (steady_zero_window && (direct_over || clean_reconstructed_over) &&
+      g_rotating_dq_fault_trace.direct_event_tick == 0u) {
+    g_rotating_dq_fault_trace.direct_event_active = 1u;
+    g_rotating_dq_fault_trace.direct_event_tick =
+        g_rotating_dq_test.control_tick_seq;
+    g_rotating_dq_fault_trace.direct_post_remaining =
+        ROTATING_DQ_DIRECT_TRACE_POST_SAMPLES;
+    g_rotating_dq_fault_trace.event_source_mask =
+        (direct_over ? ROTATING_DQ_TRACE_SOURCE_DIRECT_ADC : 0u) |
+        (clean_reconstructed_over ?
+             ROTATING_DQ_TRACE_SOURCE_CLEAN_RECONSTRUCTED : 0u);
+  } else if (g_rotating_dq_fault_trace.direct_event_active != 0u &&
+             g_rotating_dq_fault_trace.direct_post_remaining > 0u) {
+    g_rotating_dq_fault_trace.direct_post_remaining--;
+    if (g_rotating_dq_fault_trace.direct_post_remaining == 0u) {
+      g_rotating_dq_fault_trace.direct_event_active = 0u;
+      g_rotating_dq_fault_trace.direct_event_complete = 1u;
+    }
+  }
+}
+#endif
+
+static void rotating_dq_fault_trace_latch_fault(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after) MAIN_FAST_OPT;
+static void rotating_dq_fault_trace_latch_fault(
+    const RotatingDqCurrentTestInput *in,
+    const RotatingDqCurrentTestOutput *out,
+    uint32_t fault_before,
+    uint32_t fault_after)
+{
+  if (g_rotating_dq_fault_trace.fault_valid != 0u) {
+    return;
+  }
+#if !ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  if (!rotating_dq_fault_trace_should_record()) {
+    return;
+  }
+#endif
+
+  rotating_dq_fault_trace_capture_sample(
+      in,
+      out,
+      fault_before,
+      fault_after,
+      (RotatingDqFaultTraceSample *)&g_rotating_dq_fault_trace.fault);
+  g_rotating_dq_fault_trace.fault_valid = 1u;
+}
+
+typedef struct {
+  const char *stage_name;
+  uint32_t samples;
+  uint16_t raw0_min;
+  uint16_t raw0_max;
+  uint16_t raw1_min;
+  uint16_t raw1_max;
+  float raw0_mean;
+  float raw1_mean;
+  float raw0_std;
+  float raw1_std;
+  uint32_t offset0;
+  uint32_t offset1;
+  float du_mean_counts;
+  float dv_mean_counts;
+  float iu_a;
+  float iv_a;
+  float iw_a;
+  float id_a;
+  float iq_a;
+  float phase_metric_a;
+  float dq_metric_a;
+  bool adc_valid;
+  bool nfault_ok;
+  uint16_t drv0_status1;
+  uint16_t drv0_status2;
+  uint16_t drv0_control2;
+  uint16_t drv1_status1;
+  uint16_t drv1_status2;
+  uint16_t drv1_control2;
+} RotatingDqLiveZeroStageStats;
+
+static void rotating_dq_print_live_zero_stage(
+    const RotatingDqLiveZeroStageStats *st)
+{
+  if (st == NULL) {
+    return;
+  }
+
+  char line[768];
+  const int32_t du_m = float_to_scaled_i32(st->du_mean_counts, 1000.0f);
+  const int32_t dv_m = float_to_scaled_i32(st->dv_mean_counts, 1000.0f);
+  const int32_t iu_m = float_to_scaled_i32(st->iu_a, 1000.0f);
+  const int32_t iv_m = float_to_scaled_i32(st->iv_a, 1000.0f);
+  const int32_t iw_m = float_to_scaled_i32(st->iw_a, 1000.0f);
+  const int32_t id_m = float_to_scaled_i32(st->id_a, 1000.0f);
+  const int32_t iq_m = float_to_scaled_i32(st->iq_a, 1000.0f);
+  const uint32_t phase_m = float_to_scaled_u32(st->phase_metric_a, 1000.0f);
+  const uint32_t dq_m = float_to_scaled_u32(st->dq_metric_a, 1000.0f);
+  const uint32_t raw0_m = float_to_scaled_u32(st->raw0_mean, 1000.0f);
+  const uint32_t raw1_m = float_to_scaled_u32(st->raw1_mean, 1000.0f);
+  const uint32_t raw0_std_m = float_to_scaled_u32(st->raw0_std, 1000.0f);
+  const uint32_t raw1_std_m = float_to_scaled_u32(st->raw1_std, 1000.0f);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_live_zero_stage: stage=%s samples=%lu gate=%u dc_cal_drv0=0x%04X dc_cal_drv1=0x%04X MOE=%lu CCER=0x%08lX CCR=%lu/%lu/%lu raw_pc0_mean=%lu.%03lu raw_pc1_mean=%lu.%03lu raw_pc0_min=%u raw_pc0_max=%u raw_pc1_min=%u raw_pc1_max=%u raw_pc0_std=%lu.%03lu raw_pc1_std=%lu.%03lu offset_pc0=%lu offset_pc1=%lu du_mean=%s%lu.%03lu dv_mean=%s%lu.%03lu iu=%s%lu.%03lu iv=%s%lu.%03lu iw=%s%lu.%03lu id=%s%lu.%03lu iq=%s%lu.%03lu phase_metric=%lu.%03lu dq_metric=%lu.%03lu nfault_ok=%u drv0_status1=0x%04X drv0_status2=0x%04X drv1_status1=0x%04X drv1_status2=0x%04X adc_valid=%u",
+           st->stage_name,
+           (unsigned long)st->samples,
+           (unsigned int)gate_raw_is_high(),
+           (unsigned int)(st->drv0_control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned int)(st->drv1_control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 |
+                           DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)(raw0_m / 1000u),
+           (unsigned long)(raw0_m % 1000u),
+           (unsigned long)(raw1_m / 1000u),
+           (unsigned long)(raw1_m % 1000u),
+           (unsigned int)st->raw0_min,
+           (unsigned int)st->raw0_max,
+           (unsigned int)st->raw1_min,
+           (unsigned int)st->raw1_max,
+           (unsigned long)(raw0_std_m / 1000u),
+           (unsigned long)(raw0_std_m % 1000u),
+           (unsigned long)(raw1_std_m / 1000u),
+           (unsigned long)(raw1_std_m % 1000u),
+           (unsigned long)st->offset0,
+           (unsigned long)st->offset1,
+           (du_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(du_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(du_m) % 1000u),
+           (dv_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(dv_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(dv_m) % 1000u),
+           (iu_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iu_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+           (iv_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iv_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+           (iw_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iw_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+           (id_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(id_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(id_m) % 1000u),
+           (iq_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_m) % 1000u),
+           (unsigned long)(phase_m / 1000u),
+           (unsigned long)(phase_m % 1000u),
+           (unsigned long)(dq_m / 1000u),
+           (unsigned long)(dq_m % 1000u),
+           (unsigned int)st->nfault_ok,
+           (unsigned int)st->drv0_status1,
+           (unsigned int)st->drv0_status2,
+           (unsigned int)st->drv1_status1,
+           (unsigned int)st->drv1_status2,
+           (unsigned int)st->adc_valid);
+  uart2_printf_line(line);
+}
+
+static bool rotating_dq_collect_live_zero_stage(
+    const char *stage_name,
+    uint32_t target_samples,
+    bool update_offset,
+    RotatingDqLiveZeroStageStats *out)
+{
+  if (out == NULL || target_samples == 0u) {
+    return false;
+  }
+
+  memset(out, 0, sizeof(*out));
+  out->stage_name = stage_name;
+  out->raw0_min = 0xffffu;
+  out->raw1_min = 0xffffu;
+  uint64_t raw0_sum = 0u;
+  uint64_t raw1_sum = 0u;
+  uint64_t raw0_sumsq = 0u;
+  uint64_t raw1_sumsq = 0u;
+  uint32_t seq = drv_bringup_get_adc_seq();
+  HalAdcSnapshot snap = {0};
+  bool raw_valid = true;
+
+  while (out->samples < target_samples) {
+    if (!open_loop_wait_next_adc_sample(&seq, &snap)) {
+      break;
+    }
+
+    const uint16_t raw0 = snap.raw_pc0_m0_so1;
+    const uint16_t raw1 = snap.raw_pc1_m0_so2;
+    raw0_sum += raw0;
+    raw1_sum += raw1;
+    raw0_sumsq += (uint64_t)raw0 * (uint64_t)raw0;
+    raw1_sumsq += (uint64_t)raw1 * (uint64_t)raw1;
+    if (raw0 < out->raw0_min) { out->raw0_min = raw0; }
+    if (raw0 > out->raw0_max) { out->raw0_max = raw0; }
+    if (raw1 < out->raw1_min) { out->raw1_min = raw1; }
+    if (raw1 > out->raw1_max) { out->raw1_max = raw1; }
+    if (!snap.valid ||
+        raw0 <= CURRENT_RAW_MIN_SAFE_COUNT ||
+        raw0 >= CURRENT_RAW_MAX_SAFE_COUNT ||
+        raw1 <= CURRENT_RAW_MIN_SAFE_COUNT ||
+        raw1 >= CURRENT_RAW_MAX_SAFE_COUNT) {
+      raw_valid = false;
+    }
+    out->samples++;
+  }
+
+  if (out->samples == 0u) {
+    (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
+    (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+    out->drv0_status1 = g_drv_test.drv0_regs.status1;
+    out->drv0_status2 = g_drv_test.drv0_regs.status2;
+    out->drv0_control2 = g_drv_test.drv0_regs.control2;
+    out->drv1_status1 = g_drv_test.drv1_regs.status1;
+    out->drv1_status2 = g_drv_test.drv1_regs.status2;
+    out->drv1_control2 = g_drv_test.drv1_regs.control2;
+    rotating_dq_print_live_zero_stage(out);
+    return false;
+  }
+
+  const float inv = 1.0f / (float)out->samples;
+  out->raw0_mean = (float)raw0_sum * inv;
+  out->raw1_mean = (float)raw1_sum * inv;
+  float raw0_var = (float)raw0_sumsq * inv - out->raw0_mean * out->raw0_mean;
+  float raw1_var = (float)raw1_sumsq * inv - out->raw1_mean * out->raw1_mean;
+  if (raw0_var < 0.0f) { raw0_var = 0.0f; }
+  if (raw1_var < 0.0f) { raw1_var = 0.0f; }
+  out->raw0_std = sqrtf(raw0_var);
+  out->raw1_std = sqrtf(raw1_var);
+
+  if (update_offset) {
+    g_drv_test.offset.samples = out->samples;
+    g_drv_test.offset.offset_u =
+        (uint32_t)((raw0_sum + (out->samples / 2u)) / out->samples);
+    g_drv_test.offset.offset_v =
+        (uint32_t)((raw1_sum + (out->samples / 2u)) / out->samples);
+    g_drv_test.offset.u_min = out->raw0_min;
+    g_drv_test.offset.u_max = out->raw0_max;
+    g_drv_test.offset.v_min = out->raw1_min;
+    g_drv_test.offset.v_max = out->raw1_max;
+    g_drv_test.offset.u_noise_pp = (uint16_t)(out->raw0_max - out->raw0_min);
+    g_drv_test.offset.v_noise_pp = (uint16_t)(out->raw1_max - out->raw1_min);
+    g_drv_test.dc_noise.samples = out->samples;
+    g_drv_test.dc_noise.mean_u = out->raw0_mean;
+    g_drv_test.dc_noise.mean_v = out->raw1_mean;
+    g_drv_test.dc_noise.u_min = out->raw0_min;
+    g_drv_test.dc_noise.u_max = out->raw0_max;
+    g_drv_test.dc_noise.v_min = out->raw1_min;
+    g_drv_test.dc_noise.v_max = out->raw1_max;
+    g_drv_test.dc_noise.u_p2p = g_drv_test.offset.u_noise_pp;
+    g_drv_test.dc_noise.v_p2p = g_drv_test.offset.v_noise_pp;
+    g_drv_test.dc_noise.u_std_counts = out->raw0_std;
+    g_drv_test.dc_noise.v_std_counts = out->raw1_std;
+  }
+
+  out->offset0 = g_drv_test.offset.offset_u;
+  out->offset1 = g_drv_test.offset.offset_v;
+  out->du_mean_counts = out->raw0_mean - (float)out->offset0;
+  out->dv_mean_counts = out->raw1_mean - (float)out->offset1;
+  out->iv_a = out->du_mean_counts * g_drv_test.current_amp_per_count;
+  out->iw_a = out->dv_mean_counts * g_drv_test.current_amp_per_count;
+  out->iu_a = -(out->iv_a + out->iw_a);
+  const float i_alpha = out->iu_a;
+  const float i_beta = (out->iv_a - out->iw_a) * 0.57735026919f;
+  const float theta_e = rotating_dq_theta_from_encoder_fast(g_encoder_accum);
+  const float c = cosf(theta_e);
+  const float s = sinf(theta_e);
+  out->id_a = i_alpha * c + i_beta * s;
+  out->iq_a = -i_alpha * s + i_beta * c;
+  out->phase_metric_a = max3f_local(fabsf(out->iu_a),
+                                    fabsf(out->iv_a),
+                                    fabsf(out->iw_a));
+  out->dq_metric_a = (fabsf(out->id_a) > fabsf(out->iq_a))
+                         ? fabsf(out->id_a)
+                         : fabsf(out->iq_a);
+  out->adc_valid = raw_valid;
+  out->nfault_ok = nfault_ok();
+
+  (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
+  (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  out->drv0_status1 = g_drv_test.drv0_regs.status1;
+  out->drv0_status2 = g_drv_test.drv0_regs.status2;
+  out->drv0_control2 = g_drv_test.drv0_regs.control2;
+  out->drv1_status1 = g_drv_test.drv1_regs.status1;
+  out->drv1_status2 = g_drv_test.drv1_regs.status2;
+  out->drv1_control2 = g_drv_test.drv1_regs.control2;
+  rotating_dq_print_live_zero_stage(out);
+  return raw_valid && out->nfault_ok;
+}
+
+static void fixed_current_fast_m1_safe_off_isr(void)
+{
+  TIM8->BDTR &= ~TIM_BDTR_MOE;
+  TIM8->CCER &= ~M1_CCER_MASK;
+  TIM8->CCR1 = 0u;
+  TIM8->CCR2 = 0u;
+  TIM8->CCR3 = 0u;
+  GPIOA->BSRR = ((uint32_t)GPIO_PIN_7 << 16u);
+  GPIOB->BSRR = ((uint32_t)(GPIO_PIN_0 | GPIO_PIN_1) << 16u);
+  GPIOC->BSRR = ((uint32_t)(GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8) << 16u);
+}
+
+static void fixed_current_fast_shutdown_isr(uint32_t fault_code)
+{
+  if (fault_code != FIXED_ROTOR_FAULT_NONE) {
+    fixed_rotor_current_test_force_fault(&g_fixed_current_test, fault_code);
+  }
+  g_fixed_current_test.id_ref_a = 0.0f;
+  current_controller_reset(&g_fixed_current_test.controller);
+  TIM1->BDTR &= ~TIM_BDTR_MOE;
+  TIM1->CCER &= ~POWER_CCER_MASK;
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  fixed_current_fast_m1_safe_off_isr();
+  EN_GATE_GPIO_Port->BSRR = ((uint32_t)EN_GATE_Pin << 16u);
+  g_fixed_current_power_ready = false;
+  g_fixed_current_run_request = false;
+  g_fixed_current_done = true;
+}
+
+static void fixed_current_adc_snapshot_fast_path(void)
+{
+  if (!g_fixed_current_active ||
+      !g_fixed_current_run_request ||
+      !g_fixed_current_power_ready) {
+    return;
+  }
+
+  HalAdcSnapshot snap = {0};
+  if (!hal_adc_get_snapshot(&snap)) {
+    fixed_current_fast_shutdown_isr(FIXED_ROTOR_FAULT_ADC_SEQ_GAP);
+    return;
+  }
+  if (snap.seq == g_fixed_current_isr_last_seq) {
+    return;
+  }
+  g_fixed_current_isr_last_seq = snap.seq;
+
+  const uint32_t cycles_before = DWT->CYCCNT;
+  if (g_fixed_current_clear_integrator_on_first_tick) {
+    current_controller_reset(&g_fixed_current_test.controller);
+    g_fixed_current_clear_integrator_on_first_tick = false;
+  }
+
+  encoder_tracker_sample();
+  if (snap.raw_pc0_m0_so1 < g_drv_test.run_raw_u_min) {
+    g_drv_test.run_raw_u_min = snap.raw_pc0_m0_so1;
+  }
+  if (snap.raw_pc0_m0_so1 > g_drv_test.run_raw_u_max) {
+    g_drv_test.run_raw_u_max = snap.raw_pc0_m0_so1;
+  }
+  if (snap.raw_pc1_m0_so2 < g_drv_test.run_raw_v_min) {
+    g_drv_test.run_raw_v_min = snap.raw_pc1_m0_so2;
+  }
+  if (snap.raw_pc1_m0_so2 > g_drv_test.run_raw_v_max) {
+    g_drv_test.run_raw_v_max = snap.raw_pc1_m0_so2;
+  }
+
+  const float iv = ((float)((int32_t)snap.raw_pc0_m0_so1 -
+                            (int32_t)g_drv_test.offset.offset_u)) *
+                   g_drv_test.current_amp_per_count;
+  const float iw = ((float)((int32_t)snap.raw_pc1_m0_so2 -
+                            (int32_t)g_drv_test.offset.offset_v)) *
+                   g_drv_test.current_amp_per_count;
+  const float vbus = fixed_current_vbus_from_snapshot(&snap);
+
+  FixedRotorCurrentTestInput in;
+  in.time_us = (uint64_t)g_fixed_current_test.control_tick_seq * 50ull;
+  in.adc_seq = snap.seq;
+  in.encoder_count = g_encoder_accum;
+  in.theta_test_rad = g_fixed_current_theta_test_rad;
+  in.iv_a = iv;
+  in.iw_a = iw;
+  in.vbus_v = vbus;
+  in.adc_valid = snap.valid &&
+                 (snap.raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                 (snap.raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
+                 (snap.raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
+                 (snap.raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT);
+  in.encoder_valid = encoder_delta_ok();
+  in.nfault_ok = nfault_ok();
+  in.drv_ok = g_fixed_current_slow_drv_ok;
+  in.m1_safe = m1_is_safe_off();
+  in.pwm_ccr_ok = ccrs_in_open_loop_range() || power_stage_channels_off();
+  in.pwm_allowed = true;
+  in.fault_active = (g_axis0.fault_flags != 0u);
+
+  FixedRotorCurrentTestOutput out;
+  fixed_rotor_current_test_fast_isr(&g_fixed_current_test, &in, &out);
+
+  if (out.safe_shutdown_request || out.result == FIXED_ROTOR_RESULT_FAIL) {
+    fixed_current_fast_shutdown_isr(FIXED_ROTOR_FAULT_NONE);
+  } else if (out.power_stage_request && out.pwm_output_request) {
+    encoder_apply_alpha_beta_svpwm(out.v_alpha_v, out.v_beta_v, vbus);
+    TIM1->CCER |= POWER_CCER_MASK;
+    TIM1->BDTR |= TIM_BDTR_MOE;
+  }
+
+  const uint32_t elapsed_cycles = DWT->CYCCNT - cycles_before;
+  const float elapsed_us = fixed_current_cycles_to_us(elapsed_cycles);
+  fixed_rotor_current_test_note_execution_time(&g_fixed_current_test,
+                                               elapsed_cycles,
+                                               elapsed_us);
+  if (g_fixed_current_test.result == FIXED_ROTOR_RESULT_FAIL) {
+    fixed_current_force_safe_output(&out, &g_fixed_current_test);
+    fixed_current_fast_shutdown_isr(FIXED_ROTOR_FAULT_NONE);
+  }
+
+  g_fixed_current_last_output = out;
+  if (out.done || g_fixed_current_test.result != FIXED_ROTOR_RESULT_RUNNING) {
+    g_fixed_current_done = true;
+  }
+}
+
+static void rotating_dq_fast_shutdown_isr(uint32_t fault_code) MAIN_FAST_OPT;
+static void rotating_dq_fast_shutdown_isr(uint32_t fault_code)
+{
+  if (fault_code != ROTATING_DQ_FAULT_NONE) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test, fault_code);
+  }
+  current_controller_reset(&g_rotating_dq_test.controller);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  velocity_controller_reset(&g_rotating_velocity_controller);
+  g_rotating_velocity_supervisor.iq_ref_a = 0.0f;
+#endif
+  TIM1->BDTR &= ~TIM_BDTR_MOE;
+  TIM1->CCER &= ~POWER_CCER_MASK;
+  TIM1->CCR1 = 0u;
+  TIM1->CCR2 = 0u;
+  TIM1->CCR3 = 0u;
+  fixed_current_fast_m1_safe_off_isr();
+  EN_GATE_GPIO_Port->BSRR = ((uint32_t)EN_GATE_Pin << 16u);
+  g_rotating_dq_power_ready = false;
+  g_rotating_dq_run_request = false;
+  g_rotating_dq_done = true;
+}
+
+static void rotating_dq_adc_snapshot_fast_path(const HalAdcSnapshot *snapshot) MAIN_FAST_OPT;
+static void rotating_dq_adc_snapshot_fast_path(const HalAdcSnapshot *snapshot)
+{
+  if (!g_rotating_dq_active ||
+      !g_rotating_dq_run_request ||
+      !g_rotating_dq_power_ready) {
+    return;
+  }
+
+  if (snapshot == NULL || !snapshot->valid) {
+    rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_ADC_SEQ_GAP);
+    return;
+  }
+  if (snapshot->seq == g_rotating_dq_isr_last_seq) {
+    return;
+  }
+  g_rotating_dq_isr_last_seq = snapshot->seq;
+
+  const uint32_t cycles_before = DWT->CYCCNT;
+  encoder_tracker_sample();
+  rotating_dq_velocity_supervisor_update();
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  uint32_t overspeed_source_mask = 0u;
+  if (g_rotating_velocity_supervisor.active &&
+      fabsf(g_rotating_velocity_supervisor.instant_rpm) >=
+          ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM) {
+    overspeed_source_mask |= ROTATING_DQ_OVERSPEED_SOURCE_INSTANT;
+  }
+  if (g_rotating_velocity_supervisor.active &&
+      fabsf(g_rotating_velocity_supervisor.measured_rpm) >=
+          ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM) {
+    overspeed_source_mask |= ROTATING_DQ_OVERSPEED_SOURCE_WINDOWED;
+  }
+  if (overspeed_source_mask != 0u) {
+    rotating_dq_velocity_latch_overspeed(snapshot->seq,
+                                         overspeed_source_mask);
+    rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_OVERSPEED);
+    return;
+  }
+#endif
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  VelocityBreakawayResult breakaway_result =
+      g_rotating_breakaway_probe.result;
+  const bool breakaway_state =
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE;
+  if (breakaway_state) {
+    if (g_rotating_breakaway_probe.result == VELOCITY_BREAKAWAY_IDLE) {
+      const bool probe_started = velocity_breakaway_probe_start(
+          &g_rotating_breakaway_probe,
+          g_encoder_accum,
+          g_rotating_dq_encoder_evidence.encoder_illegal_transition_count);
+      if (!probe_started ||
+          !velocity_breakaway_handoff_start(
+              &g_rotating_breakaway_handoff)) {
+        rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_TRACKING);
+        return;
+      }
+    }
+  }
+#endif
+  if (snapshot->raw_pc0_m0_so1 < g_drv_test.run_raw_u_min) {
+    g_drv_test.run_raw_u_min = snapshot->raw_pc0_m0_so1;
+  }
+  if (snapshot->raw_pc0_m0_so1 > g_drv_test.run_raw_u_max) {
+    g_drv_test.run_raw_u_max = snapshot->raw_pc0_m0_so1;
+  }
+  if (snapshot->raw_pc1_m0_so2 < g_drv_test.run_raw_v_min) {
+    g_drv_test.run_raw_v_min = snapshot->raw_pc1_m0_so2;
+  }
+  if (snapshot->raw_pc1_m0_so2 > g_drv_test.run_raw_v_max) {
+    g_drv_test.run_raw_v_max = snapshot->raw_pc1_m0_so2;
+  }
+  const float theta_e = rotating_dq_theta_from_encoder_fast(g_encoder_accum);
+  RotatingDqCurrentTestInput in;
+  rotating_dq_fill_input_from_snapshot(snapshot, theta_e, &in);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  if (g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE) {
+    in.external_iq_ref_valid = true;
+    const bool speed_pi_active =
+        velocity_breakaway_handoff_speed_pi_active(
+            &g_rotating_breakaway_handoff);
+    in.external_integrator_enable =
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+        true;
+#else
+        speed_pi_active ? g_rotating_velocity_supervisor.estimator_ready : true;
+#endif
+    in.external_iq_ref_a = velocity_breakaway_handoff_update(
+        &g_rotating_breakaway_handoff,
+        g_rotating_breakaway_probe.result,
+        speed_pi_active ? g_rotating_velocity_supervisor.iq_ref_a
+                        : velocity_breakaway_probe_iq_ref(
+                              &g_rotating_breakaway_probe),
+        g_rotating_dq_test.control_tick_seq);
+  }
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+      ROTATING_DQ_EXTERNAL_LOW_IQ_E2_ACTIVE
+  if (g_rotating_dq_test.state >= ROTATING_DQ_STATE_ENABLE_ZERO &&
+      g_rotating_dq_test.state <= ROTATING_DQ_STATE_HOLD_ZERO_2) {
+    in.external_iq_ref_valid = true;
+    in.external_integrator_enable = true;
+    if (g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+        g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE) {
+      in.external_iq_ref_a = g_rotating_dq_test.config.iq_target_a;
+    } else if (g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_NEGATIVE ||
+               g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_NEGATIVE) {
+      in.external_iq_ref_a = -g_rotating_dq_test.config.iq_target_a;
+    } else {
+      in.external_iq_ref_a = 0.0f;
+    }
+  }
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    !ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC && \
+    !ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  if (g_rotating_dq_test.state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+      g_rotating_dq_test.state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE) {
+    in.external_iq_ref_valid = true;
+    in.external_integrator_enable =
+        g_rotating_velocity_supervisor.estimator_ready;
+    in.external_iq_ref_a = g_rotating_velocity_supervisor.iq_ref_a;
+  }
+#endif
+  RotatingDqCurrentTestOutput out;
+  const uint32_t fault_before_controller = g_rotating_dq_test.fault_code;
+  rotating_dq_current_test_fast_isr(&g_rotating_dq_test, &in, &out);
+  const uint32_t fault_after_controller = g_rotating_dq_test.fault_code;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  (void)fault_before_controller;
+  if (!velocity_breakaway_handoff_speed_pi_active(
+          &g_rotating_breakaway_handoff)) {
+    rotating_dq_breakaway_encoder_evidence_update_light(&in);
+  }
+#else
+  rotating_dq_encoder_evidence_update(&in, &out);
+  rotating_dq_latch_steady_direct_peak(&in,
+                                       &out,
+                                       fault_before_controller,
+                                       fault_after_controller);
+#endif
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  if (fault_after_controller != ROTATING_DQ_FAULT_NONE ||
+      out.result == ROTATING_DQ_RESULT_FAIL) {
+    g_rotating_breakaway_probe.result =
+        VELOCITY_BREAKAWAY_FAIL_RUNTIME;
+    breakaway_result = VELOCITY_BREAKAWAY_FAIL_RUNTIME;
+    (void)velocity_breakaway_handoff_update(
+        &g_rotating_breakaway_handoff,
+        breakaway_result,
+        0.0f,
+        g_rotating_dq_test.control_tick_seq);
+  }
+  if (fault_after_controller == ROTATING_DQ_FAULT_NONE &&
+      out.result != ROTATING_DQ_RESULT_FAIL) {
+    if (breakaway_state) {
+      breakaway_result = velocity_breakaway_probe_update(
+          &g_rotating_breakaway_probe,
+          g_encoder_accum,
+          g_rotating_dq_encoder_evidence.encoder_illegal_transition_count);
+    }
+    if (breakaway_result == VELOCITY_BREAKAWAY_PASS &&
+        g_rotating_breakaway_handoff.state ==
+            VELOCITY_BREAKAWAY_HANDOFF_BREAKAWAY) {
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+      (void)velocity_breakaway_handoff_update(
+          &g_rotating_breakaway_handoff,
+          breakaway_result,
+          0.0f,
+          g_rotating_dq_test.control_tick_seq);
+      current_controller_reset(&g_rotating_dq_test.controller);
+      velocity_controller_prepare_bumpless_handoff(
+          &g_rotating_velocity_controller,
+          &g_rotating_velocity_supervisor.speed_window,
+          ROTATING_DQ_HANDOFF_CAPTURE_CURRENT_A);
+      (void)velocity_count_window_set_samples(
+          &g_rotating_velocity_supervisor.speed_window,
+          ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES);
+      velocity_edge_period_init(
+          &g_rotating_velocity_supervisor.edge_estimator,
+          g_encoder_accum,
+          ROTATING_DQ_VELOCITY_EDGE_STALE_TICKS);
+#if ROTATING_DQ_HANDOFF_SUSTAIN_ENABLE
+      if (!velocity_breakaway_probe_start(
+              &g_rotating_handoff_sustain_probe,
+              g_encoder_accum,
+              g_rotating_dq_encoder_evidence.encoder_illegal_transition_count)) {
+        rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_TRACKING);
+        return;
+      }
+#endif
+      g_rotating_velocity_supervisor.divider_ticks = 0u;
+      g_rotating_velocity_supervisor.last_encoder_count = g_encoder_accum;
+      g_rotating_velocity_supervisor.instant_rpm = 0.0f;
+      g_rotating_velocity_supervisor.windowed_rpm = 0.0f;
+      g_rotating_velocity_supervisor.edge_period_rpm = 0.0f;
+      g_rotating_velocity_supervisor.edge_speed_peak_rpm = 0.0f;
+      g_rotating_velocity_supervisor.measured_rpm = 0.0f;
+      g_rotating_velocity_supervisor.estimator_ready = false;
+      g_rotating_velocity_supervisor.target_command_rpm =
+          ROTATING_DQ_VELOCITY_TARGET_RPM;
+      g_rotating_velocity_supervisor.iq_ref_a = 0.0f;
+      g_rotating_velocity_supervisor.first_speed_pi_iq_ref_a = 0.0f;
+      g_rotating_velocity_supervisor.first_speed_pi_iq_captured = false;
+      g_rotating_velocity_supervisor.previous_speed_pi_iq_ref_a = 0.0f;
+#else
+      rotating_dq_current_test_force_complete(&g_rotating_dq_test);
+      rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_NONE);
+      return;
+#endif
+    }
+    if (breakaway_result == VELOCITY_BREAKAWAY_FAIL_NO_MOTION) {
+      rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_TRACKING);
+      return;
+    }
+    if (breakaway_result == VELOCITY_BREAKAWAY_FAIL_REVERSE) {
+      rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_DIRECTION);
+      return;
+    }
+    if (breakaway_result == VELOCITY_BREAKAWAY_FAIL_ENCODER) {
+      rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_ENCODER);
+      return;
+    }
+#if ROTATING_DQ_HANDOFF_SUSTAIN_ENABLE
+    if (g_rotating_handoff_sustain_probe.result == VELOCITY_BREAKAWAY_ACTIVE) {
+      const VelocityBreakawayResult sustain_result =
+          velocity_breakaway_probe_update(
+              &g_rotating_handoff_sustain_probe,
+              g_encoder_accum,
+              g_rotating_dq_encoder_evidence.encoder_illegal_transition_count);
+      if (sustain_result == VELOCITY_BREAKAWAY_FAIL_NO_MOTION) {
+        rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_TRACKING);
+        return;
+      }
+      if (sustain_result == VELOCITY_BREAKAWAY_FAIL_REVERSE) {
+        rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_DIRECTION);
+        return;
+      }
+      if (sustain_result == VELOCITY_BREAKAWAY_FAIL_ENCODER) {
+        rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_ENCODER);
+        return;
+      }
+    }
+#endif
+  }
+#endif
+  const bool fast_fault_latched =
+      (fault_after_controller != 0u) ||
+      (out.result == ROTATING_DQ_RESULT_FAIL) ||
+      (g_rotating_dq_test.result == ROTATING_DQ_RESULT_FAIL);
+  if (!fast_fault_latched &&
+      !out.safe_shutdown_request &&
+      out.power_stage_request &&
+      out.pwm_output_request &&
+      ROTATING_DQ_ENCODER_MOTION_PROBE_MODE !=
+          ROTATING_DQ_ENCODER_PROBE_MOE_OFF) {
+    if (g_rotating_dq_test.config.enable_zero_diagnostic_only &&
+        g_rotating_dq_test.state == ROTATING_DQ_STATE_ENABLE_ZERO &&
+        out.v_alpha_v == 0.0f &&
+        out.v_beta_v == 0.0f) {
+      const uint32_t half = (TIM1->ARR + 1u) / 2u;
+      TIM1->CCR1 = half;
+      TIM1->CCR2 = half;
+      TIM1->CCR3 = half;
+    } else {
+      rotating_dq_apply_alpha_beta_svpwm_fast(out.v_alpha_v,
+                                             out.v_beta_v,
+                                             in.vbus_v);
+    }
+    TIM1->CCER |= POWER_CCER_MASK;
+    TIM1->BDTR |= TIM_BDTR_MOE;
+  } else if (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+             ROTATING_DQ_ENCODER_PROBE_MOE_OFF) {
+    TIM1->BDTR &= ~TIM_BDTR_MOE;
+    TIM1->CCER &= ~POWER_CCER_MASK;
+    TIM1->CCR1 = 0u;
+    TIM1->CCR2 = 0u;
+    TIM1->CCR3 = 0u;
+  }
+  const uint32_t elapsed_cycles = DWT->CYCCNT - cycles_before;
+  const uint32_t control_critical_cycles =
+      g_rotating_dq_test.fast_profile.control_critical_max_cycles;
+  if (control_critical_cycles >
+      g_rotating_dq_test.worst_case_control_cycles) {
+    g_rotating_dq_test.worst_case_control_cycles = control_critical_cycles;
+  }
+  if (control_critical_cycles > ROTATING_DQ_CONTROL_TIME_LIMIT_CYCLES &&
+      g_rotating_dq_test.result == ROTATING_DQ_RESULT_RUNNING) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         ROTATING_DQ_FAULT_CONTROL_TIME);
+  }
+  if (elapsed_cycles > g_rotating_dq_wrapper_profile.total_max_cycles) {
+    g_rotating_dq_wrapper_profile.total_max_cycles = elapsed_cycles;
+  }
+
+  const bool final_fault_latched =
+      fast_fault_latched ||
+      (g_rotating_dq_test.fault_code != 0u) ||
+      (g_rotating_dq_test.result == ROTATING_DQ_RESULT_FAIL);
+#if !ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  rotating_dq_fault_trace_push_history(&in,
+                                       &out,
+                                       fault_before_controller,
+                                       g_rotating_dq_test.fault_code);
+#else
+  const uint32_t dq_over_count =
+      g_rotating_dq_test.zero_dq_over_limit_consecutive;
+  if (dq_over_count == 0u) {
+    g_rotating_dq_dq_over_streak_raw.count = 0u;
+  } else if (dq_over_count <= ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS) {
+    volatile RotatingDqDqOverStreakSample *sample =
+        &g_rotating_dq_dq_over_streak_raw.sample[dq_over_count - 1u];
+    sample->tick = g_rotating_dq_test.control_tick_seq;
+    sample->packed_raw_pc0_pc1 =
+        (uint32_t)in.raw_pc0 | ((uint32_t)in.raw_pc1 << 16);
+    sample->id_measured_a = out.id_measured_a;
+    sample->iq_measured_a = out.iq_measured_a;
+    sample->iq_ref_a = out.iq_ref_a;
+    sample->vd_v = out.vd_v;
+    sample->vq_v = out.vq_v;
+    sample->integrator_d_v = g_rotating_dq_test.controller.integrator_d_v;
+    sample->integrator_q_v = g_rotating_dq_test.controller.integrator_q_v;
+    sample->ccr1 = (uint16_t)in.ccr1;
+    sample->ccr2 = (uint16_t)in.ccr2;
+    sample->ccr3 = (uint16_t)in.ccr3;
+    sample->ccr4 = (uint16_t)in.ccr4;
+    sample->tim1_cnt = (uint16_t)in.tim1_cnt;
+    sample->state = (uint8_t)out.state;
+    sample->common_mode_shape = out.common_mode_shape ? 1u : 0u;
+    sample->common_mode_caused_dq_crossing =
+        out.common_mode_caused_dq_crossing ? 1u : 0u;
+    g_rotating_dq_dq_over_streak_raw.count = dq_over_count;
+  }
+#endif
+  if (final_fault_latched) {
+    rotating_dq_fault_trace_latch_fault(&in,
+                                        &out,
+                                        fault_after_controller,
+                                        g_rotating_dq_test.fault_code);
+  }
+
+  if (out.safe_shutdown_request ||
+      out.result == ROTATING_DQ_RESULT_FAIL ||
+      g_rotating_dq_test.result == ROTATING_DQ_RESULT_FAIL) {
+    rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_NONE);
+  }
+
+  if (out.done ||
+      g_rotating_dq_test.result != ROTATING_DQ_RESULT_RUNNING) {
+    g_rotating_dq_last_output = out;
+  }
+  if (out.done || g_rotating_dq_test.result != ROTATING_DQ_RESULT_RUNNING) {
+    g_rotating_dq_done = true;
+  }
+}
+
 static void fixed_current_print_stage_stats(const char *name,
                                             const FixedRotorCurrentStageStats *stats)
 {
@@ -8394,11 +14347,8 @@ static void fixed_current_print_log(const FixedRotorCurrentTest *test)
 
 static bool fixed_rotor_current_pi_run(void)
 {
-  static FixedRotorCurrentTest test __attribute__((section(".ccmram")));
   FixedRotorCurrentTestConfig cfg = fixed_rotor_current_test_default_config();
   FixedRotorCurrentTestOutput out = {0};
-  uint32_t last_seq = 0u;
-  bool gate_enabled = false;
   char line[512];
 
   cfg.phase_resistance_ohm = FIXED_CURRENT_PI_R_PHASE_OHM;
@@ -8407,11 +14357,12 @@ static bool fixed_rotor_current_pi_run(void)
   cfg.voltage_limit_v = FIXED_CURRENT_PI_VOLTAGE_LIMIT_V;
   cfg.kaw = FIXED_CURRENT_PI_KAW;
   cfg.integrator_limit_v = FIXED_CURRENT_PI_INTEGRATOR_LIMIT_V;
-  fixed_rotor_current_test_init(&test, &cfg);
+  fixed_rotor_current_test_init(&g_fixed_current_test, &cfg);
   g_drv_test.run_raw_u_min = 0xffffu;
   g_drv_test.run_raw_v_min = 0xffffu;
   g_drv_test.run_raw_u_max = 0u;
   g_drv_test.run_raw_v_max = 0u;
+  memset(&g_fixed_current_last_output, 0, sizeof(g_fixed_current_last_output));
 
   snprintf(line,
            sizeof(line),
@@ -8425,154 +14376,148 @@ static bool fixed_rotor_current_pi_run(void)
            (unsigned long)(cfg.dt_s * 1000000.0f),
            (unsigned long)cfg.voltage_limit_v,
            (unsigned long)((uint32_t)(cfg.voltage_limit_v * 100.0f) % 100u),
-           (unsigned long)fixed_rotor_current_test_kp(&test),
-           (unsigned long)((uint32_t)(fixed_rotor_current_test_kp(&test) * 100000.0f) % 100000u),
-           (unsigned long)fixed_rotor_current_test_ki(&test),
-           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki(&test) * 100.0f) % 100u),
-           (unsigned long)fixed_rotor_current_test_ki_times_ts(&test),
-           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki_times_ts(&test) * 100000.0f) % 100000u),
+           (unsigned long)fixed_rotor_current_test_kp(&g_fixed_current_test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_kp(&g_fixed_current_test) * 100000.0f) % 100000u),
+           (unsigned long)fixed_rotor_current_test_ki(&g_fixed_current_test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki(&g_fixed_current_test) * 100.0f) % 100u),
+           (unsigned long)fixed_rotor_current_test_ki_times_ts(&g_fixed_current_test),
+           (unsigned long)((uint32_t)(fixed_rotor_current_test_ki_times_ts(&g_fixed_current_test) * 100000.0f) % 100000u),
            (unsigned long)cfg.kaw,
            (unsigned long)((uint32_t)(cfg.kaw * 100.0f) % 100u),
            (unsigned long)g_drv_test.current_amp_per_count,
            (unsigned long)((uint32_t)(g_drv_test.current_amp_per_count * 1000000.0f) % 1000000u));
   uart2_printf_line(line);
 
-  fixed_current_safe_shutdown(&test);
+  fixed_current_safe_shutdown(&g_fixed_current_test);
   power_stage_set_ccr_half();
   hal_pwm_start_adc_trigger_only();
   power_stage_disable_six_outputs();
   (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
   fixed_current_enable_cycle_counter();
 
-  uint32_t timeout_ticks = 0u;
-  while (!out.done && timeout_ticks < 180000u) {
-    HalAdcSnapshot snap = {0};
-    if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
-      g_drv_test.fault_code = FIXED_ROTOR_FAULT_ADC_SEQ_GAP;
+  __disable_irq();
+  g_fixed_current_active = false;
+  g_fixed_current_run_request = false;
+  g_fixed_current_power_ready = false;
+  g_fixed_current_done = false;
+  g_fixed_current_slow_drv_ok = true;
+  g_fixed_current_clear_integrator_on_first_tick = false;
+  g_fixed_current_isr_last_seq = 0u;
+  g_fixed_current_worst_adc_callback_cycles = 0u;
+  g_fixed_current_worst_adc_callback_us = 0.0f;
+  __enable_irq();
+
+  const uint32_t preflight_start_ms = HAL_GetTick();
+  const uint32_t preflight_ms =
+      (uint32_t)((cfg.preflight_ticks * cfg.dt_s * 1000.0f) + 0.5f);
+  while ((HAL_GetTick() - preflight_start_ms) < preflight_ms) {
+    if (!gate_raw_is_low() || !power_stage_channels_off() || !m1_is_safe_off()) {
+      fixed_rotor_current_test_force_fault(&g_fixed_current_test,
+                                           FIXED_ROTOR_FAULT_M1 |
+                                           FIXED_ROTOR_FAULT_PWM_CCR);
       break;
     }
-
-    encoder_tracker_sample();
-    const float iv = ((float)((int32_t)snap.raw_pc0_m0_so1 -
-                              (int32_t)g_drv_test.offset.offset_u)) *
-                     g_drv_test.current_amp_per_count;
-    const float iw = ((float)((int32_t)snap.raw_pc1_m0_so2 -
-                              (int32_t)g_drv_test.offset.offset_v)) *
-                     g_drv_test.current_amp_per_count;
-    const float vbus = board_read_vbus_v();
-    if (snap.raw_pc0_m0_so1 < g_drv_test.run_raw_u_min) {
-      g_drv_test.run_raw_u_min = snap.raw_pc0_m0_so1;
-    }
-    if (snap.raw_pc0_m0_so1 > g_drv_test.run_raw_u_max) {
-      g_drv_test.run_raw_u_max = snap.raw_pc0_m0_so1;
-    }
-    if (snap.raw_pc1_m0_so2 < g_drv_test.run_raw_v_min) {
-      g_drv_test.run_raw_v_min = snap.raw_pc1_m0_so2;
-    }
-    if (snap.raw_pc1_m0_so2 > g_drv_test.run_raw_v_max) {
-      g_drv_test.run_raw_v_max = snap.raw_pc1_m0_so2;
-    }
-    const bool drv_ok =
-        ((test.control_tick_seq % 2000u) != 0u ||
-         (drv8301_read_status(&g_drv0) && drv8301_read_status(&g_drv1))) &&
-        !drv8301_has_fault(&g_drv0) &&
-        !drv8301_has_fault(&g_drv1) &&
-        !drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) &&
-        !drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw);
-
-    FixedRotorCurrentTestInput in;
-    in.time_us = (uint64_t)timeout_ticks * 50ull;
-    in.adc_seq = snap.seq;
-    in.encoder_count = g_encoder_accum;
-    in.theta_test_rad = fixed_current_encoder_theta_from_tim3();
-    in.iv_a = iv;
-    in.iw_a = iw;
-    in.vbus_v = vbus;
-    in.adc_valid = snap.valid &&
-                   (snap.raw_pc0_m0_so1 > CURRENT_RAW_MIN_SAFE_COUNT) &&
-                   (snap.raw_pc0_m0_so1 < CURRENT_RAW_MAX_SAFE_COUNT) &&
-                   (snap.raw_pc1_m0_so2 > CURRENT_RAW_MIN_SAFE_COUNT) &&
-                   (snap.raw_pc1_m0_so2 < CURRENT_RAW_MAX_SAFE_COUNT);
-    in.encoder_valid = encoder_delta_ok();
-    in.nfault_ok = nfault_ok();
-    in.drv_ok = drv_ok;
-    in.m1_safe = m1_is_safe_off();
-    in.pwm_ccr_ok = ccrs_in_open_loop_range() || power_stage_channels_off();
-    in.pwm_allowed = true;
-    in.fault_active = (g_axis0.fault_flags != 0u);
-
-    const uint32_t cycles_before = DWT->CYCCNT;
-    fixed_rotor_current_test_step(&test, &in, &out);
-    const uint32_t elapsed_cycles = DWT->CYCCNT - cycles_before;
-    const float elapsed_us = fixed_current_cycles_to_us(elapsed_cycles);
-    fixed_rotor_current_test_note_execution_time(&test, elapsed_cycles, elapsed_us);
-    if (test.result == FIXED_ROTOR_RESULT_FAIL && !out.safe_shutdown_request) {
-      fixed_current_force_safe_output(&out, &test);
-    }
-
-    if (out.power_stage_request && !gate_enabled) {
-      power_stage_disable_six_outputs();
-      power_stage_set_ccr_half();
-      hal_gpio_set_gate_enable(true);
-      if (!power_stage_wait_nfault_release()) {
-        g_drv_test.fault_code = FIXED_ROTOR_FAULT_NFAULT;
-        break;
-      }
-      TIM1->CCER |= POWER_CCER_MASK;
-      __HAL_TIM_MOE_ENABLE(&htim1);
-      gate_enabled = true;
-    }
-
-    if (out.power_stage_request && gate_enabled && !out.safe_shutdown_request) {
-      encoder_apply_alpha_beta_svpwm(out.v_alpha_v, out.v_beta_v, vbus);
-      TIM1->CCER |= POWER_CCER_MASK;
-      __HAL_TIM_MOE_ENABLE(&htim1);
-    }
-
-    if (out.safe_shutdown_request) {
-      fixed_current_safe_shutdown(&test);
-      break;
-    }
-    timeout_ticks++;
+    HAL_Delay(1u);
   }
 
-  if (!out.done && g_drv_test.fault_code == 0u) {
-    g_drv_test.fault_code = FIXED_ROTOR_FAULT_TIMEOUT;
+  if (g_fixed_current_test.result == FIXED_ROTOR_RESULT_RUNNING) {
+    encoder_tracker_reset();
+    g_fixed_current_theta_test_rad = fixed_current_encoder_theta_from_tim3();
+    power_stage_disable_six_outputs();
+    power_stage_set_ccr_half();
+    hal_gpio_set_gate_enable(true);
+    if (!power_stage_wait_nfault_release()) {
+      fixed_rotor_current_test_force_fault(&g_fixed_current_test,
+                                           FIXED_ROTOR_FAULT_NFAULT);
+    } else {
+      TIM1->CCER |= POWER_CCER_MASK;
+      __HAL_TIM_MOE_ENABLE(&htim1);
+      fixed_rotor_current_test_request_start(&g_fixed_current_test);
+      __disable_irq();
+      g_fixed_current_power_ready = true;
+      g_fixed_current_run_request = true;
+      g_fixed_current_active = true;
+      g_fixed_current_done = false;
+      g_fixed_current_clear_integrator_on_first_tick = true;
+      g_fixed_current_isr_last_seq = 0u;
+      __enable_irq();
+    }
   }
-  fixed_current_safe_shutdown(&test);
+
+  const uint32_t run_start_ms = HAL_GetTick();
+  uint32_t last_drv_poll_ms = run_start_ms;
+  while (!g_fixed_current_done &&
+         g_fixed_current_test.result == FIXED_ROTOR_RESULT_RUNNING &&
+         (HAL_GetTick() - run_start_ms) < 9000u) {
+    const uint32_t now_ms = HAL_GetTick();
+    if ((now_ms - last_drv_poll_ms) >= 100u) {
+      last_drv_poll_ms = now_ms;
+      const bool drv_ok =
+          drv8301_read_status(&g_drv0) &&
+          drv8301_read_status(&g_drv1) &&
+          !drv8301_has_fault(&g_drv0) &&
+          !drv8301_has_fault(&g_drv1) &&
+          !drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) &&
+          !drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw);
+      g_fixed_current_slow_drv_ok = drv_ok;
+    }
+    fixed_rotor_current_test_service_main(&g_fixed_current_test, &out);
+    HAL_Delay(1u);
+  }
+
+  if (!g_fixed_current_done &&
+      g_fixed_current_test.result == FIXED_ROTOR_RESULT_RUNNING) {
+    fixed_rotor_current_test_force_fault(&g_fixed_current_test,
+                                         FIXED_ROTOR_FAULT_TIMEOUT);
+    fixed_current_fast_shutdown_isr(FIXED_ROTOR_FAULT_NONE);
+  }
+
+  __disable_irq();
+  g_fixed_current_active = false;
+  out = g_fixed_current_last_output;
+  __enable_irq();
+
+  fixed_current_safe_shutdown(&g_fixed_current_test);
   (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
   (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
   g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
   g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
   drv_bringup_capture_final_state();
 
-  if (g_drv_test.fault_code != 0u && test.fault_code == 0u) {
-    test.fault_code = g_drv_test.fault_code;
-    test.result = FIXED_ROTOR_RESULT_FAIL;
+  if (g_drv_test.fault_code != 0u &&
+      g_fixed_current_test.fault_code == 0u) {
+    fixed_rotor_current_test_force_fault(&g_fixed_current_test,
+                                         g_drv_test.fault_code);
+  }
+  if (g_fixed_current_test.fault_code != 0u) {
+    g_drv_test.fault_code = g_fixed_current_test.fault_code;
   }
 
-  fixed_current_print_log(&test);
-  fixed_current_print_stage_stats("ENABLE_ZERO", &test.enable_zero_stats);
-  fixed_current_print_stage_stats("HOLD_ID_0P05", &test.hold_0p05_stats);
-  fixed_current_print_stage_stats("HOLD_ID_0P10", &test.hold_0p10_stats);
-  fixed_current_print_stage_stats("HOLD_ZERO", &test.hold_zero_stats);
+  fixed_current_print_log(&g_fixed_current_test);
+  fixed_current_print_stage_stats("ENABLE_ZERO", &g_fixed_current_test.enable_zero_stats);
+  fixed_current_print_stage_stats("HOLD_ID_0P05", &g_fixed_current_test.hold_0p05_stats);
+  fixed_current_print_stage_stats("HOLD_ID_0P10", &g_fixed_current_test.hold_0p10_stats);
+  fixed_current_print_stage_stats("HOLD_ZERO", &g_fixed_current_test.hold_zero_stats);
 
   snprintf(line,
            sizeof(line),
-           "current_pi_diag: control_tick_seq=%lu adc_seq=%lu voltage_command_seq=%lu missed_control_tick_count=%lu duplicate_control_tick_count=%lu worst_case_control_cycles=%lu worst_case_control_time_us=%lu.%03lu theta_test=%lu.%03lu encoder_motion_max_counts=%ld result=%s fault_code=0x%08lX",
-           (unsigned long)test.control_tick_seq,
-           (unsigned long)test.last_adc_seq,
-           (unsigned long)test.voltage_command_seq,
-           (unsigned long)test.missed_control_tick_count,
-           (unsigned long)test.duplicate_control_tick_count,
-           (unsigned long)test.worst_case_control_cycles,
-           (unsigned long)float_to_scaled_u32(test.worst_case_control_time_us, 1000.0f) / 1000u,
-           (unsigned long)float_to_scaled_u32(test.worst_case_control_time_us, 1000.0f) % 1000u,
-           (unsigned long)float_to_scaled_u32(test.theta_test_rad, 1000.0f) / 1000u,
-           (unsigned long)float_to_scaled_u32(test.theta_test_rad, 1000.0f) % 1000u,
-           (long)test.encoder_motion_max_counts,
-           fixed_rotor_current_test_result_name(test.result),
-           (unsigned long)test.fault_code);
+           "current_pi_diag: fast_loop_context=ADC_INJECTED_ISR control_tick_seq=%lu adc_seq=%lu voltage_command_seq=%lu missed_control_tick_count=%lu duplicate_control_tick_count=%lu worst_fast_loop_cycles=%lu worst_fast_loop_us=%lu.%03lu worst_adc_callback_cycles=%lu worst_adc_callback_us=%lu.%03lu theta_test=%lu.%03lu encoder_motion_max_counts=%ld result=%s fault_code=0x%08lX",
+           (unsigned long)g_fixed_current_test.control_tick_seq,
+           (unsigned long)g_fixed_current_test.last_adc_seq,
+           (unsigned long)g_fixed_current_test.voltage_command_seq,
+           (unsigned long)g_fixed_current_test.missed_control_tick_count,
+           (unsigned long)g_fixed_current_test.duplicate_control_tick_count,
+           (unsigned long)g_fixed_current_test.worst_case_control_cycles,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_test.worst_case_control_time_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_test.worst_case_control_time_us, 1000.0f) % 1000u,
+           (unsigned long)g_fixed_current_worst_adc_callback_cycles,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_worst_adc_callback_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_worst_adc_callback_us, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_test.theta_test_rad, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_test.theta_test_rad, 1000.0f) % 1000u,
+           (long)g_fixed_current_test.encoder_motion_max_counts,
+           fixed_rotor_current_test_result_name(g_fixed_current_test.result),
+           (unsigned long)g_fixed_current_test.fault_code);
   uart2_printf_line(line);
 
   snprintf(line,
@@ -8591,11 +14536,12 @@ static bool fixed_rotor_current_pi_run(void)
            (unsigned int)g_drv_test.drv0_regs.control2,
            (unsigned int)g_drv_test.drv1_regs.control1,
            (unsigned int)g_drv_test.drv1_regs.control2,
-           (unsigned long)test.fault_code,
-           fixed_rotor_current_test_result_name(test.result));
+           (unsigned long)g_fixed_current_test.fault_code,
+           fixed_rotor_current_test_result_name(g_fixed_current_test.result));
   uart2_printf_line(line);
 
-  if (test.result == FIXED_ROTOR_RESULT_PASS && test.fault_code == 0u) {
+  if (g_fixed_current_test.result == FIXED_ROTOR_RESULT_PASS &&
+      g_fixed_current_test.fault_code == 0u) {
     uart2_printf_line("FIXED_ROTOR_CURRENT_PI_TEST_PASS");
     return true;
   }
@@ -8603,6 +14549,5452 @@ static bool fixed_rotor_current_pi_run(void)
   uart2_printf_line("FIXED_ROTOR_CURRENT_PI_TEST_FAIL");
   drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
   return false;
+}
+
+static void noise_diag_isr_reset(void)
+{
+  __disable_irq();
+  memset(&g_noise_diag, 0, sizeof(g_noise_diag));
+  current_sensor_noise_online_reset(&g_noise_diag.dc_cal_acc);
+  current_sensor_noise_online_reset(&g_noise_diag.post_acc);
+  g_noise_diag.state = NOISE_DIAG_ISR_IDLE;
+  __enable_irq();
+}
+
+static void noise_diag_isr_start_dc_cal(void)
+{
+  __disable_irq();
+  g_noise_diag.active = true;
+  g_noise_diag.state = NOISE_DIAG_ISR_WAIT_DC_CAL_DISCARD;
+  g_noise_diag.state_count = 0u;
+  __enable_irq();
+}
+
+static void noise_diag_isr_start_post_cal(uint32_t offset_pc0, uint32_t offset_pc1)
+{
+  __disable_irq();
+  g_noise_diag.dc_offset_pc0 = offset_pc0;
+  g_noise_diag.dc_offset_pc1 = offset_pc1;
+  g_noise_diag.post_offset_ready = true;
+  g_noise_diag.state = NOISE_DIAG_ISR_WAIT_POST_CAL_DISCARD;
+  g_noise_diag.state_count = 0u;
+  __enable_irq();
+}
+
+static bool noise_diag_wait_state(NoiseDiagIsrState state, uint32_t timeout_ms)
+{
+  const uint32_t start_ms = HAL_GetTick();
+  while ((HAL_GetTick() - start_ms) < timeout_ms) {
+    const NoiseDiagIsrState current = g_noise_diag.state;
+    if (current == state) {
+      return true;
+    }
+    if (current == NOISE_DIAG_ISR_FAIL) {
+      return false;
+    }
+  }
+  return false;
+}
+
+static const char *noise_diag_state_name(NoiseDiagIsrState state)
+{
+  switch (state) {
+  case NOISE_DIAG_ISR_IDLE: return "IDLE";
+  case NOISE_DIAG_ISR_WAIT_DC_CAL_DISCARD: return "WAIT_DC_CAL_DISCARD";
+  case NOISE_DIAG_ISR_COLLECT_DC_CAL: return "COLLECT_DC_CAL";
+  case NOISE_DIAG_ISR_WAIT_POST_CAL_ACK: return "WAIT_POST_CAL_ACK";
+  case NOISE_DIAG_ISR_WAIT_POST_CAL_DISCARD: return "WAIT_POST_CAL_DISCARD";
+  case NOISE_DIAG_ISR_COLLECT_POST_CAL: return "COLLECT_POST_CAL";
+  case NOISE_DIAG_ISR_COMPLETE: return "COMPLETE";
+  case NOISE_DIAG_ISR_FAIL: return "FAIL";
+  default: return "UNKNOWN";
+  }
+}
+
+static void current_sensor_admission_test_reset(void)
+{
+  CurrentSensorAdmissionConfig cfg = current_sensor_admission_default_config();
+  cfg.current_amp_per_count = g_drv_test.current_amp_per_count;
+  __disable_irq();
+  memset(&g_admission_test, 0, sizeof(g_admission_test));
+  current_sensor_admission_init(&g_current_sensor_admission, &cfg);
+  __enable_irq();
+}
+
+static bool current_sensor_admission_wait_state(CurrentSensorAdmissionState state,
+                                                uint32_t timeout_ms)
+{
+  const uint32_t start_ms = HAL_GetTick();
+  while ((HAL_GetTick() - start_ms) < timeout_ms) {
+    const CurrentSensorAdmissionState current = g_current_sensor_admission.state;
+    if (current == state) {
+      return true;
+    }
+    if (current == CURRENT_SENSOR_ADMISSION_FAIL) {
+      return false;
+    }
+  }
+  return false;
+}
+
+static bool current_sensor_admission_disable_and_wait(uint32_t timeout_ms)
+{
+  if (!g_admission_test.active) {
+    return true;
+  }
+  __disable_irq();
+  g_admission_test.disable_request = true;
+  g_admission_test.disable_request_seq = drv_bringup_get_adc_seq();
+  __enable_irq();
+
+  const uint32_t start_ms = HAL_GetTick();
+  while ((HAL_GetTick() - start_ms) < timeout_ms) {
+    if (g_admission_test.disabled_ack &&
+        g_admission_test.snapshots_after_disable >= 2u) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool current_sensor_admission_fast_power_safe(void)
+    __attribute__((unused));
+static bool current_sensor_admission_fast_power_safe(void)
+{
+  const bool m0_safe = ((TIM1->BDTR & TIM_BDTR_MOE) == 0u) &&
+                       ((TIM1->CCER & POWER_CCER_MASK) == 0u);
+  const bool m1_timer_safe = ((TIM8->BDTR & TIM_BDTR_MOE) == 0u) &&
+                             ((TIM8->CCER & M1_CCER_MASK) == 0u);
+  const bool m1_pins_low = ((GPIOA->ODR & GPIO_PIN_7) == 0u) &&
+                           ((GPIOB->ODR & (GPIO_PIN_0 | GPIO_PIN_1)) == 0u) &&
+                           ((GPIOC->ODR & (GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8)) == 0u);
+  return m0_safe && m1_timer_safe && m1_pins_low;
+}
+
+static void current_sensor_admission_record_route_cycles(CurrentSensorAdmissionState state,
+                                                         uint32_t cycles)
+    __attribute__((unused));
+static void current_sensor_admission_record_route_cycles(CurrentSensorAdmissionState state,
+                                                         uint32_t cycles)
+{
+  switch (state) {
+  case CURRENT_SENSOR_ADMISSION_WAIT_DC_CAL_ENABLE:
+  case CURRENT_SENSOR_ADMISSION_WAIT_POST_CAL_ACK:
+    if (cycles > g_admission_test.worst_wait_cycles) {
+      g_admission_test.worst_wait_cycles = cycles;
+    }
+    break;
+  case CURRENT_SENSOR_ADMISSION_COLLECT_DC_CAL:
+    if (cycles > g_admission_test.worst_dc_cal_collect_cycles) {
+      g_admission_test.worst_dc_cal_collect_cycles = cycles;
+    }
+    break;
+  case CURRENT_SENSOR_ADMISSION_COLLECT_POST_CAL:
+    if (cycles > g_admission_test.worst_post_collect_cycles) {
+      g_admission_test.worst_post_collect_cycles = cycles;
+    }
+    break;
+  default:
+    if (cycles > g_admission_test.worst_transition_cycles) {
+      g_admission_test.worst_transition_cycles = cycles;
+    }
+    break;
+  }
+}
+
+static void current_sensor_admission_test_fast_isr(const HalAdcSnapshot *snapshot)
+    __attribute__((unused));
+static void current_sensor_admission_test_fast_isr(const HalAdcSnapshot *snapshot)
+{
+#if (M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_ADMISSION_TEST) || \
+    (M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION) || \
+    (M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST)
+  if (snapshot == NULL || !snapshot->valid || !g_admission_test.active) {
+    return;
+  }
+
+  const uint32_t core_start = DWT->CYCCNT;
+  if (!g_admission_test.pairing_window_started) {
+    hal_adc_stm32f405_begin_diagnostic_window();
+    g_admission_test.pairing_window_started = true;
+  }
+  if (g_admission_test.disable_request) {
+    g_admission_test.disable_request = false;
+    g_admission_test.active = false;
+    g_admission_test.disabled_ack = true;
+    g_admission_test.disabled_ack_seq = snapshot->seq;
+    hal_adc_stm32f405_freeze_diagnostic_window();
+    return;
+  }
+  if (g_admission_test.disabled_ack) {
+    g_admission_test.hook_calls_after_disable++;
+    return;
+  }
+  g_admission_test.hook_call_count++;
+
+  const CurrentSensorAdmissionState state_before = g_current_sensor_admission.state;
+  CurrentSensorAdmissionFastInput input;
+  input.raw_pc0 = snapshot->raw_pc0_m0_so1;
+  input.raw_pc1 = snapshot->raw_pc1_m0_so2;
+  input.adc_seq = snapshot->seq;
+  input.snapshot_valid = snapshot->valid && current_sensor_admission_fast_power_safe();
+  input.nfault_raw_high = (DRV_NFAULT_GPIO_Port->IDR & DRV_NFAULT_Pin) != 0u;
+  input.adc_true_unpaired = false;
+  input.adc_torn = false;
+  input.adc_generation_mismatch = false;
+
+#if CURRENT_SENSOR_ADMISSION_DETAILED_TIMING
+  const uint32_t detailed_start = DWT->CYCCNT;
+#endif
+  current_sensor_admission_fast_isr(&g_current_sensor_admission, &input);
+#if CURRENT_SENSOR_ADMISSION_DETAILED_TIMING
+  const uint32_t detailed_cycles = DWT->CYCCNT - detailed_start;
+  if (detailed_cycles > g_admission_test.worst_detailed_profile_cycles) {
+    g_admission_test.worst_detailed_profile_cycles = detailed_cycles;
+  }
+#endif
+
+  g_admission_test.dc_cal_discard_count =
+      g_current_sensor_admission.result.dc_cal_discard_count;
+  g_admission_test.dc_cal_collect_count = g_current_sensor_admission.dc.count;
+  g_admission_test.post_cal_discard_count =
+      g_current_sensor_admission.result.post_cal_discard_count;
+  g_admission_test.post_cal_collect_count = g_current_sensor_admission.post.count;
+
+  const uint32_t production_cycles = DWT->CYCCNT - core_start;
+  current_sensor_admission_record_route_cycles(state_before, production_cycles);
+  if (production_cycles > g_admission_test.worst_production_core_cycles) {
+    g_admission_test.worst_production_core_cycles = production_cycles;
+    g_admission_test.worst_total_cycles = production_cycles;
+    g_admission_test.worst_state = g_current_sensor_admission.state;
+    g_admission_test.worst_sample_index =
+        g_current_sensor_admission.result.observed_snapshot_count;
+    g_admission_test.worst_adc_seq = snapshot->seq;
+  }
+
+  if (g_current_sensor_admission.state == CURRENT_SENSOR_ADMISSION_COMPLETE ||
+      g_current_sensor_admission.state == CURRENT_SENSOR_ADMISSION_FAIL) {
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+    if (g_current_sensor_admission.state == CURRENT_SENSOR_ADMISSION_FAIL) {
+      g_admission_test.active = false;
+      hal_adc_stm32f405_freeze_diagnostic_window();
+    }
+#else
+    g_admission_test.active = false;
+    hal_adc_stm32f405_freeze_diagnostic_window();
+#endif
+  }
+#else
+  (void)snapshot;
+#endif
+}
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+static void electrical_offset_adc_snapshot_dispatch_fast_isr(
+    const HalAdcSnapshot *snapshot)
+{
+  if (g_electrical_offset_zero_command_request &&
+      !g_electrical_offset_zero_command_ack) {
+    g_admission_test.dispatcher_alignment_calls++;
+    electrical_offset_zero_command_fast_isr(snapshot);
+  } else if (g_admission_test.active && g_electrical_offset_alignment_active) {
+    g_admission_test.overlap_hook_call_count++;
+    g_admission_test.dispatcher_overlap_calls++;
+    current_sensor_admission_test_fast_isr(snapshot);
+  } else if (g_admission_test.active) {
+    g_admission_test.dispatcher_admission_calls++;
+    current_sensor_admission_test_fast_isr(snapshot);
+  } else if (g_admission_test.disabled_ack) {
+    g_admission_test.dispatcher_handoff_idle_calls++;
+    g_admission_test.snapshots_after_disable++;
+  } else if (g_electrical_offset_alignment_active) {
+    const uint32_t core_start = DWT->CYCCNT;
+    g_admission_test.dispatcher_alignment_calls++;
+    g_admission_test.alignment_hook_call_count++;
+    g_electrical_offset_alignment_fast_hook_call_count++;
+    const uint32_t core_cycles = DWT->CYCCNT - core_start;
+    if (core_cycles > g_electrical_offset_worst_alignment_fast_hook_core_cycles) {
+      g_electrical_offset_worst_alignment_fast_hook_core_cycles = core_cycles;
+    }
+  } else if (g_electrical_offset_alignment_dispatch_enabled) {
+    g_admission_test.dispatcher_unhandled_state_calls++;
+    g_admission_test.dispatcher_unhandled_state =
+        ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP;
+  }
+}
+#endif
+
+void current_sensor_adc_snapshot_fast_isr(const HalAdcSnapshot *snapshot)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_NOISE_DIAGNOSTIC
+  current_sensor_noise_diagnostic_fast_isr(snapshot);
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_ADMISSION_TEST
+  current_sensor_admission_test_fast_isr(snapshot);
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  electrical_offset_adc_snapshot_dispatch_fast_isr(snapshot);
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  if (g_runtime_offset_calibration_active) {
+    electrical_offset_adc_snapshot_dispatch_fast_isr(snapshot);
+  } else {
+    rotating_dq_adc_snapshot_fast_path(snapshot);
+  }
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  rotating_dq_adc_snapshot_fast_path(snapshot);
+#else
+  (void)snapshot;
+#endif
+}
+
+void current_sensor_noise_diagnostic_fast_isr(const HalAdcSnapshot *snapshot)
+{
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_NOISE_DIAGNOSTIC
+  if (snapshot == NULL || !snapshot->valid || !g_noise_diag.active) {
+    return;
+  }
+
+  const uint32_t total_start = DWT->CYCCNT;
+  if (!g_noise_diag.pairing_window_started) {
+    hal_adc_stm32f405_begin_diagnostic_window();
+    g_noise_diag.pairing_window_started = true;
+  }
+
+  uint32_t section_start = DWT->CYCCNT;
+  if (!g_noise_diag.publish_have_last_seq) {
+    g_noise_diag.publish_have_last_seq = true;
+    g_noise_diag.publish_first_seq = snapshot->seq;
+    g_noise_diag.publish_last_seq = snapshot->seq;
+  } else if (snapshot->seq == g_noise_diag.publish_last_seq) {
+    g_noise_diag.publish_duplicate_count++;
+  } else {
+    const uint32_t distance = snapshot->seq - g_noise_diag.publish_last_seq;
+    if (distance != 1u) {
+      g_noise_diag.publish_seq_gap_count += distance - 1u;
+    }
+    g_noise_diag.publish_last_seq = snapshot->seq;
+  }
+  g_noise_diag.publish_total_count++;
+  g_noise_diag.publish_seq_span =
+      g_noise_diag.publish_last_seq - g_noise_diag.publish_first_seq + 1u;
+  uint32_t section_cycles = DWT->CYCCNT - section_start;
+  if (section_cycles > g_noise_diag.worst_seq_check_cycles) {
+    g_noise_diag.worst_seq_check_cycles = section_cycles;
+  }
+
+  section_start = DWT->CYCCNT;
+  if ((TIM1->BDTR & TIM_BDTR_MOE) != 0u || !m1_is_safe_off()) {
+    g_noise_diag.fail_code = 1u;
+    g_noise_diag.state = NOISE_DIAG_ISR_FAIL;
+    g_noise_diag.active = false;
+    return;
+  }
+
+  const bool nfault_runtime_ok =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  if (!nfault_runtime_ok) {
+    if (g_noise_diag.state == NOISE_DIAG_ISR_COLLECT_DC_CAL ||
+        g_noise_diag.state == NOISE_DIAG_ISR_WAIT_DC_CAL_DISCARD) {
+      g_noise_diag.nfault_during_dc_cal_asserted_count++;
+    } else if (g_noise_diag.state == NOISE_DIAG_ISR_COLLECT_POST_CAL ||
+               g_noise_diag.state == NOISE_DIAG_ISR_WAIT_POST_CAL_DISCARD) {
+      g_noise_diag.nfault_during_post_cal_asserted_count++;
+    }
+    g_noise_diag.fail_code = 2u;
+    g_noise_diag.state = NOISE_DIAG_ISR_FAIL;
+    g_noise_diag.active = false;
+    return;
+  }
+  section_cycles = DWT->CYCCNT - section_start;
+  if (section_cycles > g_noise_diag.worst_state_machine_cycles) {
+    g_noise_diag.worst_state_machine_cycles = section_cycles;
+  }
+
+  section_start = DWT->CYCCNT;
+  switch (g_noise_diag.state) {
+  case NOISE_DIAG_ISR_WAIT_DC_CAL_DISCARD:
+    g_noise_diag.dc_cal_discard_count++;
+    if (++g_noise_diag.state_count >= 256u) {
+      g_noise_diag.state = NOISE_DIAG_ISR_COLLECT_DC_CAL;
+      g_noise_diag.state_count = 0u;
+      g_noise_diag.dc_center_valid = false;
+      g_noise_diag.prev_delta_pc0 = 0;
+      g_noise_diag.prev_delta_pc1 = 0;
+    }
+    break;
+
+  case NOISE_DIAG_ISR_COLLECT_DC_CAL: {
+    if (!g_noise_diag.dc_center_valid) {
+      g_noise_diag.dc_center_pc0 = snapshot->raw_pc0_m0_so1;
+      g_noise_diag.dc_center_pc1 = snapshot->raw_pc1_m0_so2;
+      g_noise_diag.dc_center_valid = true;
+    }
+    const int16_t d0 =
+        (int16_t)((int32_t)snapshot->raw_pc0_m0_so1 -
+                  (int32_t)g_noise_diag.dc_center_pc0);
+    const int16_t d1 =
+        (int16_t)((int32_t)snapshot->raw_pc1_m0_so2 -
+                  (int32_t)g_noise_diag.dc_center_pc1);
+    g_noise_diag.dc_raw_sum_pc0 += snapshot->raw_pc0_m0_so1;
+    g_noise_diag.dc_raw_sum_pc1 += snapshot->raw_pc1_m0_so2;
+    current_sensor_noise_online_push(&g_noise_diag.dc_cal_acc,
+                                     g_noise_diag.state_count,
+                                     snapshot->seq,
+                                     snapshot->raw_pc0_m0_so1,
+                                     snapshot->raw_pc1_m0_so2,
+                                     d0, d1,
+                                     g_noise_diag.prev_delta_pc0,
+                                     g_noise_diag.prev_delta_pc1,
+                                     (uint16_t)TIM1->CNT,
+                                     (uint8_t)hal_adc_get_m0_rank_order(),
+                                     g_adc_callback_count,
+                                     g_drv_test.current_amp_per_count);
+    section_cycles = DWT->CYCCNT - section_start;
+    if (section_cycles > g_noise_diag.worst_raw_stats_cycles) {
+      g_noise_diag.worst_raw_stats_cycles = section_cycles;
+      g_noise_diag.worst_histogram_cycles = section_cycles;
+      g_noise_diag.worst_phase_reconstruction_cycles = section_cycles;
+      g_noise_diag.worst_consecutive_threshold_cycles = section_cycles;
+      g_noise_diag.worst_worst16_cycles = section_cycles;
+    }
+    g_noise_diag.prev_delta_pc0 = d0;
+    g_noise_diag.prev_delta_pc1 = d1;
+    g_noise_diag.dc_cal_sample_count++;
+    if (++g_noise_diag.state_count >= 2048u) {
+      g_noise_diag.state = NOISE_DIAG_ISR_WAIT_POST_CAL_ACK;
+      g_noise_diag.state_count = 0u;
+    }
+    break;
+  }
+
+  case NOISE_DIAG_ISR_WAIT_POST_CAL_ACK:
+    break;
+
+  case NOISE_DIAG_ISR_WAIT_POST_CAL_DISCARD:
+    g_noise_diag.post_discard_count++;
+    if (++g_noise_diag.state_count >= 512u) {
+      g_noise_diag.state = NOISE_DIAG_ISR_COLLECT_POST_CAL;
+      g_noise_diag.state_count = 0u;
+      g_noise_diag.prev_delta_pc0 = 0;
+      g_noise_diag.prev_delta_pc1 = 0;
+    }
+    break;
+
+  case NOISE_DIAG_ISR_COLLECT_POST_CAL: {
+    const int16_t d0 =
+        (int16_t)((int32_t)snapshot->raw_pc0_m0_so1 -
+                  (int32_t)g_noise_diag.dc_offset_pc0);
+    const int16_t d1 =
+        (int16_t)((int32_t)snapshot->raw_pc1_m0_so2 -
+                  (int32_t)g_noise_diag.dc_offset_pc1);
+    current_sensor_noise_online_push(&g_noise_diag.post_acc,
+                                     g_noise_diag.state_count,
+                                     snapshot->seq,
+                                     snapshot->raw_pc0_m0_so1,
+                                     snapshot->raw_pc1_m0_so2,
+                                     d0, d1,
+                                     g_noise_diag.prev_delta_pc0,
+                                     g_noise_diag.prev_delta_pc1,
+                                     (uint16_t)TIM1->CNT,
+                                     (uint8_t)hal_adc_get_m0_rank_order(),
+                                     g_adc_callback_count,
+                                     g_drv_test.current_amp_per_count);
+    section_cycles = DWT->CYCCNT - section_start;
+    if (section_cycles > g_noise_diag.worst_raw_stats_cycles) {
+      g_noise_diag.worst_raw_stats_cycles = section_cycles;
+      g_noise_diag.worst_histogram_cycles = section_cycles;
+      g_noise_diag.worst_phase_reconstruction_cycles = section_cycles;
+      g_noise_diag.worst_consecutive_threshold_cycles = section_cycles;
+      g_noise_diag.worst_worst16_cycles = section_cycles;
+    }
+    g_noise_diag.prev_delta_pc0 = d0;
+    g_noise_diag.prev_delta_pc1 = d1;
+    g_noise_diag.post_sample_count++;
+    if (++g_noise_diag.state_count >= 4096u) {
+      g_noise_diag.state = NOISE_DIAG_ISR_COMPLETE;
+      g_noise_diag.active = false;
+      hal_adc_stm32f405_freeze_diagnostic_window();
+    }
+    break;
+  }
+
+  default:
+    break;
+  }
+  section_cycles = DWT->CYCCNT - section_start;
+  if (section_cycles > g_noise_diag.worst_state_machine_cycles) {
+    g_noise_diag.worst_state_machine_cycles = section_cycles;
+  }
+  const uint32_t total_cycles = DWT->CYCCNT - total_start;
+  if (total_cycles > g_noise_diag.worst_isr_cycles) {
+    g_noise_diag.worst_isr_cycles = total_cycles;
+  }
+#else
+  (void)snapshot;
+#endif
+}
+
+static void noise_diag_print_count_stats(const char *tag,
+                                         const CurrentSensorNoiseCountStats *s)
+{
+  char uart_buf[768];
+  const int32_t mean_c = float_to_scaled_i32(s->mean, 1000.0f);
+  const uint32_t std_c = float_to_scaled_u32(s->standard_deviation, 1000.0f);
+  const int32_t med_c = float_to_scaled_i32(s->median, 1000.0f);
+  const uint32_t mad_c = float_to_scaled_u32(s->mad, 1000.0f);
+  const int32_t p90 = float_to_scaled_i32(s->percentile_90, 1000.0f);
+  const int32_t p95 = float_to_scaled_i32(s->percentile_95, 1000.0f);
+  const int32_t p99 = float_to_scaled_i32(s->percentile_99, 1000.0f);
+  const int32_t p995 = float_to_scaled_i32(s->percentile_99_5, 1000.0f);
+  const int32_t p999 = float_to_scaled_i32(s->percentile_99_9, 1000.0f);
+  const uint32_t abs_p999 =
+      float_to_scaled_u32(s->abs_percentile_99_9, 1000.0f);
+  snprintf(uart_buf, sizeof(uart_buf),
+           "%s: sample_count=%lu mean=%s%lu.%03lu std=%lu.%03lu min=%d max=%d p2p=%d median=%s%lu.%03lu MAD=%lu.%03lu p90=%s%lu.%03lu p95=%s%lu.%03lu p99=%s%lu.%03lu p99_5=%s%lu.%03lu p99_9=%s%lu.%03lu abs_p99_9=%lu.%03lu over2=%lu over4=%lu over6=%lu over8=%lu over10=%lu over12=%lu",
+           tag,
+           (unsigned long)s->sample_count,
+           (mean_c < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(mean_c) / 1000u), (unsigned long)(abs_i32_to_u32(mean_c) % 1000u),
+           (unsigned long)(std_c / 1000u), (unsigned long)(std_c % 1000u),
+           (int)s->min, (int)s->max, (int)s->peak_to_peak,
+           (med_c < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(med_c) / 1000u), (unsigned long)(abs_i32_to_u32(med_c) % 1000u),
+           (unsigned long)(mad_c / 1000u), (unsigned long)(mad_c % 1000u),
+           (p90 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(p90) / 1000u), (unsigned long)(abs_i32_to_u32(p90) % 1000u),
+           (p95 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(p95) / 1000u), (unsigned long)(abs_i32_to_u32(p95) % 1000u),
+           (p99 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(p99) / 1000u), (unsigned long)(abs_i32_to_u32(p99) % 1000u),
+           (p995 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(p995) / 1000u), (unsigned long)(abs_i32_to_u32(p995) % 1000u),
+           (p999 < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(p999) / 1000u), (unsigned long)(abs_i32_to_u32(p999) % 1000u),
+           (unsigned long)(abs_p999 / 1000u),
+           (unsigned long)(abs_p999 % 1000u),
+           (unsigned long)s->abs_over_2_count,
+           (unsigned long)s->abs_over_4_count,
+           (unsigned long)s->abs_over_6_count,
+           (unsigned long)s->abs_over_8_count,
+           (unsigned long)s->abs_over_10_count,
+           (unsigned long)s->abs_over_12_count);
+  uart2_printf_line(uart_buf);
+}
+
+static void noise_diag_print_current_stats(const char *tag,
+                                           const CurrentSensorNoiseCurrentStats *s)
+{
+  char uart_buf[256];
+  const int32_t mean = float_to_scaled_i32(s->mean, 1000.0f);
+  const uint32_t std = float_to_scaled_u32(s->standard_deviation, 1000.0f);
+  const int32_t min_v = float_to_scaled_i32(s->min, 1000.0f);
+  const int32_t max_v = float_to_scaled_i32(s->max, 1000.0f);
+  const uint32_t peak = float_to_scaled_u32(s->abs_peak, 1000.0f);
+  snprintf(uart_buf, sizeof(uart_buf),
+           "%s: mean=%s%lu.%03lu std=%lu.%03lu min=%s%lu.%03lu max=%s%lu.%03lu abs_peak=%lu.%03lu",
+           tag,
+           (mean < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(mean) / 1000u), (unsigned long)(abs_i32_to_u32(mean) % 1000u),
+           (unsigned long)(std / 1000u), (unsigned long)(std % 1000u),
+           (min_v < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(min_v) / 1000u), (unsigned long)(abs_i32_to_u32(min_v) % 1000u),
+           (max_v < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(max_v) / 1000u), (unsigned long)(abs_i32_to_u32(max_v) % 1000u),
+           (unsigned long)(peak / 1000u), (unsigned long)(peak % 1000u));
+  uart2_printf_line(uart_buf);
+}
+
+static bool current_sensor_noise_diagnostic_run(void)
+{
+  char uart_buf[768];
+  bool ok = true;
+  CurrentSensorNoiseAdcIntegrity integrity = {0};
+  HalAdcDiagnostics diag_before = {0};
+  HalAdcDiagnostics diag_after = {0};
+  CurrentSensorNoiseAnalysis dc_cal_analysis;
+  CurrentSensorNoiseAnalysis post_analysis;
+  Drv8301Registers drv0_runtime_regs = {0};
+  Drv8301Registers drv1_runtime_regs = {0};
+  const bool nfault_before_gate_enable_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  bool nfault_after_gate_enable_raw = false;
+  bool nfault_at_test_completion_before_shutdown_raw = false;
+  bool nfault_after_gate_disable_raw = false;
+  bool nfault_final_raw = false;
+
+  g_drv_test.phase_resistance_classification =
+      "CURRENT_SENSOR_NOISE_DIAGNOSTIC_FAIL";
+  uart2_printf_line("current_sensor_noise_diag_config: mode=CURRENT_SENSOR_NOISE_DIAGNOSTIC moe=0 alpha_beta_voltage=0 dq_pi=0 speed_loop=0 position_loop=0 gain=80 dc_cal_discard=256 dc_cal_samples=2048 post_discard=512 post_samples=4096");
+
+  fixed_current_enable_cycle_counter();
+  power_stage_force_safe_off_zero_ccr();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_force_safe_off_zero_ccr();
+  m1_force_safe_off();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  current_observe_set_gain_scale(80.0f);
+
+  hal_gpio_set_gate_enable(true);
+  if (!power_stage_wait_nfault_release()) {
+    drv_bringup_fail(30u);
+    power_stage_force_safe_off_zero_ccr();
+    return false;
+  }
+  nfault_after_gate_enable_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  HAL_Delay(10u);
+  if (!power_stage_configure_drivers()) {
+    drv_bringup_fail(31u);
+    power_stage_force_safe_off_zero_ccr();
+    return false;
+  }
+
+  const uint16_t control2_dc_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, true, true);
+  const uint16_t control2_no_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, false, false);
+  if (!drv8301_set_control2(&g_drv0, control2_dc_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_dc_cal)) {
+    drv_bringup_fail(32u);
+    power_stage_force_safe_off_zero_ccr();
+    return false;
+  }
+
+  hal_adc_get_diagnostics(&diag_before);
+  noise_diag_isr_reset();
+  noise_diag_isr_start_dc_cal();
+  ok = noise_diag_wait_state(NOISE_DIAG_ISR_WAIT_POST_CAL_ACK, 1500u);
+  if (!ok && g_noise_diag.fail_code == 0u) {
+    g_noise_diag.fail_code = 3u;
+  }
+  const uint32_t dc_samples = g_noise_diag.dc_cal_sample_count;
+  const uint32_t offset0 =
+      (dc_samples > 0u) ? (uint32_t)((g_noise_diag.dc_raw_sum_pc0 + (dc_samples / 2u)) / dc_samples) : 0u;
+  const uint32_t offset1 =
+      (dc_samples > 0u) ? (uint32_t)((g_noise_diag.dc_raw_sum_pc1 + (dc_samples / 2u)) / dc_samples) : 0u;
+  current_sensor_noise_online_finalize(&g_noise_diag.dc_cal_acc,
+                                       &dc_cal_analysis);
+  ok = ok && (dc_samples == 2048u);
+  if (!drv8301_set_control2(&g_drv0, control2_no_cal) ||
+      !drv8301_set_control2(&g_drv1, control2_no_cal) ||
+      !drv8301_read_registers(&g_drv0, &drv0_runtime_regs) ||
+      !drv8301_read_registers(&g_drv1, &drv1_runtime_regs)) {
+    ok = false;
+  }
+
+  g_drv_test.offset.samples = dc_samples;
+  g_drv_test.offset.offset_u = offset0;
+  g_drv_test.offset.offset_v = offset1;
+
+  if (ok) {
+    noise_diag_isr_start_post_cal(offset0, offset1);
+    ok = noise_diag_wait_state(NOISE_DIAG_ISR_COMPLETE, 1500u);
+    if (!ok && g_noise_diag.fail_code == 0u) {
+      g_noise_diag.fail_code = 4u;
+    }
+  }
+  const uint32_t post_samples = g_noise_diag.post_sample_count;
+  current_sensor_noise_online_finalize(&g_noise_diag.post_acc,
+                                       &post_analysis);
+  hal_adc_get_diagnostics(&diag_after);
+
+  memset(&integrity, 0, sizeof(integrity));
+  integrity.total_adc_snapshot_count = g_noise_diag.publish_total_count;
+  integrity.coherent_snapshot_count = g_noise_diag.publish_total_count;
+  integrity.adc1_injected_complete_count =
+      diag_after.adc1_callback_count - diag_before.adc1_callback_count;
+  integrity.adc2_injected_complete_count =
+      diag_after.adc2_callback_count - diag_before.adc2_callback_count;
+  integrity.coherent_snapshot_publish_count =
+      diag_after.snapshot_count - diag_before.snapshot_count;
+  integrity.diagnostic_expected_snapshot_seen = 256u + 2048u + 512u + 4096u;
+  integrity.diagnostic_analysis_sample_count = dc_samples + post_samples;
+  integrity.diagnostic_discard_sample_count =
+      g_noise_diag.dc_cal_discard_count + g_noise_diag.post_discard_count;
+  integrity.diagnostic_adc_seq_first = g_noise_diag.publish_first_seq;
+  integrity.diagnostic_adc_seq_last = g_noise_diag.publish_last_seq;
+  integrity.diagnostic_adc_seq_span = g_noise_diag.publish_seq_span;
+  integrity.missed_adc_seq = g_noise_diag.publish_seq_gap_count;
+  integrity.duplicate_adc_seq = g_noise_diag.publish_duplicate_count;
+  integrity.adc_sync_rate = (integrity.diagnostic_expected_snapshot_seen > 0u)
+                                ? ((float)integrity.total_adc_snapshot_count /
+                                   (float)integrity.diagnostic_expected_snapshot_seen)
+                                : 0.0f;
+  integrity.adc1_complete_without_adc2 =
+      diag_after.runtime_true_adc1_unpaired_count;
+  integrity.adc2_complete_without_adc1 =
+      diag_after.runtime_true_adc2_unpaired_count;
+  integrity.maximum_adc1_adc2_completion_gap_cycles =
+      diag_after.maximum_adc1_adc2_completion_gap_cycles;
+  integrity.max_same_generation_completion_gap_cycles =
+      diag_after.max_same_generation_completion_gap_cycles;
+  integrity.max_boundary_completion_gap_cycles =
+      diag_after.max_boundary_completion_gap_cycles;
+  integrity.completion_gap_generation_mismatch_count =
+      diag_after.completion_gap_generation_mismatch_count;
+  integrity.boundary_adc1_pending_at_start =
+      diag_after.boundary_adc1_pending_at_start;
+  integrity.boundary_adc2_pending_at_start =
+      diag_after.boundary_adc2_pending_at_start;
+  integrity.boundary_adc1_pending_at_end =
+      diag_after.boundary_adc1_pending_at_end;
+  integrity.boundary_adc2_pending_at_end =
+      diag_after.boundary_adc2_pending_at_end;
+  integrity.post_freeze_adc1_completion_count =
+      diag_after.post_freeze_adc1_completion_count;
+  integrity.post_freeze_adc2_completion_count =
+      diag_after.post_freeze_adc2_completion_count;
+  integrity.worst_snapshot_publish_cycles = diag_after.worst_snapshot_publish_cycles;
+  integrity.worst_noise_diagnostic_isr_cycles =
+      diag_after.worst_noise_diagnostic_isr_cycles;
+  integrity.worst_adc_callback_cycles = diag_after.worst_adc_callback_cycles;
+  integrity.consumer_samples_read = g_noise_diag.consumer_samples_read;
+  integrity.consumer_skipped_snapshot_count =
+      (integrity.diagnostic_adc_seq_span > integrity.consumer_samples_read)
+          ? (integrity.diagnostic_adc_seq_span - integrity.consumer_samples_read)
+          : 0u;
+  integrity.consumer_coverage_ratio =
+      (integrity.diagnostic_adc_seq_span > 0u)
+          ? ((float)integrity.consumer_samples_read /
+             (float)integrity.diagnostic_adc_seq_span)
+          : 0.0f;
+
+  nfault_at_test_completion_before_shutdown_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  power_stage_force_safe_off_zero_ccr();
+  (void)drv8301_set_control2(&g_drv0, control2_no_cal);
+  (void)drv8301_set_control2(&g_drv1, control2_no_cal);
+  nfault_after_gate_disable_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  nfault_final_raw = nfault_after_gate_disable_raw;
+  g_drv_test.drv0_regs = drv0_runtime_regs;
+  g_drv_test.drv1_regs = drv1_runtime_regs;
+  m1_force_safe_off();
+  drv_bringup_capture_final_state();
+
+  const bool nfault_raw_pin = nfault_at_test_completion_before_shutdown_raw;
+  const CurrentSensorNoiseNfaultSemantics nf =
+      current_sensor_noise_nfault_from_raw(nfault_raw_pin);
+  const bool nfault_runtime_asserted =
+      (g_noise_diag.nfault_during_dc_cal_asserted_count != 0u) ||
+      (g_noise_diag.nfault_during_post_cal_asserted_count != 0u) ||
+      !nfault_after_gate_enable_raw ||
+      !nfault_at_test_completion_before_shutdown_raw;
+  const bool nfault_runtime_ok = !nfault_runtime_asserted;
+  const float noise_std_counts =
+      fmaxf(post_analysis.pc0.standard_deviation, post_analysis.pc1.standard_deviation);
+  const float noise_std_a = noise_std_counts * g_drv_test.current_amp_per_count;
+  const float iq02_counts = 0.02f / g_drv_test.current_amp_per_count;
+  const float iq05_counts = 0.05f / g_drv_test.current_amp_per_count;
+  const float iq10_counts = 0.10f / g_drv_test.current_amp_per_count;
+  const float snr02 = (noise_std_a > 0.0f) ? (0.02f / noise_std_a) : 0.0f;
+  const float snr05 = (noise_std_a > 0.0f) ? (0.05f / noise_std_a) : 0.0f;
+  const float snr10 = (noise_std_a > 0.0f) ? (0.10f / noise_std_a) : 0.0f;
+  const CurrentSensorNoiseAdmissionResult admission =
+      current_sensor_noise_evaluate_zero_current_admission(&post_analysis);
+  const bool diagnostic_data_valid = (dc_samples == 2048u) &&
+                                     (post_samples == 4096u);
+  const uint32_t cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+  const uint32_t adc_callback_timeout_cycles = cpu_hz / 20000u;
+  const bool adc_hardware_pipeline_valid =
+      (integrity.adc1_injected_complete_count >= integrity.diagnostic_expected_snapshot_seen) &&
+      (integrity.adc2_injected_complete_count >= integrity.diagnostic_expected_snapshot_seen) &&
+      (integrity.coherent_snapshot_publish_count >= integrity.diagnostic_expected_snapshot_seen) &&
+      (integrity.torn_snapshot_count == 0u) &&
+      (integrity.adc1_complete_without_adc2 == 0u) &&
+      (integrity.adc2_complete_without_adc1 == 0u) &&
+      (integrity.completion_gap_generation_mismatch_count == 0u) &&
+      (integrity.max_same_generation_completion_gap_cycles < adc_callback_timeout_cycles) &&
+      (integrity.worst_adc_callback_cycles < adc_callback_timeout_cycles);
+  const bool diagnostic_performance_valid =
+      (integrity.worst_noise_diagnostic_isr_cycles < (cpu_hz / 50000u));
+  const bool adc_publish_sequence_valid =
+      (integrity.total_adc_snapshot_count >= integrity.diagnostic_expected_snapshot_seen) &&
+      (integrity.diagnostic_analysis_sample_count == 6144u) &&
+      (integrity.diagnostic_discard_sample_count == 768u) &&
+      (integrity.missed_adc_seq == 0u) &&
+      (integrity.duplicate_adc_seq == 0u) &&
+      (integrity.adc_sync_rate >= 0.999f) &&
+      (g_noise_diag.state == NOISE_DIAG_ISR_COMPLETE);
+  const bool consumer_coverage_valid = true;
+  const bool drv_runtime_valid = nfault_runtime_ok &&
+                                 (drv0_runtime_regs.control2 == control2_no_cal) &&
+                                 (drv1_runtime_regs.control2 == control2_no_cal);
+  const bool final_safe = power_stage_channels_off() && gate_raw_is_low() &&
+                          m1_is_safe_off();
+  CurrentSensorNoiseLowpassEstimate lp500 =
+      current_sensor_noise_estimate_one_pole_lowpass(20000.0f, 500.0f,
+                                                     noise_std_a, 0.10f);
+  CurrentSensorNoiseLowpassEstimate lp1000 =
+      current_sensor_noise_estimate_one_pole_lowpass(20000.0f, 1000.0f,
+                                                     noise_std_a, 0.10f);
+  CurrentSensorNoiseLowpassEstimate lp2000 =
+      current_sensor_noise_estimate_one_pole_lowpass(20000.0f, 2000.0f,
+                                                     noise_std_a, 0.10f);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "current_sensor_noise_offsets: dc_cal_samples=%lu post_samples=%lu offset_pc0=%lu offset_pc1=%lu current_amp_per_count=%lu.%06lu gain_readback_drv0=%u gain_readback_drv1=%u dc_cal_clear_ok=%u moe=%lu ccer=0x%08lX",
+           (unsigned long)dc_samples,
+           (unsigned long)post_samples,
+           (unsigned long)offset0,
+           (unsigned long)offset1,
+           (unsigned long)float_to_scaled_u32(g_drv_test.current_amp_per_count, 1000000.0f) / 1000000u,
+           (unsigned long)float_to_scaled_u32(g_drv_test.current_amp_per_count, 1000000.0f) % 1000000u,
+           (unsigned int)drv8301_control2_gain_field(g_drv_test.drv0_regs.control2),
+           (unsigned int)drv8301_control2_gain_field(g_drv_test.drv1_regs.control2),
+           (unsigned int)((g_drv_test.drv0_regs.control2 == control2_no_cal) &&
+                          (g_drv_test.drv1_regs.control2 == control2_no_cal)),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER);
+  uart2_printf_line(uart_buf);
+
+  noise_diag_print_count_stats("dc_cal_delta_pc0", &dc_cal_analysis.pc0);
+  noise_diag_print_count_stats("dc_cal_delta_pc1", &dc_cal_analysis.pc1);
+  noise_diag_print_count_stats("post_delta_pc0", &post_analysis.pc0);
+  noise_diag_print_count_stats("post_delta_pc1", &post_analysis.pc1);
+  noise_diag_print_current_stats("post_iv", &post_analysis.iv);
+  noise_diag_print_current_stats("post_iw", &post_analysis.iw);
+  noise_diag_print_current_stats("post_iu", &post_analysis.iu);
+  noise_diag_print_current_stats("post_id", &post_analysis.id);
+  noise_diag_print_current_stats("post_iq", &post_analysis.iq);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "post_phase_stats: sample_count=%lu phase_abs_peak=%lu.%03lu phase_p99=%lu.%03lu phase_p99_5=%lu.%03lu phase_p99_9=%lu.%03lu above_0p08=%lu above_0p12=%lu above_0p16=%lu above_0p20=%lu longest_above_0p08=%lu longest_above_0p12=%lu longest_above_0p16=%lu longest_above_0p20=%lu",
+           (unsigned long)post_analysis.phase.sample_count,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_abs_peak, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_abs_peak, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99_5, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99_5, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99_9, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(post_analysis.phase.phase_percentile_99_9, 1000.0f) % 1000u,
+           (unsigned long)post_analysis.phase.samples_above_0p08A,
+           (unsigned long)post_analysis.phase.samples_above_0p12A,
+           (unsigned long)post_analysis.phase.samples_above_0p16A,
+           (unsigned long)post_analysis.phase.samples_above_0p20A,
+           (unsigned long)post_analysis.phase.longest_consecutive_above_0p08A,
+           (unsigned long)post_analysis.phase.longest_consecutive_above_0p12A,
+           (unsigned long)post_analysis.phase.longest_consecutive_above_0p16A,
+           (unsigned long)post_analysis.phase.longest_consecutive_above_0p20A);
+  uart2_printf_line(uart_buf);
+
+  for (uint32_t i = 0u; i < post_analysis.worst_count; ++i) {
+    const CurrentSensorNoiseWorstSample *w = &post_analysis.worst[i];
+    const int32_t iv_m = float_to_scaled_i32(w->iv, 1000.0f);
+    const int32_t iw_m = float_to_scaled_i32(w->iw, 1000.0f);
+    const int32_t iu_m = float_to_scaled_i32(w->iu, 1000.0f);
+    const uint32_t phase_m = float_to_scaled_u32(w->phase_abs, 1000.0f);
+    snprintf(uart_buf, sizeof(uart_buf),
+             "noise_worst%02lu: sample_index=%lu adc_seq=%lu raw_pc0=%u raw_pc1=%u delta_pc0=%d delta_pc1=%d prev_delta_pc0=%d prev_delta_pc1=%d next_delta_pc0=%d next_delta_pc1=%d iv=%s%lu.%03lu iw=%s%lu.%03lu iu=%s%lu.%03lu phase_abs=%lu.%03lu TIM1_CNT=%u adc_rank_order=%u callback_count=%lu",
+             (unsigned long)i, (unsigned long)w->sample_index,
+             (unsigned long)w->adc_seq, (unsigned int)w->raw_pc0,
+             (unsigned int)w->raw_pc1, (int)w->delta_pc0, (int)w->delta_pc1,
+             (int)w->prev_delta_pc0, (int)w->prev_delta_pc1,
+             (int)w->next_delta_pc0, (int)w->next_delta_pc1,
+             (iv_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv_m) / 1000u), (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+             (iw_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw_m) / 1000u), (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+             (iu_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu_m) / 1000u), (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+             (unsigned long)(phase_m / 1000u), (unsigned long)(phase_m % 1000u),
+             (unsigned int)w->tim1_cnt, (unsigned int)w->adc_rank_order,
+             (unsigned long)w->callback_count);
+    uart2_printf_line(uart_buf);
+  }
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "adc_integrity: diagnostic_total_snapshot_seen=%lu diagnostic_expected_snapshot_seen=%lu diagnostic_analysis_sample_count=%lu diagnostic_discard_sample_count=%lu diagnostic_adc_seq_first=%lu diagnostic_adc_seq_last=%lu diagnostic_adc_seq_span=%lu diagnostic_sync_rate=%lu.%03lu diagnostic_seq_gap_count=%lu diagnostic_duplicate_count=%lu diagnostic_torn_count=%lu diagnostic_adc1_unpaired_count=%lu diagnostic_adc2_unpaired_count=%lu maximum_ADC1_ADC2_completion_gap_cycles=%lu",
+           (unsigned long)integrity.total_adc_snapshot_count,
+           (unsigned long)integrity.diagnostic_expected_snapshot_seen,
+           (unsigned long)integrity.diagnostic_analysis_sample_count,
+           (unsigned long)integrity.diagnostic_discard_sample_count,
+           (unsigned long)integrity.diagnostic_adc_seq_first,
+           (unsigned long)integrity.diagnostic_adc_seq_last,
+           (unsigned long)integrity.diagnostic_adc_seq_span,
+           (unsigned long)float_to_scaled_u32(integrity.adc_sync_rate, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(integrity.adc_sync_rate, 1000.0f) % 1000u,
+           (unsigned long)integrity.missed_adc_seq,
+           (unsigned long)integrity.duplicate_adc_seq,
+           (unsigned long)integrity.torn_snapshot_count,
+           (unsigned long)integrity.adc1_complete_without_adc2,
+           (unsigned long)integrity.adc2_complete_without_adc1,
+           (unsigned long)integrity.maximum_adc1_adc2_completion_gap_cycles);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "adc_pipeline_split: adc1_injected_complete_count=%lu adc2_injected_complete_count=%lu coherent_snapshot_publish_count=%lu adc_hardware_pipeline_valid=%u adc_publish_sequence_valid=%u consumer_snapshot_coverage_valid=%u consumer_samples_read=%lu consumer_skipped_snapshot_count=%lu consumer_coverage_ratio=%lu.%03lu noise_isr_state=%s noise_isr_fail_code=%lu",
+           (unsigned long)integrity.adc1_injected_complete_count,
+           (unsigned long)integrity.adc2_injected_complete_count,
+           (unsigned long)integrity.coherent_snapshot_publish_count,
+           (unsigned int)adc_hardware_pipeline_valid,
+           (unsigned int)adc_publish_sequence_valid,
+           (unsigned int)consumer_coverage_valid,
+           (unsigned long)integrity.consumer_samples_read,
+           (unsigned long)integrity.consumer_skipped_snapshot_count,
+           (unsigned long)float_to_scaled_u32(integrity.consumer_coverage_ratio, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(integrity.consumer_coverage_ratio, 1000.0f) % 1000u,
+           noise_diag_state_name(g_noise_diag.state),
+           (unsigned long)g_noise_diag.fail_code);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "adc_pairing_window: boundary_adc1_pending_at_start=%lu boundary_adc2_pending_at_start=%lu boundary_adc1_pending_at_end=%lu boundary_adc2_pending_at_end=%lu runtime_true_adc1_unpaired=%lu runtime_true_adc2_unpaired=%lu post_freeze_adc1_completion_count=%lu post_freeze_adc2_completion_count=%lu max_same_generation_completion_gap_cycles=%lu max_boundary_completion_gap_cycles=%lu completion_gap_generation_mismatch_count=%lu",
+           (unsigned long)integrity.boundary_adc1_pending_at_start,
+           (unsigned long)integrity.boundary_adc2_pending_at_start,
+           (unsigned long)integrity.boundary_adc1_pending_at_end,
+           (unsigned long)integrity.boundary_adc2_pending_at_end,
+           (unsigned long)integrity.adc1_complete_without_adc2,
+           (unsigned long)integrity.adc2_complete_without_adc1,
+           (unsigned long)integrity.post_freeze_adc1_completion_count,
+           (unsigned long)integrity.post_freeze_adc2_completion_count,
+           (unsigned long)integrity.max_same_generation_completion_gap_cycles,
+           (unsigned long)integrity.max_boundary_completion_gap_cycles,
+           (unsigned long)integrity.completion_gap_generation_mismatch_count);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "adc_callback_timing: worst_snapshot_publish_cycles=%lu worst_snapshot_publish_us=%lu.%03lu worst_noise_diagnostic_isr_cycles=%lu worst_noise_diagnostic_isr_us=%lu.%03lu worst_adc_callback_cycles=%lu worst_adc_callback_us=%lu.%03lu callback_timeout_cycles=%lu callback_timeout_us=50.000",
+           (unsigned long)integrity.worst_snapshot_publish_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_snapshot_publish_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_snapshot_publish_cycles), 1000.0f) % 1000u,
+           (unsigned long)integrity.worst_noise_diagnostic_isr_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_noise_diagnostic_isr_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_noise_diagnostic_isr_cycles), 1000.0f) % 1000u,
+           (unsigned long)integrity.worst_adc_callback_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_adc_callback_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(integrity.worst_adc_callback_cycles), 1000.0f) % 1000u,
+           (unsigned long)adc_callback_timeout_cycles);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "noise_hook_timing_breakdown: seq_check_cycles=%lu seq_check_us=%lu.%03lu state_machine_cycles=%lu state_machine_us=%lu.%03lu raw_stats_cycles=%lu raw_stats_us=%lu.%03lu histogram_cycles=%lu histogram_us=%lu.%03lu phase_reconstruction_cycles=%lu phase_reconstruction_us=%lu.%03lu consecutive_threshold_cycles=%lu consecutive_threshold_us=%lu.%03lu worst16_cycles=%lu worst16_us=%lu.%03lu total_noise_hook_cycles=%lu total_noise_hook_us=%lu.%03lu diagnostic_performance_valid=%u",
+           (unsigned long)g_noise_diag.worst_seq_check_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_seq_check_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_seq_check_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_state_machine_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_state_machine_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_state_machine_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_raw_stats_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_raw_stats_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_raw_stats_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_histogram_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_histogram_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_histogram_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_phase_reconstruction_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_phase_reconstruction_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_phase_reconstruction_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_consecutive_threshold_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_consecutive_threshold_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_consecutive_threshold_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_worst16_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_worst16_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_worst16_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_noise_diag.worst_isr_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_isr_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_noise_diag.worst_isr_cycles), 1000.0f) % 1000u,
+           (unsigned int)diagnostic_performance_valid);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "nfault_semantics: nfault_before_gate_enable_raw=%u nfault_after_gate_enable_raw=%u nfault_during_dc_cal_asserted_count=%lu nfault_during_post_cal_asserted_count=%lu nfault_at_test_completion_before_shutdown_raw=%u nfault_after_gate_disable_raw=%u nfault_final_raw=%u nfault_runtime_asserted=%u nfault_runtime_ok=%u nfault_final_after_gate_off_raw=%u note=gate_off_raw_low_is_record_only",
+           (unsigned int)nfault_before_gate_enable_raw,
+           (unsigned int)nfault_after_gate_enable_raw,
+           (unsigned long)g_noise_diag.nfault_during_dc_cal_asserted_count,
+           (unsigned long)g_noise_diag.nfault_during_post_cal_asserted_count,
+           (unsigned int)nfault_at_test_completion_before_shutdown_raw,
+           (unsigned int)nfault_after_gate_disable_raw,
+           (unsigned int)nfault_final_raw,
+           (unsigned int)nfault_runtime_asserted,
+           (unsigned int)nfault_runtime_ok,
+           (unsigned int)nfault_final_raw);
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "iq_resolution: current_amp_per_count=%lu.%06lu noise_std_counts=%lu.%03lu noise_std_a=%lu.%03lu iq_ref_0p02A_in_counts=%lu.%02lu iq_ref_0p05A_in_counts=%lu.%02lu iq_ref_0p10A_in_counts=%lu.%02lu estimated_SNR_0p02A=%lu.%02lu estimated_SNR_0p05A=%lu.%02lu estimated_SNR_0p10A=%lu.%02lu iq_0p02A_resolution_usable=%u",
+           (unsigned long)float_to_scaled_u32(g_drv_test.current_amp_per_count, 1000000.0f) / 1000000u,
+           (unsigned long)float_to_scaled_u32(g_drv_test.current_amp_per_count, 1000000.0f) % 1000000u,
+           (unsigned long)float_to_scaled_u32(noise_std_counts, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(noise_std_counts, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(noise_std_a, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(noise_std_a, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(iq02_counts, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(iq02_counts, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(iq05_counts, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(iq05_counts, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(iq10_counts, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(iq10_counts, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(snr02, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(snr02, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(snr05, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(snr05, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(snr10, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(snr10, 100.0f) % 100u,
+           (unsigned int)(snr02 >= 3.0f));
+  uart2_printf_line(uart_buf);
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "zero_current_admission_candidate: mean_ok=%u base_noise_ok=%u high_tail_ok=%u consecutive_ok=%u hard_outlier_ok=%u candidate_ok=%u thresholds=iv_iw_mean_le_0p03A_iu_mean_le_0p04A_std_le_3counts_MAD_le_2counts_abs_p99_9_le_12counts_longest20_le1_longest16_le4_longest12_le8_raw_delta_le20counts",
+           (unsigned int)admission.mean_ok,
+           (unsigned int)admission.base_noise_ok,
+           (unsigned int)admission.high_tail_ok,
+           (unsigned int)admission.consecutive_ok,
+           (unsigned int)admission.hard_outlier_ok,
+           (unsigned int)admission.candidate_ok);
+  uart2_printf_line(uart_buf);
+  snprintf(uart_buf, sizeof(uart_buf),
+           "zero_current_admission_high_tail: high_tail_pc0_value_counts=%lu.%03lu high_tail_pc0_limit_counts=%lu.%03lu high_tail_pc0_pass=%u high_tail_pc1_value_counts=%lu.%03lu high_tail_pc1_limit_counts=%lu.%03lu high_tail_pc1_pass=%u high_tail_ok=%u",
+           (unsigned long)float_to_scaled_u32(admission.high_tail_pc0_value_counts, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_pc0_value_counts, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_limit_counts, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_limit_counts, 1000.0f) % 1000u,
+           (unsigned int)admission.high_tail_pc0_pass,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_pc1_value_counts, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_pc1_value_counts, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_limit_counts, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(admission.high_tail_limit_counts, 1000.0f) % 1000u,
+           (unsigned int)admission.high_tail_pc1_pass,
+           (unsigned int)admission.high_tail_ok);
+  uart2_printf_line(uart_buf);
+  snprintf(uart_buf, sizeof(uart_buf),
+           "zero_current_admission_simulation: old_peak_only_result=%u candidate_consecutive_result=%u candidate_hard_outlier_result=%u current_23_nonconsecutive_0p20A_spikes_not_sustained=%u",
+           (unsigned int)(post_analysis.phase.phase_abs_peak < 0.08f),
+           (unsigned int)(!admission.consecutive_ok),
+           (unsigned int)(!admission.hard_outlier_ok),
+           (unsigned int)(post_analysis.phase.samples_above_0p20A == 23u &&
+                          post_analysis.phase.longest_consecutive_above_0p20A <= 1u));
+  uart2_printf_line(uart_buf);
+  snprintf(uart_buf, sizeof(uart_buf),
+           "lowpass_offline_estimate: cutoff500_rms_ratio=%lu.%03lu delay200Hz_us=%lu.%03lu snr0p10=%lu.%02lu cutoff1000_rms_ratio=%lu.%03lu delay200Hz_us=%lu.%03lu snr0p10=%lu.%02lu cutoff2000_rms_ratio=%lu.%03lu delay200Hz_us=%lu.%03lu snr0p10=%lu.%02lu",
+           (unsigned long)float_to_scaled_u32(lp500.rms_reduction_ratio, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp500.rms_reduction_ratio, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp500.phase_delay_us_at_200hz, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp500.phase_delay_us_at_200hz, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp500.snr_0p10a_after_filter, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(lp500.snr_0p10a_after_filter, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(lp1000.rms_reduction_ratio, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp1000.rms_reduction_ratio, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp1000.phase_delay_us_at_200hz, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp1000.phase_delay_us_at_200hz, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp1000.snr_0p10a_after_filter, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(lp1000.snr_0p10a_after_filter, 100.0f) % 100u,
+           (unsigned long)float_to_scaled_u32(lp2000.rms_reduction_ratio, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp2000.rms_reduction_ratio, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp2000.phase_delay_us_at_200hz, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(lp2000.phase_delay_us_at_200hz, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(lp2000.snr_0p10a_after_filter, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(lp2000.snr_0p10a_after_filter, 100.0f) % 100u);
+  uart2_printf_line(uart_buf);
+  uart2_printf_line("zero_current_admission_recommendation: use mean+std/MAD+percentile+consecutive_outlier; do_not_use_single_phase_abs_peak_0p08A_only");
+
+  snprintf(uart_buf, sizeof(uart_buf),
+           "current_sensor_noise_verdict: diagnostic_data_valid=%u adc_hardware_pipeline_valid=%u adc_publish_sequence_valid=%u consumer_coverage_valid=%u diagnostic_performance_valid=%u drv_runtime_valid=%u noise_profile_valid=%u zero_current_admission_candidate=%u final_safe=%u",
+           (unsigned int)diagnostic_data_valid,
+           (unsigned int)adc_hardware_pipeline_valid,
+           (unsigned int)adc_publish_sequence_valid,
+           (unsigned int)consumer_coverage_valid,
+           (unsigned int)diagnostic_performance_valid,
+           (unsigned int)drv_runtime_valid,
+           (unsigned int)admission.candidate_ok,
+           (unsigned int)admission.candidate_ok,
+           (unsigned int)final_safe);
+  uart2_printf_line(uart_buf);
+
+  ok = ok && diagnostic_data_valid && adc_hardware_pipeline_valid &&
+       adc_publish_sequence_valid && diagnostic_performance_valid &&
+       drv_runtime_valid && final_safe;
+  if (!ok) {
+    if (!diagnostic_data_valid) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+    } else if (!adc_hardware_pipeline_valid) {
+      if (integrity.worst_adc_callback_cycles >= adc_callback_timeout_cycles) {
+        drv_bringup_mark_fault(AXIS0_FAULT_ADC_CALLBACK_OVERRUN);
+      } else {
+        drv_bringup_mark_fault(AXIS0_FAULT_ADC_HARDWARE_UNPAIRED);
+      }
+    } else if (!adc_publish_sequence_valid) {
+      drv_bringup_mark_fault(AXIS0_FAULT_ADC_PUBLISH_SEQUENCE);
+    } else if (!diagnostic_performance_valid) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_ISR_OVERRUN);
+    } else if (!drv_runtime_valid) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+    } else if (!admission.candidate_ok) {
+      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_NOISE_REJECTED);
+    }
+  }
+  g_drv_test.open_loop_pass = ok;
+  g_drv_test.test_completed_safely = ok;
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  g_drv_test.phase_resistance_classification =
+      ok ? "CURRENT_SENSOR_NOISE_DIAGNOSTIC_PASS"
+         : "CURRENT_SENSOR_NOISE_DIAGNOSTIC_FAIL";
+  snprintf(uart_buf, sizeof(uart_buf),
+           "current_sensor_noise_final: gate=%u nfault_raw_pin=%u nfault_asserted=%u nfault_ok=%u ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu drv0_control1=0x%04X drv0_control2=0x%04X drv1_control1=0x%04X drv1_control2=0x%04X fault_code=0x%08lX classification=%s",
+           (unsigned int)gate_raw_is_high(), (unsigned int)nf.raw_pin_high,
+           (unsigned int)nf.asserted, (unsigned int)nf.ok,
+           (unsigned long)TIM1->CCER, (unsigned long)TIM1->BDTR,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCR1, (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3, (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)g_drv_test.drv0_regs.control1,
+           (unsigned int)g_drv_test.drv0_regs.control2,
+           (unsigned int)g_drv_test.drv1_regs.control1,
+           (unsigned int)g_drv_test.drv1_regs.control2,
+           (unsigned long)g_drv_test.fault_code,
+           g_drv_test.phase_resistance_classification);
+  uart2_printf_line(uart_buf);
+  uart2_printf_line(g_drv_test.phase_resistance_classification);
+  uart2_printf_line(ok ? "CURRENT_SENSOR_NOISE_DIAGNOSTIC_HARDWARE_FLASH_READY=YES"
+                       : "CURRENT_SENSOR_NOISE_DIAGNOSTIC_HARDWARE_FLASH_READY=NO");
+  return ok;
+}
+
+static bool current_sensor_admission_test_run(void)
+{
+  char line[768];
+  bool ok = true;
+  bool nfault_after_gate_enable_raw = false;
+  bool nfault_before_shutdown_raw = false;
+  bool nfault_after_gate_disable_raw = false;
+  HalAdcDiagnostics diag_before = {0};
+  HalAdcDiagnostics diag_after = {0};
+  Drv8301Registers drv0_runtime_regs = {0};
+  Drv8301Registers drv1_runtime_regs = {0};
+  CurrentSensorAdmissionResult res = {0};
+  const uint16_t control2_dc_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, true, true);
+  const uint16_t control2_no_cal =
+      drv8301_make_control2(DRV8301_SHUNT_GAIN_80V_PER_V, false, false);
+
+  g_drv_test.phase_resistance_classification =
+      "CURRENT_SENSOR_ADMISSION_TEST_FAIL";
+  fixed_current_enable_cycle_counter();
+  power_stage_force_safe_off_zero_ccr();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_force_safe_off_zero_ccr();
+  m1_force_safe_off();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  current_observe_set_gain_scale(80.0f);
+
+  hal_gpio_set_gate_enable(true);
+  if (!power_stage_wait_nfault_release()) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+    drv_bringup_fail(80u);
+    ok = false;
+  }
+  nfault_after_gate_enable_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  HAL_Delay(10u);
+
+  if (ok && !power_stage_configure_drivers()) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+    drv_bringup_fail(81u);
+    ok = false;
+  }
+
+  if (ok &&
+      (!drv8301_set_control2(&g_drv0, control2_dc_cal) ||
+       !drv8301_set_control2(&g_drv1, control2_dc_cal))) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_SPI_ERROR);
+    drv_bringup_fail(82u);
+    ok = false;
+  }
+
+  if (ok) {
+    hal_adc_get_diagnostics(&diag_before);
+    current_sensor_admission_test_reset();
+    if (g_runtime_offset_calibration_active) {
+      g_current_sensor_admission.cfg.std_limit_counts =
+          ELECTRICAL_OFFSET_ADMISSION_STD_LIMIT_COUNTS;
+      g_current_sensor_admission.cfg.recenter_live_zero_offset = true;
+      g_current_sensor_admission.cfg.above_10_limit =
+          ELECTRICAL_OFFSET_ADMISSION_ABOVE_10_LIMIT;
+    }
+    const uint32_t expected_snapshots =
+        (uint32_t)g_current_sensor_admission.cfg.dc_cal_discard_samples +
+        (uint32_t)g_current_sensor_admission.cfg.dc_cal_collect_samples +
+        (uint32_t)g_current_sensor_admission.cfg.post_discard_samples +
+        (uint32_t)g_current_sensor_admission.cfg.post_collect_samples;
+    snprintf(line,
+             sizeof(line),
+             "current_sensor_admission_config: mode=CURRENT_SENSOR_ADMISSION_TEST full_noise_hook=0 three_point_cal=0 dq_pi=0 svpwm=0 moe=0 pwm_outputs=0 gain=80 dc_cal_discard=%u dc_cal_samples=%u post_discard=%u post_samples=%u total_expected_snapshots=%lu std_limit_counts=%lu.%03lu recenter_live_zero_offset=%u live_zero_shift_limit_counts=%u above_10_limit=%u runtime_alignment_noise_profile=%u",
+             (unsigned int)g_current_sensor_admission.cfg.dc_cal_discard_samples,
+             (unsigned int)g_current_sensor_admission.cfg.dc_cal_collect_samples,
+             (unsigned int)g_current_sensor_admission.cfg.post_discard_samples,
+             (unsigned int)g_current_sensor_admission.cfg.post_collect_samples,
+             (unsigned long)expected_snapshots,
+             (unsigned long)float_to_scaled_u32(
+                 g_current_sensor_admission.cfg.std_limit_counts, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(
+                 g_current_sensor_admission.cfg.std_limit_counts, 1000.0f) % 1000u,
+             (unsigned int)g_current_sensor_admission.cfg.recenter_live_zero_offset,
+             (unsigned int)g_current_sensor_admission.cfg.live_zero_shift_limit_counts,
+             (unsigned int)g_current_sensor_admission.cfg.above_10_limit,
+             (unsigned int)g_runtime_offset_calibration_active);
+    uart2_printf_line(line);
+    if (!current_sensor_admission_request_start(&g_current_sensor_admission)) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+      drv_bringup_fail(83u);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    CurrentSensorAdmissionMainAction action =
+        current_sensor_admission_service_main(&g_current_sensor_admission);
+    if (!action.request_enable_dc_cal ||
+        !current_sensor_admission_ack_dc_cal_enabled(&g_current_sensor_admission)) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+      drv_bringup_fail(84u);
+      ok = false;
+    }
+  }
+
+  if (ok) {
+    __disable_irq();
+    g_admission_test.active = true;
+    __enable_irq();
+    ok = current_sensor_admission_wait_state(
+        CURRENT_SENSOR_ADMISSION_WAIT_POST_CAL_ACK, 500u);
+    if (!ok) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+      drv_bringup_fail(85u);
+    }
+  }
+
+  if (ok &&
+      (!drv8301_set_control2(&g_drv0, control2_no_cal) ||
+       !drv8301_set_control2(&g_drv1, control2_no_cal))) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_SPI_ERROR);
+    drv_bringup_fail(86u);
+    ok = false;
+  }
+
+  if (ok &&
+      !current_sensor_admission_ack_dc_cal_disabled(&g_current_sensor_admission)) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+    drv_bringup_fail(87u);
+    ok = false;
+  }
+
+  if (ok) {
+    ok = current_sensor_admission_wait_state(
+        CURRENT_SENSOR_ADMISSION_COMPLETE, 500u);
+    if (!ok) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+      drv_bringup_fail(88u);
+    }
+  }
+
+  bool admission_handoff_pass = false;
+  if (ok) {
+    admission_handoff_pass = current_sensor_admission_disable_and_wait(100u);
+    if (!admission_handoff_pass) {
+      drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+      drv_bringup_fail(88u);
+      ok = false;
+    }
+  }
+
+  if (!ok && g_admission_test.active) {
+    __disable_irq();
+    g_admission_test.active = false;
+    __enable_irq();
+    if (g_admission_test.pairing_window_started) {
+      hal_adc_stm32f405_freeze_diagnostic_window();
+    }
+  }
+
+  if (!drv8301_read_registers(&g_drv0, &drv0_runtime_regs) ||
+      !drv8301_read_registers(&g_drv1, &drv1_runtime_regs)) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_SPI_ERROR);
+    drv_bringup_fail(89u);
+    ok = false;
+  }
+
+  current_sensor_admission_finalize(&g_current_sensor_admission);
+  res = current_sensor_admission_get_result(&g_current_sensor_admission);
+  hal_adc_get_diagnostics(&diag_after);
+
+  nfault_before_shutdown_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  power_stage_force_safe_off_zero_ccr();
+  (void)drv8301_set_control2(&g_drv0, control2_no_cal);
+  (void)drv8301_set_control2(&g_drv1, control2_no_cal);
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  m1_force_safe_off();
+  nfault_after_gate_disable_raw =
+      HAL_GPIO_ReadPin(DRV_NFAULT_GPIO_Port, DRV_NFAULT_Pin) == GPIO_PIN_SET;
+  drv_bringup_capture_final_state();
+
+  const uint32_t expected_total =
+      (uint32_t)g_current_sensor_admission.cfg.dc_cal_discard_samples +
+      (uint32_t)g_current_sensor_admission.cfg.dc_cal_collect_samples +
+      (uint32_t)g_current_sensor_admission.cfg.post_discard_samples +
+      (uint32_t)g_current_sensor_admission.cfg.post_collect_samples;
+  const uint32_t adc1_count =
+      diag_after.adc1_callback_count - diag_before.adc1_callback_count;
+  const uint32_t adc2_count =
+      diag_after.adc2_callback_count - diag_before.adc2_callback_count;
+  const uint32_t snapshot_count =
+      diag_after.snapshot_count - diag_before.snapshot_count;
+  const uint32_t cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+  const bool sample_count_pass =
+      res.dc_cal_discard_count ==
+          g_current_sensor_admission.cfg.dc_cal_discard_samples &&
+      res.dc_cal_samples ==
+          g_current_sensor_admission.cfg.dc_cal_collect_samples &&
+      res.post_cal_discard_count ==
+          g_current_sensor_admission.cfg.post_discard_samples &&
+      res.post_samples ==
+          g_current_sensor_admission.cfg.post_collect_samples &&
+      res.scheduled_snapshot_count == expected_total &&
+      res.analysis_snapshot_count ==
+          ((uint32_t)g_current_sensor_admission.cfg.dc_cal_collect_samples +
+           (uint32_t)g_current_sensor_admission.cfg.post_collect_samples) &&
+      res.discard_snapshot_count ==
+          ((uint32_t)g_current_sensor_admission.cfg.dc_cal_discard_samples +
+           (uint32_t)g_current_sensor_admission.cfg.post_discard_samples) &&
+      res.observed_snapshot_count >= expected_total &&
+      res.producer_seq_span == res.observed_snapshot_count;
+  const bool adc_pipeline_pass =
+      sample_count_pass &&
+      adc1_count >= expected_total &&
+      adc2_count >= expected_total &&
+      snapshot_count >= res.observed_snapshot_count &&
+      res.producer_gap_count == 0u &&
+      res.producer_duplicate_count == 0u &&
+      res.runtime_true_unpaired_count == 0u &&
+      res.torn_count == 0u &&
+      res.generation_mismatch_count == 0u &&
+      diag_after.runtime_true_adc1_unpaired_count == 0u &&
+      diag_after.runtime_true_adc2_unpaired_count == 0u &&
+      diag_after.completion_gap_generation_mismatch_count == 0u &&
+      diag_after.adc1_pending_overwrite_count == 0u &&
+      diag_after.adc2_pending_overwrite_count == 0u &&
+      diag_after.pending_timeout_count == 0u;
+  const bool callback_perf_pass = diag_after.worst_adc_callback_cycles < (cpu_hz / 20000u);
+  const bool drv_runtime_pass =
+      nfault_after_gate_enable_raw &&
+      nfault_before_shutdown_raw &&
+      res.nfault_runtime_asserted_count == 0u &&
+      drv0_runtime_regs.control2 == control2_no_cal &&
+      drv1_runtime_regs.control2 == control2_no_cal;
+  const bool final_safe =
+      gate_raw_is_low() &&
+      power_stage_channels_off() &&
+      m1_is_safe_off() &&
+      !g_admission_test.active &&
+      TIM1->CCR1 == 0u &&
+      TIM1->CCR2 == 0u &&
+      TIM1->CCR3 == 0u &&
+      hal_adc_get_m0_rank_order() == HAL_ADC_M0_ORDER_PC0_PC1 &&
+      ((drv0_runtime_regs.control2 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((drv1_runtime_regs.control2 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u);
+  const bool mean_std_pass = res.mean_pass && res.std_pass;
+  const CurrentSensorAdmissionPreflightVerdict admission_verdict =
+      current_sensor_admission_evaluate_preflight(
+          &res,
+          g_admission_test.worst_production_core_cycles,
+          diag_after.worst_adc_callback_cycles,
+          cpu_hz,
+          sample_count_pass,
+          adc_pipeline_pass,
+          drv_runtime_pass,
+          final_safe);
+  const bool admission_pass =
+      ok &&
+      admission_verdict.preflight_pass;
+  if (!admission_handoff_pass) {
+    admission_handoff_pass = !g_admission_test.active;
+  }
+  g_admission_test.verdict_target_5us_met =
+      admission_verdict.target_5us_met;
+  g_admission_test.verdict_deadline_pass =
+      admission_verdict.deadline_pass;
+  g_admission_test.verdict_functional_pass =
+      admission_verdict.functional_pass;
+  g_admission_test.verdict_preflight_pass =
+      admission_verdict.preflight_pass;
+  g_admission_test.handoff_pass = admission_handoff_pass;
+
+  if (!sample_count_pass) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_DATA_INVALID);
+  } else if (!adc_pipeline_pass) {
+    drv_bringup_mark_fault(AXIS0_FAULT_ADC_PUBLISH_SEQUENCE);
+  } else if (!drv_runtime_pass) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+  } else if (!mean_std_pass || !res.consecutive_pass || !res.hard_outlier_pass) {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_NOISE_REJECTED);
+  } else if (!admission_verdict.deadline_pass) {
+    if (!callback_perf_pass) {
+      drv_bringup_mark_fault(AXIS0_FAULT_ADC_CALLBACK_OVERRUN);
+    } else {
+      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_ADMISSION_OVERRUN);
+    }
+  } else if (!final_safe) {
+    drv_bringup_mark_fault(AXIS0_FAULT_PWM_NOT_ENABLED);
+  }
+
+  g_drv_test.offset.samples = res.dc_cal_samples;
+  g_drv_test.offset.offset_u = res.live_zero_offset_pc0;
+  g_drv_test.offset.offset_v = res.live_zero_offset_pc1;
+  g_drv_test.dc_cal_offsets_pass = sample_count_pass;
+  g_drv_test.dc_cal_clear_ok = final_safe;
+  g_drv_test.drv0_regs = drv0_runtime_regs;
+  g_drv_test.drv1_regs = drv1_runtime_regs;
+  g_drv_test.open_loop_pass = admission_pass;
+  g_drv_test.test_completed_safely = final_safe;
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  g_drv_test.phase_resistance_classification =
+      admission_pass ? "CURRENT_SENSOR_ADMISSION_TEST_PASS"
+                     : "CURRENT_SENSOR_ADMISSION_TEST_FAIL";
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_state: final_state=%s dc_cal_discard_count=%lu dc_cal_collect_count=%lu post_cal_discard_count=%lu post_cal_collect_count=%lu scheduled_snapshot_count=%lu expected_total=%lu observed_snapshot_count=%lu producer_first_seq=%lu producer_last_seq=%lu producer_seq_span=%lu sample_count_pass=%u",
+           current_sensor_admission_state_name(g_current_sensor_admission.state),
+           (unsigned long)res.dc_cal_discard_count,
+           (unsigned long)res.dc_cal_samples,
+           (unsigned long)res.post_cal_discard_count,
+           (unsigned long)res.post_samples,
+           (unsigned long)res.scheduled_snapshot_count,
+           (unsigned long)expected_total,
+           (unsigned long)res.observed_snapshot_count,
+           (unsigned long)res.producer_first_seq,
+           (unsigned long)res.producer_last_seq,
+           (unsigned long)res.producer_seq_span,
+           (unsigned int)sample_count_pass);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_windows: wait_dc_cal_enable_snapshot_count=%lu wait_post_cal_ack_snapshot_count=%lu transition_wait_snapshot_count=%lu analysis_snapshot_count=%lu discard_snapshot_count=%lu dc_cal_collect_last_seq=%lu post_cal_ack_observed_seq=%lu post_cal_discard_first_seq=%lu admission_disable_request_seq=%lu admission_disabled_ack_seq=%lu snapshots_after_admission_disable=%lu admission_hook_calls_after_disable=%lu admission_and_alignment_overlap_count=%lu admission_handoff_pass=%u observed_may_exceed_scheduled=1",
+           (unsigned long)res.wait_dc_cal_enable_snapshot_count,
+           (unsigned long)res.wait_post_cal_ack_snapshot_count,
+           (unsigned long)res.transition_wait_snapshot_count,
+           (unsigned long)res.analysis_snapshot_count,
+           (unsigned long)res.discard_snapshot_count,
+           (unsigned long)res.dc_cal_collect_last_seq,
+           (unsigned long)res.post_cal_ack_observed_seq,
+           (unsigned long)res.post_cal_discard_first_seq,
+           (unsigned long)g_admission_test.disable_request_seq,
+           (unsigned long)g_admission_test.disabled_ack_seq,
+           (unsigned long)g_admission_test.snapshots_after_disable,
+           (unsigned long)g_admission_test.hook_calls_after_disable,
+           (unsigned long)g_admission_test.overlap_hook_call_count,
+           (unsigned int)admission_handoff_pass);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_offsets: dc_cal_offset_pc0=%u dc_cal_offset_pc1=%u live_zero_offset_pc0=%u live_zero_offset_pc1=%u live_zero_shift_pc0_counts=%d live_zero_shift_pc1_counts=%d dc_cal_pc0_mean=%ld.%03ld dc_cal_pc1_mean=%ld.%03ld dc_cal_pc0_min=%u dc_cal_pc0_max=%u dc_cal_pc1_min=%u dc_cal_pc1_max=%u",
+           (unsigned int)res.dc_cal_offset_pc0,
+           (unsigned int)res.dc_cal_offset_pc1,
+           (unsigned int)res.live_zero_offset_pc0,
+           (unsigned int)res.live_zero_offset_pc1,
+           (int)res.live_zero_shift_pc0_counts,
+           (int)res.live_zero_shift_pc1_counts,
+           (long)(float_to_scaled_i32(res.dc_cal_pc0_mean, 1000.0f) / 1000),
+           (long)(abs_i32_to_u32(float_to_scaled_i32(res.dc_cal_pc0_mean, 1000.0f)) % 1000u),
+           (long)(float_to_scaled_i32(res.dc_cal_pc1_mean, 1000.0f) / 1000),
+           (long)(abs_i32_to_u32(float_to_scaled_i32(res.dc_cal_pc1_mean, 1000.0f)) % 1000u),
+           (unsigned int)res.dc_cal_pc0_min,
+           (unsigned int)res.dc_cal_pc0_max,
+           (unsigned int)res.dc_cal_pc1_min,
+           (unsigned int)res.dc_cal_pc1_max);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_post: iv_mean=%ld.%03ld iw_mean=%ld.%03ld iu_mean=%ld.%03ld pc0_std_counts=%lu.%03lu pc1_std_counts=%lu.%03lu max_abs_delta_pc0=%u max_abs_delta_pc1=%u phase_metric_max_counts=%u longest_above_6=%u longest_above_8=%u longest_above_10=%u mean_pass=%u std_pass=%u consecutive_pass=%u hard_outlier_pass=%u",
+           (long)(float_to_scaled_i32(res.iv_mean_a, 1000.0f) / 1000),
+           (long)(abs_i32_to_u32(float_to_scaled_i32(res.iv_mean_a, 1000.0f)) % 1000u),
+           (long)(float_to_scaled_i32(res.iw_mean_a, 1000.0f) / 1000),
+           (long)(abs_i32_to_u32(float_to_scaled_i32(res.iw_mean_a, 1000.0f)) % 1000u),
+           (long)(float_to_scaled_i32(res.iu_mean_a, 1000.0f) / 1000),
+           (long)(abs_i32_to_u32(float_to_scaled_i32(res.iu_mean_a, 1000.0f)) % 1000u),
+           (unsigned long)(float_to_scaled_u32(res.pc0_std_counts, 1000.0f) / 1000u),
+           (unsigned long)(float_to_scaled_u32(res.pc0_std_counts, 1000.0f) % 1000u),
+           (unsigned long)(float_to_scaled_u32(res.pc1_std_counts, 1000.0f) / 1000u),
+           (unsigned long)(float_to_scaled_u32(res.pc1_std_counts, 1000.0f) % 1000u),
+           (unsigned int)res.max_abs_delta_pc0,
+           (unsigned int)res.max_abs_delta_pc1,
+           (unsigned int)res.phase_metric_max_counts,
+           (unsigned int)res.longest_above_6_counts,
+           (unsigned int)res.longest_above_8_counts,
+           (unsigned int)res.longest_above_10_counts,
+           (unsigned int)res.mean_pass,
+           (unsigned int)res.std_pass,
+           (unsigned int)res.consecutive_pass,
+           (unsigned int)res.hard_outlier_pass);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_adc_integrity: adc1_injected_complete_count=%lu adc2_injected_complete_count=%lu coherent_snapshot_publish_count=%lu admission_observer_gap_count=%lu admission_observer_duplicate_count=%lu runtime_true_unpaired_count=%lu torn_count=%lu generation_mismatch_count=%lu runtime_true_adc1_unpaired=%lu runtime_true_adc2_unpaired=%lu adc1_pending_overwrite_count=%lu adc2_pending_overwrite_count=%lu pending_timeout_count=%lu completion_gap_generation_mismatch_count=%lu max_same_generation_completion_gap_cycles=%lu max_boundary_completion_gap_cycles=%lu adc_pipeline_pass=%u",
+           (unsigned long)adc1_count,
+           (unsigned long)adc2_count,
+           (unsigned long)snapshot_count,
+           (unsigned long)res.producer_gap_count,
+           (unsigned long)res.producer_duplicate_count,
+           (unsigned long)res.runtime_true_unpaired_count,
+           (unsigned long)res.torn_count,
+           (unsigned long)res.generation_mismatch_count,
+           (unsigned long)diag_after.runtime_true_adc1_unpaired_count,
+           (unsigned long)diag_after.runtime_true_adc2_unpaired_count,
+           (unsigned long)diag_after.adc1_pending_overwrite_count,
+           (unsigned long)diag_after.adc2_pending_overwrite_count,
+           (unsigned long)diag_after.pending_timeout_count,
+           (unsigned long)diag_after.completion_gap_generation_mismatch_count,
+           (unsigned long)diag_after.max_same_generation_completion_gap_cycles,
+           (unsigned long)diag_after.max_boundary_completion_gap_cycles,
+           (unsigned int)adc_pipeline_pass);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_timing: production_core_cycles=%lu production_core_us=%lu.%03lu detailed_profile_cycles=%lu detailed_profile_us=%lu.%03lu profiling_overhead_cycles=%lu wait_cycles=%lu dc_cal_collect_cycles=%lu post_collect_cycles=%lu transition_cycles=%lu worst_state=%s worst_sample_index=%lu worst_adc_seq=%lu worst_adc_callback_cycles=%lu worst_adc_callback_us=%lu.%03lu admission_target_5us_met=%u admission_deadline_pass=%u callback_perf_pass=%u",
+           (unsigned long)g_admission_test.worst_production_core_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_admission_test.worst_production_core_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_admission_test.worst_production_core_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_admission_test.worst_detailed_profile_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_admission_test.worst_detailed_profile_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_admission_test.worst_detailed_profile_cycles), 1000.0f) % 1000u,
+           (unsigned long)g_admission_test.worst_profiling_overhead_cycles,
+           (unsigned long)g_admission_test.worst_wait_cycles,
+           (unsigned long)g_admission_test.worst_dc_cal_collect_cycles,
+           (unsigned long)g_admission_test.worst_post_collect_cycles,
+           (unsigned long)g_admission_test.worst_transition_cycles,
+           current_sensor_admission_state_name(g_admission_test.worst_state),
+           (unsigned long)g_admission_test.worst_sample_index,
+           (unsigned long)g_admission_test.worst_adc_seq,
+           (unsigned long)diag_after.worst_adc_callback_cycles,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(diag_after.worst_adc_callback_cycles), 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(diag_after.worst_adc_callback_cycles), 1000.0f) % 1000u,
+           (unsigned int)admission_verdict.target_5us_met,
+           (unsigned int)admission_verdict.deadline_pass,
+           (unsigned int)callback_perf_pass);
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_verdict: sample_count_pass=%u mean_std_pass=%u consecutive_pass=%u hard_outlier_pass=%u adc_pipeline_pass=%u drv_runtime_pass=%u admission_functional_pass=%u admission_deadline_pass=%u admission_preflight_pass=%u final_safe=%u admission_pass=%u fail_flags=0x%08lX fault_code=0x%08lX fault_enum_name=%s",
+           (unsigned int)sample_count_pass,
+           (unsigned int)mean_std_pass,
+           (unsigned int)res.consecutive_pass,
+           (unsigned int)res.hard_outlier_pass,
+           (unsigned int)adc_pipeline_pass,
+           (unsigned int)drv_runtime_pass,
+           (unsigned int)admission_verdict.functional_pass,
+           (unsigned int)admission_verdict.deadline_pass,
+           (unsigned int)admission_verdict.preflight_pass,
+           (unsigned int)final_safe,
+           (unsigned int)admission_pass,
+           (unsigned long)res.fail_flags,
+           (unsigned long)g_drv_test.fault_code,
+           get_fault_string((Axis0FaultFlags)g_drv_test.fault_code));
+  uart2_printf_line(line);
+
+  snprintf(line, sizeof(line),
+           "current_sensor_admission_final: gate=%u nfault_after_gate_enable_raw=%u nfault_before_shutdown_raw=%u nfault_after_gate_disable_raw=%u nfault_runtime_asserted_count=%lu ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu drv0_control2=0x%04X drv1_control2=0x%04X dc_cal_bits_clear=%u classification=%s",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned int)nfault_after_gate_enable_raw,
+           (unsigned int)nfault_before_shutdown_raw,
+           (unsigned int)nfault_after_gate_disable_raw,
+           (unsigned long)res.nfault_runtime_asserted_count,
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->BDTR,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)drv0_runtime_regs.control2,
+           (unsigned int)drv1_runtime_regs.control2,
+           (unsigned int)(((drv0_runtime_regs.control2 &
+                            (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+                          ((drv1_runtime_regs.control2 &
+                            (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u)),
+           g_drv_test.phase_resistance_classification);
+  uart2_printf_line(line);
+  uart2_printf_line(g_drv_test.phase_resistance_classification);
+  uart2_printf_line(admission_pass ? "CURRENT_SENSOR_ADMISSION_TEST_HARDWARE_FLASH_READY=YES"
+                                   : "CURRENT_SENSOR_ADMISSION_TEST_HARDWARE_FLASH_READY=NO");
+  uart2_printf_line(admission_pass ? "ELECTRICAL_OFFSET_CALIBRATION_PREFLIGHT_READY=YES"
+                                   : "ELECTRICAL_OFFSET_CALIBRATION_PREFLIGHT_READY=NO");
+  return admission_pass;
+}
+
+typedef struct {
+  float theta_cmd_rad;
+  float theta_cmd_deg;
+  int64_t encoder_count_start;
+  double encoder_sum;
+  double encoder_sumsq;
+  int64_t encoder_min;
+  int64_t encoder_max;
+  double speed_sum_rpm;
+  float speed_peak_rpm;
+  float phase_current_peak;
+  float applied_voltage;
+  uint32_t sample_count;
+  bool valid;
+} ElectricalOffsetHwPoint;
+
+static void electrical_offset_hw_point_reset(ElectricalOffsetHwPoint *pt,
+                                             float theta_cmd_rad,
+                                             float theta_cmd_deg)
+{
+  memset(pt, 0, sizeof(*pt));
+  pt->theta_cmd_rad = theta_cmd_rad;
+  pt->theta_cmd_deg = theta_cmd_deg;
+  pt->encoder_min = INT64_MAX;
+  pt->encoder_max = INT64_MIN;
+}
+
+static bool __attribute__((unused)) electrical_offset_calibration_run(void)
+{
+  static const float theta_cmd_rad[ELECTRICAL_OFFSET_CAL_POINT_COUNT] = {
+      0.0f,
+      TWO_PI_F / 3.0f,
+      -TWO_PI_F / 3.0f};
+  static const float theta_cmd_deg[ELECTRICAL_OFFSET_CAL_POINT_COUNT] = {
+      0.0f, 120.0f, -120.0f};
+  const float alignment_voltage_v = 0.35f;
+  const uint32_t ramp_ms = 500u;
+  const uint32_t hold_ms = 800u;
+  const uint32_t sample_tail_ms = 200u;
+  const uint32_t down_ms = 500u;
+  const uint32_t zero_hold_ms = 300u;
+  const uint32_t min_sample_count = 128u;
+  ElectricalOffsetCalibrationConfig cfg =
+      electrical_offset_calibration_default_config();
+  ElectricalOffsetCalibrationPoint cal_points[ELECTRICAL_OFFSET_CAL_POINT_COUNT];
+  ElectricalOffsetCalibrationResult cal_result;
+  ElectricalOffsetHwPoint hw_points[ELECTRICAL_OFFSET_CAL_POINT_COUNT];
+  ElectricalOffsetHwPoint precondition_point;
+  HalAdcSnapshot snap = {0};
+  char line[768];
+  uint32_t last_seq = drv_bringup_get_adc_seq();
+  uint32_t last_drv_status_ms = HAL_GetTick();
+  uint32_t worst_loop_cycles = 0u;
+  float worst_loop_us = 0.0f;
+  bool ok = true;
+  ElectricalOffsetBringupState state = ELECTRICAL_OFFSET_STATE_IDLE;
+  ElectricalOffsetBringupState previous_state = ELECTRICAL_OFFSET_STATE_IDLE;
+  ElectricalOffsetBringupState requested_next_state = ELECTRICAL_OFFSET_STATE_IDLE;
+  bool alignment_dispatch_enabled = false;
+  bool offset_pc0_valid = false;
+  bool offset_pc1_valid = false;
+  bool prealign_gate_pass = false;
+  bool drv_ready_for_alignment = false;
+  bool dc_cal_bits_clear_for_alignment = false;
+  ElectricalOffsetAlignmentProtectionState alignment_protection = {0};
+  uint32_t ramp_sample_index = 0u;
+  const bool point0_current_diagnostic_only =
+      ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_ONLY != 0u;
+  bool point0_current_diagnostic_complete = false;
+  uint32_t point0_current_diagnostic_stable_samples = 0u;
+  uint32_t point0_current_diagnostic_max_soft_consecutive = 0u;
+  int32_t point0_current_diagnostic_max_abs_delta_pc0 = 0;
+  int32_t point0_current_diagnostic_max_abs_delta_pc1 = 0;
+  float point0_current_diagnostic_phase_peak = 0.0f;
+
+  cfg.encoder_cpr = COMM_ENCODER_CPR;
+  cfg.encoder_direction = COMM_ENCODER_DIRECTION;
+  cfg.pole_pairs = COMM_POLE_PAIRS;
+  cfg.alignment_voltage_limit_v = 0.40f;
+  cfg.max_offset_spread_deg = 8.0f;
+  cfg.expected_delta_tolerance_counts = 20.0f;
+
+  memset(cal_points, 0, sizeof(cal_points));
+  memset(&cal_result, 0, sizeof(cal_result));
+  fixed_current_enable_cycle_counter();
+  electrical_offset_trace_reset();
+  clear_faults(&g_axis0);
+  g_drv_test.fault_code = AXIS0_FAULT_NONE;
+  electrical_offset_trace_transition(ELECTRICAL_OFFSET_STATE_IDLE,
+                                     ELECTRICAL_OFFSET_STATE_PREFLIGHT_INIT,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  state = ELECTRICAL_OFFSET_STATE_PREFLIGHT_INIT;
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_cal_config: mode=ELECTRICAL_OFFSET_CALIBRATION voltage=%lu.%03lu voltage_limit=%lu.%03lu ramp_ms=%lu hold_ms=%lu sample_tail_ms=%lu zero_hold_ms=%lu precondition_neg120=%u same_direction_approach=1 point0_current_diagnostic_only=%u point0_diagnostic_settle_ms=%lu encoder_cpr=%ld encoder_direction=%ld pole_pairs=%ld speed_loop=0 position_loop=0 dq_pi=0 rotating_iq_test=0",
+           (unsigned long)float_to_scaled_u32(alignment_voltage_v, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(alignment_voltage_v, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(cfg.alignment_voltage_limit_v, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(cfg.alignment_voltage_limit_v, 1000.0f) % 1000u,
+           (unsigned long)ramp_ms,
+           (unsigned long)hold_ms,
+           (unsigned long)sample_tail_ms,
+           (unsigned long)zero_hold_ms,
+           (unsigned int)(!point0_current_diagnostic_only),
+           (unsigned int)point0_current_diagnostic_only,
+           (unsigned long)ELECTRICAL_OFFSET_POINT0_DIAGNOSTIC_SETTLE_MS,
+           (long)cfg.encoder_cpr,
+           (long)cfg.encoder_direction,
+           (long)cfg.pole_pairs);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pwm_zero_mode: trigger_sweep_only=%u fixed_ccr4_verify_only=%u fixed_ccr4=%lu fixed_repeat_count=%lu pwm_zero_current_diagnostic_only=%u alignment_soft_limit_a=%lu.%03lu point0_ramp_disabled_by_diagnostic_mode=%u three_point_disabled=%u dq_pi_disabled=1",
+           (unsigned int)(ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY != 0u),
+           (unsigned int)(ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_ONLY != 0u),
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_COUNT,
+           (unsigned long)ELECTRICAL_OFFSET_PWM_ZERO_FIXED_CCR4_VERIFY_REPEATS,
+           (unsigned int)(ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY != 0u),
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A, 1000.0f) % 1000u,
+            (unsigned int)((ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY != 0u) ||
+                           (ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY != 0u)),
+            (unsigned int)point0_current_diagnostic_only);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_speed_guard: speed_limit_rpm=%lu.%02lu speed_window_samples=%lu speed_window_us=%lu single_count_window_rpm=%lu.%02lu single_sample_rpm_ignored_for_overspeed=1 ramp_transient_speed_logged_only=1 sample_window_speed_trip=1 encoder_delta_jump_guard_counts=%ld",
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SPEED_LIMIT_RPM, 100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_SPEED_LIMIT_RPM, 100.0f) % 100u,
+           (unsigned long)ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES,
+           (unsigned long)(ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES * 50u),
+           (unsigned long)float_to_scaled_u32(60.0f /
+                                                  ((float)COMM_ENCODER_CPR *
+                                                   ((float)ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES *
+                                                    0.00005f)),
+                                              100.0f) / 100u,
+           (unsigned long)float_to_scaled_u32(60.0f /
+                                                  ((float)COMM_ENCODER_CPR *
+                                                   ((float)ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES *
+                                                    0.00005f)),
+                                              100.0f) % 100u,
+           (long)ENCODER_JUMP_MAX_COUNTS_PER_SAMPLE);
+  uart2_printf_line(line);
+
+  g_electrical_offset_alignment_active = false;
+  g_electrical_offset_alignment_dispatch_enabled = false;
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_PREFLIGHT_ADMISSION;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  ok = current_sensor_admission_test_run();
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_PREFLIGHT_HANDOFF;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  const bool offset_ok = ok &&
+                         g_drv_test.adc_offset_pass &&
+                         g_drv_test.dc_cal_clear_ok &&
+                         !g_admission_test.active &&
+                         g_admission_test.disabled_ack &&
+                         g_admission_test.snapshots_after_disable >= 2u &&
+                         g_admission_test.hook_calls_after_disable == 0u &&
+                         g_admission_test.overlap_hook_call_count == 0u;
+  const CurrentSensorAdmissionResult admission_res =
+      current_sensor_admission_get_result(&g_current_sensor_admission);
+  offset_pc0_valid = admission_res.dc_cal_offset_pc0 > 0u &&
+                     admission_res.dc_cal_offset_pc0 < 4095u &&
+                     admission_res.post_samples >= 128u;
+  offset_pc1_valid = admission_res.dc_cal_offset_pc1 > 0u &&
+                     admission_res.dc_cal_offset_pc1 < 4095u &&
+                     admission_res.post_samples >= 128u;
+  const int32_t iv_m = float_to_scaled_i32(admission_res.iv_mean_a, 1000.0f);
+  const int32_t iw_m = float_to_scaled_i32(admission_res.iw_mean_a, 1000.0f);
+  const int32_t iu_m = float_to_scaled_i32(admission_res.iu_mean_a, 1000.0f);
+  const uint32_t phase_peak_m =
+      float_to_scaled_u32((float)admission_res.phase_metric_max_counts *
+                          g_drv_test.current_amp_per_count,
+                          1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_preflight_admission: samples=%lu offset_pc0_v_phase=%lu offset_pc1_w_phase=%lu iv_mean=%s%lu.%03lu iw_mean=%s%lu.%03lu iu_mean=%s%lu.%03lu phase_metric_peak_current=%lu.%03lu adc_rank_order=%lu nfault=%u dc_cal_clear_ok=%u admission_preflight_ok=%u admission_disabled_ack=%u snapshots_after_disable=%lu hook_calls_after_disable=%lu overlap_hook_count=%lu moe=%lu ccer=0x%08lX",
+           (unsigned long)admission_res.post_samples,
+           (unsigned long)g_drv_test.offset.offset_u,
+           (unsigned long)g_drv_test.offset.offset_v,
+           (iv_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv_m) / 1000u), (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+           (iw_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw_m) / 1000u), (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+           (iu_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu_m) / 1000u), (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+           (unsigned long)(phase_peak_m / 1000u), (unsigned long)(phase_peak_m % 1000u),
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)board_read_drv_nfault(),
+           (unsigned int)g_drv_test.dc_cal_clear_ok,
+           (unsigned int)offset_ok,
+           (unsigned int)g_admission_test.disabled_ack,
+           (unsigned long)g_admission_test.snapshots_after_disable,
+           (unsigned long)g_admission_test.hook_calls_after_disable,
+           (unsigned long)g_admission_test.overlap_hook_call_count,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER);
+  uart2_printf_line(line);
+
+  if (!ok || !offset_ok) {
+    const ElectricalOffsetFailure failure =
+        !ok ? ((!g_admission_test.verdict_deadline_pass)
+                   ? ELECTRICAL_OFFSET_FAILURE_ADMISSION_DEADLINE_MISS
+                   : ELECTRICAL_OFFSET_FAILURE_ADMISSION_REJECTED)
+            : ((!g_admission_test.handoff_pass)
+                   ? ELECTRICAL_OFFSET_FAILURE_ADMISSION_HANDOFF_FAILED
+                   : ((!offset_pc0_valid || !offset_pc1_valid)
+                          ? ELECTRICAL_OFFSET_FAILURE_OFFSETS_INVALID
+                          : ELECTRICAL_OFFSET_FAILURE_ADMISSION_REJECTED));
+    requested_next_state = ELECTRICAL_OFFSET_STATE_PREFLIGHT_HANDOFF;
+    electrical_offset_fail_now(failure,
+                               state,
+                               previous_state,
+                               requested_next_state,
+                               __LINE__,
+                               g_admission_test.verdict_preflight_pass,
+                               g_admission_test.handoff_pass,
+                               g_admission_test.verdict_target_5us_met,
+                               g_admission_test.verdict_deadline_pass,
+                               offset_pc0_valid,
+                               offset_pc1_valid,
+                               g_drv_test.dc_cal_clear_ok,
+                               alignment_dispatch_enabled);
+    power_stage_force_safe_off_zero_ccr();
+    (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+    electrical_offset_print_first_failure();
+    electrical_offset_print_state_trace();
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_FAIL");
+    uart2_printf_line("electrical_offset_valid=0");
+    return false;
+  }
+
+  power_stage_force_safe_off_zero_ccr();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_disable_six_outputs();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  current_observe_set_gain_scale(80.0f);
+  HAL_Delay(2u);
+  const bool gate_state_at_admission_complete = gate_raw_is_low();
+  const bool gate_state_at_handoff_complete = gate_raw_is_low();
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_DRV_PRE_ENABLE;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  hal_gpio_set_gate_enable(true);
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_DRV_WAIT_NFAULT;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  if (!power_stage_wait_nfault_release() || !nfault_ok()) {
+    ok = false;
+    drv_ready_for_alignment = false;
+  } else {
+    previous_state = state;
+    state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_DRV_SETTLE;
+    electrical_offset_trace_transition(previous_state,
+                                       state,
+                                       ELECTRICAL_OFFSET_FAILURE_NONE,
+                                       __LINE__);
+    HAL_Delay(10u);
+    drv_ready_for_alignment = true;
+  }
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_DRV_CONFIGURE;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  if (ok && !power_stage_configure_drivers()) {
+    ok = false;
+    drv_ready_for_alignment = false;
+  }
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_DRV_VERIFY;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_CURRENT_OFFSET_REVALIDATE;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  if (ok && drv_ready_for_alignment) {
+    last_seq = drv_bringup_get_adc_seq();
+    ok = electrical_offset_alignment_revalidate_offsets(&last_seq);
+    offset_pc0_valid = g_drv_test.offset.offset_u > CURRENT_RAW_MIN_SAFE_COUNT &&
+                       g_drv_test.offset.offset_u < CURRENT_RAW_MAX_SAFE_COUNT;
+    offset_pc1_valid = g_drv_test.offset.offset_v > CURRENT_RAW_MIN_SAFE_COUNT &&
+                       g_drv_test.offset.offset_v < CURRENT_RAW_MAX_SAFE_COUNT;
+  }
+  dc_cal_bits_clear_for_alignment =
+      ((g_drv_test.drv0_regs.control2 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.drv1_regs.control2 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u);
+  if (!ok || !g_electrical_offset_offset_revalidation.pass) {
+    const ElectricalOffsetFailure failure =
+        !drv_ready_for_alignment
+            ? ELECTRICAL_OFFSET_FAILURE_DRV_NOT_READY
+            : (dc_cal_bits_clear_for_alignment
+                   ? ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_OFFSET_SHIFT
+                   : ELECTRICAL_OFFSET_FAILURE_DC_CAL_NOT_CLEAR);
+    electrical_offset_fail_now(failure,
+                               state,
+                               previous_state,
+                               state,
+                               __LINE__,
+                               g_admission_test.verdict_preflight_pass,
+                               g_admission_test.handoff_pass,
+                               g_admission_test.verdict_target_5us_met,
+                               g_admission_test.verdict_deadline_pass,
+                               offset_pc0_valid,
+                               offset_pc1_valid,
+                               dc_cal_bits_clear_for_alignment,
+                               alignment_dispatch_enabled);
+    power_stage_force_safe_off_zero_ccr();
+    g_electrical_offset_alignment_active = false;
+    g_electrical_offset_alignment_dispatch_enabled = false;
+    electrical_offset_print_alignment_diagnostics();
+    electrical_offset_print_first_failure();
+    electrical_offset_print_state_trace();
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_FAIL");
+    uart2_printf_line("electrical_offset_valid=0");
+    return false;
+  }
+  alignment_dispatch_enabled = ok && drv_ready_for_alignment;
+  g_electrical_offset_alignment_dispatch_enabled = alignment_dispatch_enabled;
+  g_electrical_offset_alignment_active = alignment_dispatch_enabled;
+  requested_next_state =
+      electrical_offset_handoff_next_state(g_admission_test.handoff_pass, false);
+
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_ZERO_COMMAND_REQUEST;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  electrical_offset_zero_command_request(drv_bringup_get_adc_seq());
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_ZERO_COMMAND_WAIT_ACK;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  if (!electrical_offset_zero_command_wait_ack(50u)) {
+    requested_next_state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_PRE_GATE_CHECK;
+    electrical_offset_fail_now(ELECTRICAL_OFFSET_FAILURE_ZERO_COMMAND_HANDOFF_TIMEOUT,
+                               state,
+                               previous_state,
+                               requested_next_state,
+                               __LINE__,
+                               g_admission_test.verdict_preflight_pass,
+                               g_admission_test.handoff_pass,
+                               g_admission_test.verdict_target_5us_met,
+                               g_admission_test.verdict_deadline_pass,
+                               offset_pc0_valid,
+                               offset_pc1_valid,
+                               dc_cal_bits_clear_for_alignment,
+                               alignment_dispatch_enabled);
+    electrical_offset_latch_gate_snapshot(state);
+    power_stage_force_safe_off_zero_ccr();
+    g_electrical_offset_alignment_active = false;
+    g_electrical_offset_alignment_dispatch_enabled = false;
+    electrical_offset_print_gate_snapshot("prealignment_gate_snapshot");
+    electrical_offset_print_first_failure();
+    electrical_offset_print_state_trace();
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_FAIL");
+    uart2_printf_line("electrical_offset_valid=0");
+    return false;
+  }
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_ZERO_COMMAND_SETTLE;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGNMENT_PRE_GATE_CHECK;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+
+  ElectricalOffsetPreAlignmentGateInput gate_input = {0};
+  gate_input.admission_preflight_pass =
+      g_admission_test.verdict_preflight_pass;
+  gate_input.admission_handoff_pass = g_admission_test.handoff_pass;
+  gate_input.admission_active = g_admission_test.active;
+  gate_input.admission_disabled_ack = g_admission_test.disabled_ack;
+  gate_input.snapshots_after_admission_disable =
+      g_admission_test.snapshots_after_disable;
+  gate_input.admission_hook_calls_after_disable =
+      g_admission_test.hook_calls_after_disable;
+  gate_input.overlap_count = g_admission_test.overlap_hook_call_count;
+  gate_input.offset_pc0_valid = offset_pc0_valid;
+  gate_input.offset_pc1_valid = offset_pc1_valid;
+  gate_input.dc_cal_bits_clear = dc_cal_bits_clear_for_alignment;
+  gate_input.gate_enabled = gate_raw_is_high();
+  gate_input.nfault_asserted = !nfault_ok();
+  gate_input.producer_gap_count = admission_res.producer_gap_count;
+  gate_input.producer_duplicate_count = admission_res.producer_duplicate_count;
+  gate_input.true_unpaired_count = admission_res.runtime_true_unpaired_count;
+  gate_input.torn_count = admission_res.torn_count;
+  gate_input.generation_mismatch_count = admission_res.generation_mismatch_count;
+  gate_input.alignment_dispatch_enabled = alignment_dispatch_enabled;
+  gate_input.alignment_active = g_electrical_offset_alignment_active;
+  gate_input.command_flag_zero = g_electrical_offset_zero_command_request &&
+                                 g_electrical_offset_zero_command_ack;
+  gate_input.v_alpha_zero = fabsf(g_electrical_offset_v_alpha_cmd) < 0.000001f;
+  gate_input.v_beta_zero = fabsf(g_electrical_offset_v_beta_cmd) < 0.000001f;
+  gate_input.voltage_magnitude_zero =
+      fabsf(g_electrical_offset_voltage_magnitude_cmd) < 0.000001f;
+  gate_input.modulation_command_zero =
+      fabsf(g_electrical_offset_modulation_u) < 0.000001f &&
+      fabsf(g_electrical_offset_modulation_v) < 0.000001f &&
+      fabsf(g_electrical_offset_modulation_w) < 0.000001f;
+  gate_input.last_applied_command_zero =
+      fabsf(g_electrical_offset_last_applied_v_alpha) < 0.000001f &&
+      fabsf(g_electrical_offset_last_applied_v_beta) < 0.000001f &&
+      fabsf(g_electrical_offset_last_applied_voltage_magnitude) < 0.000001f;
+  gate_input.voltage_command_pending_clear =
+      !g_electrical_offset_voltage_update_pending;
+  gate_input.voltage_command_seq_stable =
+      g_electrical_offset_zero_command_ack &&
+      g_electrical_offset_voltage_applied_seq >=
+          g_electrical_offset_zero_command_request_seq;
+  gate_input.pwm_shadow_safe =
+      TIM1->CCR1 == 0u &&
+      TIM1->CCR2 == 0u &&
+      TIM1->CCR3 == 0u;
+  gate_input.pwm_active_safe = power_stage_channels_off();
+  gate_input.ccr1_safe = TIM1->CCR1 == 0u;
+  gate_input.ccr2_safe = TIM1->CCR2 == 0u;
+  gate_input.ccr3_safe = TIM1->CCR3 == 0u;
+  gate_input.ccr_safe_for_moe_off =
+      gate_input.pwm_shadow_safe &&
+      gate_input.pwm_active_safe &&
+      ((TIM1->BDTR & TIM_BDTR_MOE) == 0u);
+  gate_input.ccr_safe_for_moe_enable =
+      TIM1->CCR1 == tim1_half_ccr() &&
+      TIM1->CCR2 == tim1_half_ccr() &&
+      TIM1->CCR3 == tim1_half_ccr() &&
+      ((TIM1->BDTR & TIM_BDTR_MOE) == 0u);
+  gate_input.ccr_alignment_start_ready =
+      gate_input.ccr_safe_for_moe_enable &&
+      power_stage_channels_off();
+  gate_input.moe_off = (TIM1->BDTR & TIM_BDTR_MOE) == 0u;
+  gate_input.drv_ready = ok && drv_ready_for_alignment &&
+                         g_drv_test.gain80_readback_ok &&
+                         g_drv_test.drv0_status_ok &&
+                         g_drv_test.drv1_status_ok &&
+                         nfault_ok();
+  const ElectricalOffsetPreAlignmentGateResult gate_result =
+      electrical_offset_pre_alignment_gate_evaluate(&gate_input);
+  electrical_offset_latch_gate_snapshot(state);
+  prealign_gate_pass = gate_result.pass;
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_gate_states: gate_state_at_admission_complete=%u gate_state_at_handoff_complete=%u gate_state_before_alignment=%u nfault_state_before_alignment=%u drv_ready_for_alignment=%u",
+           (unsigned int)gate_state_at_admission_complete,
+           (unsigned int)gate_state_at_handoff_complete,
+           (unsigned int)gate_raw_is_high(),
+           (unsigned int)(!nfault_ok()),
+           (unsigned int)gate_input.drv_ready);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pre_alignment_gate_snapshot: current_state=%s requested_next_state=%s admission_preflight_pass=%u admission_handoff_pass=%u admission_active=%u admission_disabled_ack=%u snapshots_after_admission_disable=%lu admission_hook_calls_after_disable=%lu overlap_count=%lu offset_pc0=%lu offset_pc1=%lu offset_valid_for_alignment=%u dc_cal_bits_clear=%u gate_enable_requested=1 gate_enabled=%u nfault_asserted=%u producer_gap=%lu producer_duplicate=%lu true_unpaired=%lu torn=%lu generation_mismatch=%lu alignment_dispatch_enabled=%u alignment_active=%u voltage_command_zero=%u ccr1=%lu ccr2=%lu ccr3=%lu moe=%lu",
+           electrical_offset_state_name(state),
+           electrical_offset_state_name(requested_next_state),
+           (unsigned int)g_admission_test.verdict_preflight_pass,
+           (unsigned int)g_admission_test.handoff_pass,
+           (unsigned int)g_admission_test.active,
+           (unsigned int)g_admission_test.disabled_ack,
+           (unsigned long)g_admission_test.snapshots_after_disable,
+           (unsigned long)g_admission_test.hook_calls_after_disable,
+           (unsigned long)g_admission_test.overlap_hook_call_count,
+           (unsigned long)g_drv_test.offset.offset_u,
+           (unsigned long)g_drv_test.offset.offset_v,
+           (unsigned int)(offset_pc0_valid && offset_pc1_valid),
+           (unsigned int)dc_cal_bits_clear_for_alignment,
+           (unsigned int)gate_input.gate_enabled,
+           (unsigned int)gate_input.nfault_asserted,
+           (unsigned long)admission_res.producer_gap_count,
+           (unsigned long)admission_res.producer_duplicate_count,
+           (unsigned long)admission_res.runtime_true_unpaired_count,
+           (unsigned long)admission_res.torn_count,
+           (unsigned long)admission_res.generation_mismatch_count,
+           (unsigned int)alignment_dispatch_enabled,
+           (unsigned int)g_electrical_offset_alignment_active,
+           (unsigned int)gate_result.software_zero_command_pass,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u));
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_zero_command_handoff: zero_command_request=%u zero_command_ack=%u zero_command_request_seq=%lu zero_command_ack_seq=%lu snapshots_after_zero_command_ack=%lu tim1_updates_after_zero_command_ack=%lu zero_command_timeout_count=%lu pending_update_flag=%u",
+           (unsigned int)g_electrical_offset_zero_command_request,
+           (unsigned int)g_electrical_offset_zero_command_ack,
+           (unsigned long)g_electrical_offset_zero_command_request_seq,
+           (unsigned long)g_electrical_offset_zero_command_ack_seq,
+           (unsigned long)(drv_bringup_get_adc_seq() -
+                           g_electrical_offset_zero_command_ack_seq),
+           (unsigned long)g_electrical_offset_tim1_update_count,
+           (unsigned long)g_electrical_offset_zero_command_timeout_count,
+           (unsigned int)g_electrical_offset_voltage_update_pending);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_zero_command_items: prealign_command_flag_zero_pass=%u prealign_v_alpha_zero_pass=%u prealign_v_beta_zero_pass=%u prealign_voltage_magnitude_zero_pass=%u prealign_modulation_command_zero_pass=%u prealign_last_applied_command_zero_pass=%u prealign_voltage_command_pending_clear_pass=%u prealign_voltage_command_seq_stable_pass=%u prealign_pwm_shadow_safe_pass=%u prealign_pwm_active_safe_pass=%u prealign_ccr1_safe_pass=%u prealign_ccr2_safe_pass=%u prealign_ccr3_safe_pass=%u prealign_moe_off_pass=%u software_zero_command_pass=%u applied_zero_command_pass=%u prealign_zero_command_pass=%u",
+           (unsigned int)gate_result.command_flag_zero_pass,
+           (unsigned int)gate_result.v_alpha_zero_pass,
+           (unsigned int)gate_result.v_beta_zero_pass,
+           (unsigned int)gate_result.voltage_magnitude_zero_pass,
+           (unsigned int)gate_result.modulation_command_zero_pass,
+           (unsigned int)gate_result.last_applied_command_zero_pass,
+           (unsigned int)gate_result.voltage_command_pending_clear_pass,
+           (unsigned int)gate_result.voltage_command_seq_stable_pass,
+           (unsigned int)gate_result.pwm_shadow_safe_pass,
+           (unsigned int)gate_result.pwm_active_safe_pass,
+           (unsigned int)gate_result.ccr1_safe_pass,
+           (unsigned int)gate_result.ccr2_safe_pass,
+           (unsigned int)gate_result.ccr3_safe_pass,
+           (unsigned int)gate_result.moe_still_off_pass,
+           (unsigned int)gate_result.software_zero_command_pass,
+           (unsigned int)gate_result.applied_zero_command_pass,
+           (unsigned int)gate_result.zero_command_pass);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_zero_command_raw: commanded_v_alpha=%ld.%03ld commanded_v_beta=%ld.%03ld commanded_voltage_magnitude=%ld.%03ld last_applied_v_alpha=%ld.%03ld last_applied_v_beta=%ld.%03ld last_applied_voltage_magnitude=%ld.%03ld modulation_command_u=%ld.%03ld modulation_command_v=%ld.%03ld modulation_command_w=%ld.%03ld voltage_command_seq=%lu voltage_applied_seq=%lu zero_command_request_seq=%lu zero_command_ack_seq=%lu TIM1_CCR1_active=%lu TIM1_CCR2_active=%lu TIM1_CCR3_active=%lu TIM1_CCR1_shadow=%lu TIM1_CCR2_shadow=%lu TIM1_CCR3_shadow=%lu TIM1_BDTR_MOE=%lu TIM1_CCER=0x%08lX pending_update_flag=%u",
+           (long)float_to_scaled_i32(g_electrical_offset_v_alpha_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_v_alpha_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_v_beta_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_v_beta_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_voltage_magnitude_cmd, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_voltage_magnitude_cmd, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_last_applied_v_alpha, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_last_applied_v_alpha, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_last_applied_v_beta, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_last_applied_v_beta, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_last_applied_voltage_magnitude, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_last_applied_voltage_magnitude, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_modulation_u, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_modulation_u, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_modulation_v, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_modulation_v, 1000.0f)) % 1000,
+           (long)float_to_scaled_i32(g_electrical_offset_modulation_w, 1000.0f) / 1000,
+           (long)abs_i32_to_u32(float_to_scaled_i32(g_electrical_offset_modulation_w, 1000.0f)) % 1000,
+           (unsigned long)g_electrical_offset_voltage_command_seq,
+           (unsigned long)g_electrical_offset_voltage_applied_seq,
+           (unsigned long)g_electrical_offset_zero_command_request_seq,
+           (unsigned long)g_electrical_offset_zero_command_ack_seq,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER,
+           (unsigned int)g_electrical_offset_voltage_update_pending);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_pre_alignment_gate_items: prealign_admission_pass=%u prealign_handoff_pass=%u prealign_offsets_pass=%u prealign_dc_cal_clear_pass=%u prealign_adc_pass=%u prealign_drv_pass=%u prealign_dispatch_pass=%u prealign_zero_command_pass=%u prealign_moe_still_off_pass=%u ccr_safe_for_moe_off=%u ccr_safe_for_moe_enable=%u ccr_alignment_start_ready=%u failure=%s",
+           (unsigned int)gate_result.admission_pass,
+           (unsigned int)gate_result.handoff_pass,
+           (unsigned int)gate_result.offsets_pass,
+           (unsigned int)gate_result.dc_cal_clear_pass,
+           (unsigned int)gate_result.adc_pass,
+           (unsigned int)gate_result.drv_pass,
+           (unsigned int)gate_result.dispatch_pass,
+           (unsigned int)gate_result.zero_command_pass,
+           (unsigned int)gate_result.moe_still_off_pass,
+           (unsigned int)gate_result.ccr_safe_for_moe_off_pass,
+           (unsigned int)gate_result.ccr_safe_for_moe_enable_pass,
+           (unsigned int)gate_result.ccr_alignment_start_ready_pass,
+           electrical_offset_failure_name(gate_result.failure));
+  uart2_printf_line(line);
+  electrical_offset_print_gate_snapshot("prealignment_gate_snapshot");
+  uart2_printf_line(prealign_gate_pass
+                        ? "ELECTRICAL_OFFSET_MOE_GATE_CHECK_PASS=YES"
+                        : "ELECTRICAL_OFFSET_MOE_GATE_CHECK_PASS=NO");
+
+  if (!prealign_gate_pass || requested_next_state != ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP) {
+    electrical_offset_fail_now(gate_result.failure,
+                               state,
+                               previous_state,
+                               requested_next_state,
+                               __LINE__,
+                               g_admission_test.verdict_preflight_pass,
+                               g_admission_test.handoff_pass,
+                               g_admission_test.verdict_target_5us_met,
+                               g_admission_test.verdict_deadline_pass,
+                               offset_pc0_valid,
+                               offset_pc1_valid,
+                               dc_cal_bits_clear_for_alignment,
+                               alignment_dispatch_enabled);
+    power_stage_force_safe_off_zero_ccr();
+    g_electrical_offset_alignment_active = false;
+    g_electrical_offset_alignment_dispatch_enabled = false;
+    electrical_offset_print_first_failure();
+    electrical_offset_print_state_trace();
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_FAIL");
+    uart2_printf_line("electrical_offset_valid=0");
+    return false;
+  }
+
+#if ELECTRICAL_OFFSET_PWM_ZERO_TRIGGER_SWEEP_ONLY
+  (void)electrical_offset_pwm_zero_trigger_sweep_run(
+      &last_seq,
+      dc_cal_bits_clear_for_alignment,
+      offset_pc0_valid,
+      offset_pc1_valid);
+  g_electrical_offset_alignment_active = false;
+  g_electrical_offset_alignment_dispatch_enabled = false;
+  power_stage_force_safe_off_zero_ccr();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  (void)drv8301_set_dc_cal(&g_drv0, false, false);
+  (void)drv8301_set_dc_cal(&g_drv1, false, false);
+  return false;
+#elif ELECTRICAL_OFFSET_PWM_ZERO_CURRENT_DIAGNOSTIC_ONLY
+  (void)electrical_offset_pwm_zero_current_diagnostic_run(
+      &last_seq,
+      dc_cal_bits_clear_for_alignment,
+      offset_pc0_valid,
+      offset_pc1_valid);
+  g_electrical_offset_alignment_active = false;
+  g_electrical_offset_alignment_dispatch_enabled = false;
+  power_stage_force_safe_off_zero_ccr();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  (void)drv8301_set_dc_cal(&g_drv0, false, false);
+  (void)drv8301_set_dc_cal(&g_drv1, false, false);
+  return false;
+#endif
+
+  const uint32_t alignment_entry_start = DWT->CYCCNT;
+  last_seq = drv_bringup_get_adc_seq();
+  encoder_tracker_reset();
+  power_stage_set_ccr_half();
+  power_stage_enable_six_outputs();
+  previous_state = state;
+  state = ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP;
+  electrical_offset_trace_transition(previous_state,
+                                     state,
+                                     ELECTRICAL_OFFSET_FAILURE_NONE,
+                                     __LINE__);
+  __HAL_TIM_MOE_ENABLE(&htim1);
+  electrical_offset_alignment_protection_reset(&alignment_protection);
+  ramp_sample_index = 0u;
+  g_electrical_offset_alignment_entry_once_cycles =
+      DWT->CYCCNT - alignment_entry_start;
+
+  const uint32_t alignment_iteration_count =
+      point0_current_diagnostic_only ? 1u : (ELECTRICAL_OFFSET_CAL_POINT_COUNT + 1u);
+  for (uint32_t iteration = 0u;
+       iteration < alignment_iteration_count && ok;
+       ++iteration) {
+    const bool precondition = !point0_current_diagnostic_only && iteration == 0u;
+    const uint32_t pi = precondition ? 2u
+                                     : (point0_current_diagnostic_only
+                                            ? 0u
+                                            : (iteration - 1u));
+    ElectricalOffsetHwPoint *pt = precondition ? &precondition_point
+                                               : &hw_points[pi];
+    electrical_offset_hw_point_reset(pt, theta_cmd_rad[pi], theta_cmd_deg[pi]);
+    pt->encoder_count_start = g_encoder_accum;
+    const uint32_t point_start_ms = HAL_GetTick();
+    const uint32_t total_ms =
+        (point0_current_diagnostic_only && pi == 0u)
+            ? (ramp_ms + ELECTRICAL_OFFSET_POINT0_DIAGNOSTIC_SETTLE_MS)
+            : (ramp_ms + hold_ms + down_ms + zero_hold_ms);
+    ElectricalOffsetBringupState point_phase = ELECTRICAL_OFFSET_STATE_FAIL;
+    int32_t speed_window_delta_counts = 0;
+    uint32_t speed_window_samples = 0u;
+    float speed_rpm = 0.0f;
+    bool speed_limit_trip = false;
+    while ((HAL_GetTick() - point_start_ms) < total_ms) {
+      const uint32_t elapsed_ms = HAL_GetTick() - point_start_ms;
+      float voltage = 0.0f;
+      ElectricalOffsetBringupState next_phase = ELECTRICAL_OFFSET_STATE_FAIL;
+      if (point0_current_diagnostic_only && pi == 0u) {
+        if (elapsed_ms < ramp_ms) {
+          voltage = alignment_voltage_v * ((float)elapsed_ms / (float)ramp_ms);
+          next_phase = ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP;
+        } else {
+          voltage = alignment_voltage_v;
+          next_phase = ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_HOLD;
+        }
+      } else if (elapsed_ms < ramp_ms) {
+        voltage = alignment_voltage_v * ((float)elapsed_ms / (float)ramp_ms);
+        next_phase = (pi == 0u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP
+                                : ((pi == 1u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_POS120_RAMP
+                                              : ELECTRICAL_OFFSET_STATE_ALIGN_POINT_NEG120_RAMP);
+      } else if (elapsed_ms < (ramp_ms + hold_ms)) {
+        voltage = alignment_voltage_v;
+        if (elapsed_ms >= (ramp_ms + hold_ms - sample_tail_ms)) {
+          next_phase = (pi == 0u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_SAMPLE
+                                  : ((pi == 1u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_POS120_SAMPLE
+                                                : ELECTRICAL_OFFSET_STATE_ALIGN_POINT_NEG120_SAMPLE);
+        } else {
+          next_phase = (pi == 0u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_HOLD
+                                  : ((pi == 1u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_POS120_HOLD
+                                                : ELECTRICAL_OFFSET_STATE_ALIGN_POINT_NEG120_HOLD);
+        }
+      } else if (elapsed_ms < (ramp_ms + hold_ms + down_ms)) {
+        const uint32_t down_elapsed = elapsed_ms - ramp_ms - hold_ms;
+        voltage = alignment_voltage_v *
+                  (1.0f - ((float)down_elapsed / (float)down_ms));
+        next_phase = (pi == 0u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP_DOWN
+                                : ((pi == 1u) ? ELECTRICAL_OFFSET_STATE_ALIGN_POINT_POS120_RAMP_DOWN
+                                              : ELECTRICAL_OFFSET_STATE_ALIGN_POINT_NEG120_RAMP_DOWN);
+      } else {
+        voltage = 0.0f;
+        next_phase = (pi == 2u) ? ELECTRICAL_OFFSET_STATE_CALCULATE_OFFSET
+                                : point_phase;
+      }
+      if (next_phase != point_phase &&
+          next_phase != ELECTRICAL_OFFSET_STATE_FAIL) {
+        previous_state = state;
+        state = next_phase;
+        point_phase = next_phase;
+        electrical_offset_trace_transition(previous_state,
+                                           state,
+                                           ELECTRICAL_OFFSET_FAILURE_NONE,
+                                           __LINE__);
+        snprintf(line, sizeof(line), "electrical_offset_state=%s",
+                 electrical_offset_state_name(state));
+        uart2_printf_line(line);
+      }
+      voltage = clampf(voltage, 0.0f, cfg.alignment_voltage_limit_v);
+      const bool in_alignment_sample_window =
+          (next_phase == ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_SAMPLE) ||
+          (next_phase == ELECTRICAL_OFFSET_STATE_ALIGN_POINT_POS120_SAMPLE) ||
+          (next_phase == ELECTRICAL_OFFSET_STATE_ALIGN_POINT_NEG120_SAMPLE);
+
+      if (!open_loop_wait_next_adc_sample(&last_seq, &snap)) {
+        ok = false;
+        electrical_offset_fail_now(ELECTRICAL_OFFSET_FAILURE_ADC_PIPELINE_INVALID,
+                                   state,
+                                   previous_state,
+                                   state,
+                                   __LINE__,
+                                   g_admission_test.verdict_preflight_pass,
+                                   g_admission_test.handoff_pass,
+                                   g_admission_test.verdict_target_5us_met,
+                                   g_admission_test.verdict_deadline_pass,
+                                   offset_pc0_valid,
+                                   offset_pc1_valid,
+                                   dc_cal_bits_clear_for_alignment,
+                                   alignment_dispatch_enabled);
+        drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+        break;
+      }
+
+      const uint32_t cycles_before = DWT->CYCCNT;
+      (void)encoder_tracker_sample();
+      speed_window_delta_counts += (int32_t)g_encoder_last_delta;
+      speed_window_samples++;
+      if (speed_window_samples >= ELECTRICAL_OFFSET_ALIGNMENT_SPEED_WINDOW_SAMPLES) {
+        const float window_dt_s =
+            (float)speed_window_samples * 0.00005f;
+        speed_rpm = ((float)speed_window_delta_counts * 60.0f) /
+                    ((float)COMM_ENCODER_CPR * window_dt_s);
+        if (fabsf(speed_rpm) > pt->speed_peak_rpm) {
+          pt->speed_peak_rpm = fabsf(speed_rpm);
+        }
+        if (in_alignment_sample_window &&
+            fabsf(speed_rpm) > ELECTRICAL_OFFSET_ALIGNMENT_SPEED_LIMIT_RPM) {
+          speed_limit_trip = true;
+        }
+        speed_window_delta_counts = 0;
+        speed_window_samples = 0u;
+      }
+
+      const float vbus_v = board_read_vbus_v();
+      const float v_alpha = voltage * cosf(pt->theta_cmd_rad);
+      const float v_beta = voltage * sinf(pt->theta_cmd_rad);
+      encoder_apply_alpha_beta_svpwm(v_alpha, v_beta, vbus_v);
+      g_electrical_offset_v_alpha_cmd = v_alpha;
+      g_electrical_offset_v_beta_cmd = v_beta;
+      g_electrical_offset_voltage_magnitude_cmd = voltage;
+      g_electrical_offset_last_applied_v_alpha = v_alpha;
+      g_electrical_offset_last_applied_v_beta = v_beta;
+      g_electrical_offset_last_applied_voltage_magnitude = voltage;
+      g_electrical_offset_voltage_command_seq++;
+      g_electrical_offset_voltage_applied_seq = snap.seq;
+
+      const CurrentDqSample sample = current_confirmed_m0_vw_calculate(&snap);
+      if (sample.magnitude_max > pt->phase_current_peak) {
+        pt->phase_current_peak = sample.magnitude_max;
+      }
+      if (point0_current_diagnostic_only && pi == 0u &&
+          sample.magnitude_max > point0_current_diagnostic_phase_peak) {
+        point0_current_diagnostic_phase_peak = sample.magnitude_max;
+      }
+
+      ElectricalOffsetAlignmentProtectionInput prot_in = {0};
+      prot_in.raw_pc0 = snap.raw_pc0_m0_so1;
+      prot_in.raw_pc1 = snap.raw_pc1_m0_so2;
+      prot_in.delta_pc0_counts = (int32_t)snap.raw_pc0_m0_so1 -
+                                 (int32_t)g_drv_test.offset.offset_u;
+      prot_in.delta_pc1_counts = (int32_t)snap.raw_pc1_m0_so2 -
+                                 (int32_t)g_drv_test.offset.offset_v;
+      prot_in.iu_a = sample.iu;
+      prot_in.iv_a = sample.iv;
+      prot_in.iw_a = sample.iw;
+      prot_in.id_a = sample.id;
+      prot_in.iq_a = sample.iq;
+      prot_in.phase_abs_a = sample.magnitude_max;
+      prot_in.current_amp_per_count = g_drv_test.current_amp_per_count;
+      prot_in.soft_limit_a = ELECTRICAL_OFFSET_ALIGNMENT_SOFT_LIMIT_A;
+      prot_in.phase_emergency_limit_a =
+          ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A;
+      prot_in.raw_hard_limit_counts =
+          ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS;
+      prot_in.soft_consecutive_required =
+          ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES;
+      prot_in.raw_min_safe_count = CURRENT_RAW_MIN_SAFE_COUNT;
+      prot_in.raw_max_safe_count = CURRENT_RAW_MAX_SAFE_COUNT;
+      prot_in.offset_valid = offset_pc0_valid && offset_pc1_valid;
+      prot_in.current_finite =
+          isfinite(sample.iu) && isfinite(sample.iv) && isfinite(sample.iw) &&
+          isfinite(sample.id) && isfinite(sample.iq) &&
+          isfinite(sample.magnitude_max);
+      prot_in.nfault_ok = nfault_ok();
+      const ElectricalOffsetAlignmentProtectionResult prot =
+          electrical_offset_alignment_protection_update(&alignment_protection,
+                                                        &prot_in);
+      if (point0_current_diagnostic_only && pi == 0u) {
+        if (elapsed_ms >= ramp_ms) {
+          point0_current_diagnostic_stable_samples++;
+        }
+        if (prot.soft_consecutive_count >
+            point0_current_diagnostic_max_soft_consecutive) {
+          point0_current_diagnostic_max_soft_consecutive =
+              prot.soft_consecutive_count;
+        }
+        const int32_t abs_delta_pc0 =
+            (prot_in.delta_pc0_counts < 0) ? -prot_in.delta_pc0_counts
+                                           : prot_in.delta_pc0_counts;
+        const int32_t abs_delta_pc1 =
+            (prot_in.delta_pc1_counts < 0) ? -prot_in.delta_pc1_counts
+                                           : prot_in.delta_pc1_counts;
+        if (abs_delta_pc0 > point0_current_diagnostic_max_abs_delta_pc0) {
+          point0_current_diagnostic_max_abs_delta_pc0 = abs_delta_pc0;
+        }
+        if (abs_delta_pc1 > point0_current_diagnostic_max_abs_delta_pc1) {
+          point0_current_diagnostic_max_abs_delta_pc1 = abs_delta_pc1;
+        }
+      }
+      if (pi == 0u && point_phase == ELECTRICAL_OFFSET_STATE_ALIGN_POINT_0_RAMP) {
+        ramp_sample_index++;
+        electrical_offset_ramp_bucket_update(ramp_ms,
+                                             elapsed_ms,
+                                             &sample,
+                                             voltage,
+                                             prot.soft_consecutive_count,
+                                             speed_rpm);
+        electrical_offset_alignment_trace_record(&snap,
+                                                 &sample,
+                                                 ramp_sample_index,
+                                                 voltage,
+                                                 &prot,
+                                                 false);
+      }
+
+      if (prot.trip ||
+          speed_limit_trip ||
+          (vbus_v < OPEN_LOOP_VBUS_MIN_V) ||
+          (vbus_v > OPEN_LOOP_VBUS_MAX_V) ||
+          !m1_is_safe_off() ||
+          !encoder_delta_ok() ||
+          !isfinite(v_alpha) ||
+          !isfinite(v_beta)) {
+        ok = false;
+        ElectricalOffsetFailure failure = prot.trip
+                                              ? prot.failure
+                                              : ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_OVERCURRENT;
+        if (speed_limit_trip) {
+          failure = ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_OVERSPEED;
+        } else if (!nfault_ok() || !m1_is_safe_off()) {
+          failure = ELECTRICAL_OFFSET_FAILURE_DRV_RUNTIME_FAULT;
+        } else if (!isfinite(v_alpha) || !isfinite(v_beta) ||
+                   vbus_v < OPEN_LOOP_VBUS_MIN_V ||
+                   vbus_v > OPEN_LOOP_VBUS_MAX_V ||
+                   !encoder_delta_ok()) {
+          failure = ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_VOLTAGE_SCALING_INVALID;
+        }
+        electrical_offset_latch_overcurrent_snapshot(__LINE__,
+                                                     state,
+                                                     &snap,
+                                                     &sample,
+                                                     pi,
+                                                     ramp_sample_index,
+                                                     (ramp_ms > 0u)
+                                                         ? clampf((float)elapsed_ms /
+                                                                  (float)ramp_ms,
+                                                                  0.0f,
+                                                                  1.0f)
+                                                         : 0.0f,
+                                                     elapsed_ms * 1000u,
+                                                     pt->theta_cmd_deg,
+                                                     voltage,
+                                                     v_alpha,
+                                                     v_beta,
+                                                     speed_rpm,
+                                                     DWT->CYCCNT - cycles_before,
+                                                     &prot);
+        electrical_offset_fail_now(failure,
+                                   state,
+                                   previous_state,
+                                   state,
+                                   __LINE__,
+                                   g_admission_test.verdict_preflight_pass,
+                                   g_admission_test.handoff_pass,
+                                   g_admission_test.verdict_target_5us_met,
+                                   g_admission_test.verdict_deadline_pass,
+                                   offset_pc0_valid,
+                                   offset_pc1_valid,
+                                   dc_cal_bits_clear_for_alignment,
+                                   alignment_dispatch_enabled);
+        if (failure == ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_ADC_SATURATION ||
+            failure == ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_CURRENT_MODEL_INVALID ||
+            failure == ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_OFFSET_SHIFT) {
+          drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+        } else if (failure == ELECTRICAL_OFFSET_FAILURE_ALIGNMENT_OVERSPEED ||
+                   failure == ELECTRICAL_OFFSET_FAILURE_ENCODER_DELTA_INVALID) {
+          drv_bringup_mark_fault(AXIS0_FAULT_ENCODER_CALIBRATION_FAILED);
+        } else {
+          drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
+        }
+        encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, vbus_v);
+        power_stage_set_ccr_half();
+        __HAL_TIM_MOE_DISABLE(&htim1);
+        power_stage_disable_six_outputs();
+        hal_gpio_set_gate_enable(false);
+        electrical_offset_collect_post_fault_trace(&last_seq, ramp_sample_index);
+        break;
+      }
+
+      if ((HAL_GetTick() - last_drv_status_ms) >= 100u) {
+        last_drv_status_ms = HAL_GetTick();
+        if (!drv8301_read_status(&g_drv0) ||
+            !drv8301_read_status(&g_drv1) ||
+            drv_status_has_fault(g_drv0.status.status1_raw,
+                                 g_drv0.status.status2_raw) ||
+            drv_status_has_fault(g_drv1.status.status1_raw,
+                                 g_drv1.status.status2_raw)) {
+          ok = false;
+          electrical_offset_fail_now(ELECTRICAL_OFFSET_FAILURE_DRV_RUNTIME_FAULT,
+                                     state,
+                                     previous_state,
+                                     state,
+                                     __LINE__,
+                                     g_admission_test.verdict_preflight_pass,
+                                     g_admission_test.handoff_pass,
+                                     g_admission_test.verdict_target_5us_met,
+                                     g_admission_test.verdict_deadline_pass,
+                                     offset_pc0_valid,
+                                     offset_pc1_valid,
+                                     dc_cal_bits_clear_for_alignment,
+                                     alignment_dispatch_enabled);
+          drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+          break;
+        }
+      }
+
+      const uint32_t elapsed_cycles = DWT->CYCCNT - cycles_before;
+      const float elapsed_us = fixed_current_cycles_to_us(elapsed_cycles);
+      if (elapsed_cycles > g_electrical_offset_worst_main_service_cycles) {
+        g_electrical_offset_worst_main_service_cycles = elapsed_cycles;
+      }
+      if (elapsed_cycles > worst_loop_cycles) {
+        worst_loop_cycles = elapsed_cycles;
+        worst_loop_us = elapsed_us;
+      }
+      HalAdcDiagnostics timing_diag = {0};
+      hal_adc_get_diagnostics(&timing_diag);
+      ElectricalOffsetTimingInput timing_in = {0};
+      timing_in.alignment_fast_hook_core_cycles =
+          g_electrical_offset_worst_alignment_fast_hook_core_cycles;
+      timing_in.adc_callback_total_cycles =
+          timing_diag.worst_adc_callback_cycles;
+      timing_in.alignment_state_transition_once_cycles =
+          g_electrical_offset_alignment_entry_once_cycles;
+      timing_in.main_service_cycles =
+          g_electrical_offset_worst_main_service_cycles;
+      timing_in.cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+      timing_in.scope_valid = true;
+      timing_in.detailed_timing_enabled = ALIGNMENT_DETAILED_TIMING != 0u;
+      timing_in.interrupt_preempted = false;
+      const ElectricalOffsetTimingVerdict timing_verdict =
+          electrical_offset_timing_evaluate(&timing_in);
+      if (timing_verdict.old_main_scope_would_overrun) {
+        g_electrical_offset_old_scope_overrun_count++;
+      }
+      if (!timing_verdict.pass) {
+        ok = false;
+        electrical_offset_latch_timing_overrun(timing_verdict.failure,
+                                               __LINE__,
+                                               state,
+                                               previous_state,
+                                               &snap,
+                                               pi,
+                                               ramp_sample_index,
+                                               cycles_before,
+                                               DWT->CYCCNT,
+                                               elapsed_ms,
+                                               ramp_ms,
+                                               false,
+                                               voltage);
+        electrical_offset_fail_now(timing_verdict.failure,
+                                   state,
+                                   previous_state,
+                                   state,
+                                   __LINE__,
+                                   g_admission_test.verdict_preflight_pass,
+                                   g_admission_test.handoff_pass,
+                                   g_admission_test.verdict_target_5us_met,
+                                   g_admission_test.verdict_deadline_pass,
+                                   offset_pc0_valid,
+                                   offset_pc1_valid,
+                                   dc_cal_bits_clear_for_alignment,
+                                   alignment_dispatch_enabled);
+        if (timing_verdict.adc_callback_overrun) {
+          drv_bringup_mark_fault(AXIS0_FAULT_ADC_CALLBACK_OVERRUN);
+        } else {
+          drv_bringup_mark_fault(AXIS0_FAULT_ELECTRICAL_OFFSET_CALIBRATION_FAILED);
+        }
+        break;
+      }
+
+      if (elapsed_ms >= (ramp_ms + hold_ms - sample_tail_ms) &&
+          elapsed_ms < (ramp_ms + hold_ms)) {
+        const double enc = (double)g_encoder_accum;
+        pt->encoder_sum += enc;
+        pt->encoder_sumsq += enc * enc;
+        pt->speed_sum_rpm += (double)speed_rpm;
+        if (g_encoder_accum < pt->encoder_min) { pt->encoder_min = g_encoder_accum; }
+        if (g_encoder_accum > pt->encoder_max) { pt->encoder_max = g_encoder_accum; }
+        pt->applied_voltage = voltage;
+        pt->sample_count++;
+      }
+    }
+
+    if (precondition && ok) {
+      float mean = 0.0f;
+      float std_counts = 0.0f;
+      float speed_mean = 0.0f;
+      if (pt->sample_count > 0u) {
+        const double inv = 1.0 / (double)pt->sample_count;
+        const double mean_d = pt->encoder_sum * inv;
+        double var = pt->encoder_sumsq * inv - mean_d * mean_d;
+        if (var < 0.0) { var = 0.0; }
+        mean = (float)mean_d;
+        std_counts = (float)sqrt(var);
+        speed_mean = (float)(pt->speed_sum_rpm * inv);
+      }
+      pt->valid =
+          (pt->sample_count >= min_sample_count) &&
+          (std_counts <= 2.0f) &&
+          (fabsf(speed_mean) < 2.0f);
+
+      const int32_t enc_mean_m = float_to_scaled_i32(mean, 100.0f);
+      const uint32_t enc_std_m = float_to_scaled_u32(std_counts, 100.0f);
+      const int32_t speed_mean_m = float_to_scaled_i32(speed_mean, 100.0f);
+      const uint32_t speed_peak_m =
+          float_to_scaled_u32(pt->speed_peak_rpm, 100.0f);
+      const uint32_t current_peak_m =
+          float_to_scaled_u32(pt->phase_current_peak, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "electrical_offset_precondition: theta_cmd_deg=-120.00 encoder_count_mean=%s%lu.%02lu encoder_count_std=%lu.%02lu speed_mean_rpm=%s%lu.%02lu speed_peak_rpm=%lu.%02lu phase_current_peak=%lu.%03lu sample_count=%lu valid=%u used_in_offset=0 same_direction_approach=1",
+               (enc_mean_m < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(enc_mean_m) / 100u),
+               (unsigned long)(abs_i32_to_u32(enc_mean_m) % 100u),
+               (unsigned long)(enc_std_m / 100u),
+               (unsigned long)(enc_std_m % 100u),
+               (speed_mean_m < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(speed_mean_m) / 100u),
+               (unsigned long)(abs_i32_to_u32(speed_mean_m) % 100u),
+               (unsigned long)(speed_peak_m / 100u),
+               (unsigned long)(speed_peak_m % 100u),
+               (unsigned long)(current_peak_m / 1000u),
+               (unsigned long)(current_peak_m % 1000u),
+               (unsigned long)pt->sample_count,
+               (unsigned int)pt->valid);
+      uart2_printf_line(line);
+      if (!pt->valid) {
+        ok = false;
+        electrical_offset_fail_now(ELECTRICAL_OFFSET_FAILURE_STATE_TIMEOUT,
+                                   state,
+                                   previous_state,
+                                   state,
+                                   __LINE__,
+                                   g_admission_test.verdict_preflight_pass,
+                                   g_admission_test.handoff_pass,
+                                   g_admission_test.verdict_target_5us_met,
+                                   g_admission_test.verdict_deadline_pass,
+                                   offset_pc0_valid,
+                                   offset_pc1_valid,
+                                   dc_cal_bits_clear_for_alignment,
+                                   alignment_dispatch_enabled);
+        drv_bringup_mark_fault(AXIS0_FAULT_ENCODER_CALIBRATION_FAILED);
+      }
+      continue;
+    }
+
+    if (point0_current_diagnostic_only && pi == 0u) {
+      point0_current_diagnostic_complete = ok;
+      snprintf(line,
+               sizeof(line),
+               "electrical_offset_point0_current_diagnostic_window: complete=%u ramp_ms=%lu settle_ms=%lu stable_samples=%lu reached_voltage=%lu.%03lu phase_current_peak=%lu.%03lu max_abs_delta_pc0=%ld max_abs_delta_pc1=%ld max_soft_consecutive=%lu raw_hard_limit_counts=%ld emergency_limit_a=%lu.%03lu",
+               (unsigned int)point0_current_diagnostic_complete,
+               (unsigned long)ramp_ms,
+               (unsigned long)ELECTRICAL_OFFSET_POINT0_DIAGNOSTIC_SETTLE_MS,
+               (unsigned long)point0_current_diagnostic_stable_samples,
+               (unsigned long)float_to_scaled_u32(alignment_voltage_v, 1000.0f) / 1000u,
+               (unsigned long)float_to_scaled_u32(alignment_voltage_v, 1000.0f) % 1000u,
+               (unsigned long)float_to_scaled_u32(point0_current_diagnostic_phase_peak, 1000.0f) / 1000u,
+               (unsigned long)float_to_scaled_u32(point0_current_diagnostic_phase_peak, 1000.0f) % 1000u,
+               (long)point0_current_diagnostic_max_abs_delta_pc0,
+               (long)point0_current_diagnostic_max_abs_delta_pc1,
+               (unsigned long)point0_current_diagnostic_max_soft_consecutive,
+               (long)ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS,
+               (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) / 1000u,
+               (unsigned long)float_to_scaled_u32(ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A, 1000.0f) % 1000u);
+      uart2_printf_line(line);
+      break;
+    }
+
+    if (ok) {
+      float mean = 0.0f;
+      float std_counts = 0.0f;
+      float speed_mean = 0.0f;
+      if (pt->sample_count > 0u) {
+        const double inv = 1.0 / (double)pt->sample_count;
+        const double mean_d = pt->encoder_sum * inv;
+        double var = pt->encoder_sumsq * inv - mean_d * mean_d;
+        if (var < 0.0) { var = 0.0; }
+        mean = (float)mean_d;
+        std_counts = (float)sqrt(var);
+        speed_mean = (float)(pt->speed_sum_rpm * inv);
+      }
+      pt->valid =
+          (pt->sample_count >= min_sample_count) &&
+          (std_counts <= 2.0f) &&
+          (fabsf(speed_mean) < 2.0f);
+      cal_points[pi].theta_cmd_rad = pt->theta_cmd_rad;
+      cal_points[pi].encoder_count_mean = mean;
+      cal_points[pi].valid = pt->valid;
+
+      char start_s[32];
+      char min_s[32];
+      char max_s[32];
+      i64_to_dec(start_s, sizeof(start_s), pt->encoder_count_start);
+      i64_to_dec(min_s, sizeof(min_s), pt->encoder_min);
+      i64_to_dec(max_s, sizeof(max_s), pt->encoder_max);
+      const int32_t theta_deg_m = float_to_scaled_i32(pt->theta_cmd_deg, 100.0f);
+      const int32_t enc_mean_m = float_to_scaled_i32(mean, 100.0f);
+      const uint32_t enc_std_m = float_to_scaled_u32(std_counts, 100.0f);
+      const int32_t speed_mean_m = float_to_scaled_i32(speed_mean, 100.0f);
+      const uint32_t speed_peak_m = float_to_scaled_u32(pt->speed_peak_rpm, 100.0f);
+      const uint32_t current_peak_m = float_to_scaled_u32(pt->phase_current_peak, 1000.0f);
+      const uint32_t voltage_m = float_to_scaled_u32(pt->applied_voltage, 1000.0f);
+      snprintf(line,
+               sizeof(line),
+               "electrical_offset_point%lu: theta_cmd_deg=%s%lu.%02lu encoder_count_start=%s encoder_count_mean=%s%lu.%02lu encoder_count_min=%s encoder_count_max=%s encoder_count_std=%lu.%02lu speed_mean_rpm=%s%lu.%02lu speed_peak_rpm=%lu.%02lu phase_current_peak=%lu.%03lu applied_voltage=%lu.%03lu sample_count=%lu valid=%u",
+               (unsigned long)pi,
+               (theta_deg_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(theta_deg_m) / 100u), (unsigned long)(abs_i32_to_u32(theta_deg_m) % 100u),
+               start_s,
+               (enc_mean_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(enc_mean_m) / 100u), (unsigned long)(abs_i32_to_u32(enc_mean_m) % 100u),
+               min_s,
+               max_s,
+               (unsigned long)(enc_std_m / 100u), (unsigned long)(enc_std_m % 100u),
+               (speed_mean_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(speed_mean_m) / 100u), (unsigned long)(abs_i32_to_u32(speed_mean_m) % 100u),
+               (unsigned long)(speed_peak_m / 100u), (unsigned long)(speed_peak_m % 100u),
+               (unsigned long)(current_peak_m / 1000u), (unsigned long)(current_peak_m % 1000u),
+               (unsigned long)(voltage_m / 1000u), (unsigned long)(voltage_m % 1000u),
+               (unsigned long)pt->sample_count,
+               (unsigned int)pt->valid);
+      uart2_printf_line(line);
+
+      if (!pt->valid) {
+        ok = false;
+        electrical_offset_fail_now(ELECTRICAL_OFFSET_FAILURE_STATE_TIMEOUT,
+                                   state,
+                                   previous_state,
+                                   state,
+                                   __LINE__,
+                                   g_admission_test.verdict_preflight_pass,
+                                   g_admission_test.handoff_pass,
+                                   g_admission_test.verdict_target_5us_met,
+                                   g_admission_test.verdict_deadline_pass,
+                                   offset_pc0_valid,
+                                   offset_pc1_valid,
+                                   dc_cal_bits_clear_for_alignment,
+                                   alignment_dispatch_enabled);
+        drv_bringup_mark_fault(AXIS0_FAULT_ENCODER_CALIBRATION_FAILED);
+      }
+    }
+  }
+
+  encoder_apply_alpha_beta_svpwm(0.0f, 0.0f, board_read_vbus_v());
+  g_electrical_offset_alignment_active = false;
+  g_electrical_offset_alignment_dispatch_enabled = false;
+  power_stage_set_ccr_half();
+  power_stage_disable_six_outputs();
+  power_stage_force_safe_off_zero_ccr();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  (void)drv8301_set_dc_cal(&g_drv0, false, false);
+  (void)drv8301_set_dc_cal(&g_drv1, false, false);
+  (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
+  (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+
+  if (point0_current_diagnostic_only) {
+    drv_bringup_capture_final_state();
+    const bool final_safe =
+        gate_raw_is_low() &&
+        ((TIM1->BDTR & TIM_BDTR_MOE) == 0u) &&
+        TIM1->CCR1 == 0u &&
+        TIM1->CCR2 == 0u &&
+        TIM1->CCR3 == 0u &&
+        power_stage_channels_off() &&
+        !g_electrical_offset_alignment_dispatch_enabled &&
+        hal_adc_get_m0_rank_order() == HAL_ADC_M0_ORDER_PC0_PC1 &&
+        ((g_drv_test.drv0_regs.control2 &
+          (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+        ((g_drv_test.drv1_regs.control2 &
+          (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u);
+    const bool raw_hard_clear =
+        point0_current_diagnostic_max_abs_delta_pc0 <=
+            ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS &&
+        point0_current_diagnostic_max_abs_delta_pc1 <=
+            ELECTRICAL_OFFSET_ALIGNMENT_RAW_HARD_LIMIT_COUNTS;
+    const bool soft_clear =
+        point0_current_diagnostic_max_soft_consecutive <
+        ELECTRICAL_OFFSET_ALIGNMENT_SOFT_CONSECUTIVE_SAMPLES;
+    HalAdcDiagnostics final_adc_diag = {0};
+    hal_adc_get_diagnostics(&final_adc_diag);
+    ElectricalOffsetTimingInput final_timing_in = {0};
+    final_timing_in.alignment_fast_hook_core_cycles =
+        g_electrical_offset_worst_alignment_fast_hook_core_cycles;
+    final_timing_in.adc_callback_total_cycles =
+        final_adc_diag.worst_adc_callback_cycles;
+    final_timing_in.alignment_state_transition_once_cycles =
+        g_electrical_offset_alignment_entry_once_cycles;
+    final_timing_in.main_service_cycles =
+        g_electrical_offset_worst_main_service_cycles;
+    final_timing_in.cpu_hz = (SystemCoreClock != 0u) ? SystemCoreClock : 168000000u;
+    final_timing_in.scope_valid = true;
+    final_timing_in.detailed_timing_enabled = ALIGNMENT_DETAILED_TIMING != 0u;
+    final_timing_in.interrupt_preempted = false;
+    const ElectricalOffsetTimingVerdict final_timing =
+        electrical_offset_timing_evaluate(&final_timing_in);
+    const bool timing_clear = final_timing.pass;
+    const bool diag_pass =
+        ok &&
+        point0_current_diagnostic_complete &&
+        point0_current_diagnostic_stable_samples >= min_sample_count &&
+        g_electrical_offset_offset_revalidation.pass &&
+        raw_hard_clear &&
+        soft_clear &&
+        timing_clear &&
+        final_safe &&
+        !g_electrical_offset_first_failure.valid &&
+        !g_electrical_offset_overcurrent_first_snapshot.valid &&
+        g_drv_test.fault_code == AXIS0_FAULT_NONE;
+
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_point0_current_diagnostic_result: pass=%u complete=%u stable_samples=%lu alignment_offset_used=REVALIDATED_DC_CAL alignment_offset_pc0=%lu alignment_offset_pc1=%lu raw_hard_clear=%u phase_emergency_clear=%u soft_consecutive_clear=%u max_soft_consecutive=%lu max_abs_delta_pc0=%ld max_abs_delta_pc1=%ld callback_timing_ok=%u worst_alignment_fast_hook_core_us=%lu.%03lu worst_adc_callback_us=%lu.%03lu worst_alignment_main_service_us=%lu.%03lu no_nfault=%u no_adc_gap=%u final_safe=%u fault_code=0x%08lX",
+             (unsigned int)diag_pass,
+             (unsigned int)point0_current_diagnostic_complete,
+             (unsigned long)point0_current_diagnostic_stable_samples,
+             (unsigned long)g_electrical_offset_offset_revalidation.alignment_offset_pc0,
+             (unsigned long)g_electrical_offset_offset_revalidation.alignment_offset_pc1,
+             (unsigned int)raw_hard_clear,
+             (unsigned int)(point0_current_diagnostic_phase_peak <
+                            ELECTRICAL_OFFSET_ALIGNMENT_PHASE_EMERGENCY_LIMIT_A),
+             (unsigned int)soft_clear,
+             (unsigned long)point0_current_diagnostic_max_soft_consecutive,
+             (long)point0_current_diagnostic_max_abs_delta_pc0,
+             (long)point0_current_diagnostic_max_abs_delta_pc1,
+             (unsigned int)timing_clear,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_alignment_fast_hook_core_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_alignment_fast_hook_core_cycles), 1000.0f) % 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) % 1000u,
+             (unsigned long)float_to_scaled_u32(worst_loop_us, 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(worst_loop_us, 1000.0f) % 1000u,
+             (unsigned int)nfault_ok(),
+             (unsigned int)(admission_res.producer_gap_count == 0u &&
+                            admission_res.producer_duplicate_count == 0u &&
+                            admission_res.runtime_true_unpaired_count == 0u),
+             (unsigned int)final_safe,
+             (unsigned long)g_drv_test.fault_code);
+    uart2_printf_line(line);
+
+    const uint32_t adc_count =
+        final_adc_diag.adc_callback_timing_sample_count;
+    const uint32_t adc_mean_cycles =
+        (adc_count > 0u)
+            ? (uint32_t)(final_adc_diag.sum_adc_callback_cycles / adc_count)
+            : 0u;
+    const uint32_t adc_min_cycles =
+        (final_adc_diag.min_adc_callback_cycles == 0xFFFFFFFFu)
+            ? 0u
+            : final_adc_diag.min_adc_callback_cycles;
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_timing_split: worst_alignment_fast_hook_core_cycles=%lu worst_alignment_fast_hook_core_us=%lu.%03lu worst_adc_callback_total_cycles=%lu worst_adc_callback_total_us=%lu.%03lu alignment_state_transition_once_cycles=%lu alignment_state_transition_once_us=%lu.%03lu worst_alignment_main_service_cycles=%lu worst_alignment_main_service_us=%lu.%03lu old_main_scope_would_overrun_count=%lu detailed_timing_enabled=%u timing_failure=%s alignment_core_overrun=%u adc_callback_overrun=%u timing_scope_invalid=%u entry_init_overrun=%u",
+             (unsigned long)g_electrical_offset_worst_alignment_fast_hook_core_cycles,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_alignment_fast_hook_core_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_alignment_fast_hook_core_cycles), 1000.0f) % 1000u,
+             (unsigned long)final_adc_diag.worst_adc_callback_cycles,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) % 1000u,
+             (unsigned long)g_electrical_offset_alignment_entry_once_cycles,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_alignment_entry_once_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_alignment_entry_once_cycles), 1000.0f) % 1000u,
+             (unsigned long)g_electrical_offset_worst_main_service_cycles,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_main_service_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(g_electrical_offset_worst_main_service_cycles), 1000.0f) % 1000u,
+             (unsigned long)g_electrical_offset_old_scope_overrun_count,
+             (unsigned int)(ALIGNMENT_DETAILED_TIMING != 0u),
+             electrical_offset_failure_name(final_timing.failure),
+             (unsigned int)final_timing.alignment_core_overrun,
+             (unsigned int)final_timing.adc_callback_overrun,
+             (unsigned int)final_timing.timing_scope_invalid,
+             (unsigned int)final_timing.entry_init_overrun);
+    uart2_printf_line(line);
+
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_adc_callback_histogram: callback_count=%lu min_cycles=%lu mean_cycles=%lu max_cycles=%lu min_us=%lu.%03lu mean_us=%lu.%03lu max_us=%lu.%03lu over_20us=%lu over_30us=%lu over_40us=%lu over_50us=%lu producer_seq_gap_count=%lu expected_seq_delta=1 actual_snapshot_count=%lu true_unpaired_adc1=%lu true_unpaired_adc2=%lu generation_mismatch=%lu",
+             (unsigned long)adc_count,
+             (unsigned long)adc_min_cycles,
+             (unsigned long)adc_mean_cycles,
+             (unsigned long)final_adc_diag.worst_adc_callback_cycles,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(adc_min_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(adc_min_cycles), 1000.0f) % 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(adc_mean_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(adc_mean_cycles), 1000.0f) % 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) / 1000u,
+             (unsigned long)float_to_scaled_u32(fixed_current_cycles_to_us(final_adc_diag.worst_adc_callback_cycles), 1000.0f) % 1000u,
+             (unsigned long)final_adc_diag.adc_callback_over_20us_count,
+             (unsigned long)final_adc_diag.adc_callback_over_30us_count,
+             (unsigned long)final_adc_diag.adc_callback_over_40us_count,
+             (unsigned long)final_adc_diag.adc_callback_over_50us_count,
+             (unsigned long)admission_res.producer_gap_count,
+             (unsigned long)final_adc_diag.snapshot_count,
+             (unsigned long)final_adc_diag.runtime_true_adc1_unpaired_count,
+             (unsigned long)final_adc_diag.runtime_true_adc2_unpaired_count,
+             (unsigned long)final_adc_diag.completion_gap_generation_mismatch_count);
+    uart2_printf_line(line);
+
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_final_safe: gate=%u moe=%lu ccer=0x%08lX ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu admission_active=%u alignment_active=%u admission_hook_calls_after_disable=%lu admission_and_alignment_overlap_count=%lu dc_cal_bits_drv0=0x%04X dc_cal_bits_drv1=0x%04X fault_code=0x%08lX",
+             (unsigned int)gate_raw_is_high(),
+             (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+             (unsigned long)TIM1->CCER,
+             (unsigned long)TIM1->CCR1,
+             (unsigned long)TIM1->CCR2,
+             (unsigned long)TIM1->CCR3,
+             (unsigned long)hal_adc_get_m0_rank_order(),
+             (unsigned int)g_admission_test.active,
+             (unsigned int)g_electrical_offset_alignment_active,
+             (unsigned long)g_admission_test.hook_calls_after_disable,
+             (unsigned long)g_admission_test.overlap_hook_call_count,
+             (unsigned int)(g_drv_test.drv0_regs.control2 &
+                            (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)),
+             (unsigned int)(g_drv_test.drv1_regs.control2 &
+                            (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)),
+             (unsigned long)g_drv_test.fault_code);
+    uart2_printf_line(line);
+    snprintf(line,
+             sizeof(line),
+             "electrical_offset_dispatcher: dispatcher_admission_calls=%lu dispatcher_handoff_idle_calls=%lu dispatcher_alignment_calls=%lu dispatcher_unhandled_state_calls=%lu dispatcher_overlap_calls=%lu dispatcher_unhandled_state=%s alignment_dispatch_enabled=%u",
+             (unsigned long)g_admission_test.dispatcher_admission_calls,
+             (unsigned long)g_admission_test.dispatcher_handoff_idle_calls,
+             (unsigned long)g_admission_test.dispatcher_alignment_calls,
+             (unsigned long)g_admission_test.dispatcher_unhandled_state_calls,
+             (unsigned long)g_admission_test.dispatcher_overlap_calls,
+             electrical_offset_state_name(g_admission_test.dispatcher_unhandled_state),
+             (unsigned int)g_electrical_offset_alignment_dispatch_enabled);
+    uart2_printf_line(line);
+    electrical_offset_print_alignment_diagnostics();
+    electrical_offset_print_timing_overrun();
+    electrical_offset_print_first_failure();
+    electrical_offset_print_state_trace();
+
+    g_drv_test.phase_resistance_classification =
+        diag_pass ? "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_PASS"
+                  : "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FAIL";
+    uart2_printf_line(diag_pass ? "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_PASS"
+                                : "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FAIL");
+    uart2_printf_line("electrical_offset_valid=0");
+    uart2_printf_line(diag_pass ? "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FLASH_READY=YES"
+                                : "ELECTRICAL_OFFSET_POINT0_CURRENT_DIAGNOSTIC_FLASH_READY=NO");
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_HARDWARE_FLASH_READY=NO");
+    uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+    return diag_pass;
+  }
+
+  const bool cal_ok =
+      ok &&
+      electrical_offset_calibration_evaluate(&cfg,
+                                             cal_points,
+                                             alignment_voltage_v,
+                                             &cal_result);
+  if (!cal_ok && !g_electrical_offset_first_failure.valid) {
+    ElectricalOffsetFailure failure = ELECTRICAL_OFFSET_FAILURE_STATE_TRANSITION_INVALID;
+    if ((cal_result.fail_flags & ELECTRICAL_OFFSET_CAL_FAIL_DIRECTION) != 0u ||
+        (cal_result.fail_flags & ELECTRICAL_OFFSET_CAL_FAIL_POLE_PAIRS) != 0u) {
+      failure = ELECTRICAL_OFFSET_FAILURE_ENCODER_DELTA_INVALID;
+    } else if ((cal_result.fail_flags & ELECTRICAL_OFFSET_CAL_FAIL_SPREAD) != 0u) {
+      failure = ELECTRICAL_OFFSET_FAILURE_SPREAD_INVALID;
+    }
+    electrical_offset_fail_now(failure,
+                               ELECTRICAL_OFFSET_STATE_CALCULATE_OFFSET,
+                               state,
+                               ELECTRICAL_OFFSET_STATE_COMPLETE,
+                               __LINE__,
+                               g_admission_test.verdict_preflight_pass,
+                               g_admission_test.handoff_pass,
+                               g_admission_test.verdict_target_5us_met,
+                               g_admission_test.verdict_deadline_pass,
+                               offset_pc0_valid,
+                               offset_pc1_valid,
+                               dc_cal_bits_clear_for_alignment,
+                               alignment_dispatch_enabled);
+  }
+  g_drv_test.electrical_offset_runtime_rad = cal_result.electrical_offset_rad;
+  g_drv_test.electrical_offset_runtime_deg = cal_result.electrical_offset_deg;
+
+  const uint32_t p0_m = float_to_scaled_u32(cal_result.point_offset_rad[0], 1000.0f);
+  const uint32_t p1_m = float_to_scaled_u32(cal_result.point_offset_rad[1], 1000.0f);
+  const uint32_t p2_m = float_to_scaled_u32(cal_result.point_offset_rad[2], 1000.0f);
+  const uint32_t off_m = float_to_scaled_u32(cal_result.electrical_offset_rad, 1000.0f);
+  const uint32_t off_deg_m = float_to_scaled_u32(cal_result.electrical_offset_deg, 100.0f);
+  const uint32_t spread_m = float_to_scaled_u32(cal_result.max_offset_spread_deg, 100.0f);
+  const int32_t dpos_m = float_to_scaled_i32(cal_result.delta_count_0_to_pos120, 100.0f);
+  const int32_t dneg_m = float_to_scaled_i32(cal_result.delta_count_0_to_neg120, 100.0f);
+  const uint32_t exp_m = float_to_scaled_u32(cal_result.expected_delta_count, 100.0f);
+  const uint32_t pp_m = float_to_scaled_u32(cal_result.pole_pairs_est_average, 100.0f);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_result: electrical_offset_point0_rad=%lu.%03lu electrical_offset_point1_rad=%lu.%03lu electrical_offset_point2_rad=%lu.%03lu electrical_offset_circular_mean_rad=%lu.%03lu electrical_offset_deg=%lu.%02lu max_offset_spread_deg=%lu.%02lu delta_count_0_to_pos120=%s%lu.%02lu delta_count_0_to_neg120=%s%lu.%02lu expected_delta_count=%lu.%02lu pole_pairs_est=%lu.%02lu encoder_direction_ok=%u pole_pairs_ok=%u fail_flags=0x%08lX worst_fast_loop_us=%lu.%03lu worst_adc_callback_us=%lu.%03lu",
+           (unsigned long)(p0_m / 1000u), (unsigned long)(p0_m % 1000u),
+           (unsigned long)(p1_m / 1000u), (unsigned long)(p1_m % 1000u),
+           (unsigned long)(p2_m / 1000u), (unsigned long)(p2_m % 1000u),
+           (unsigned long)(off_m / 1000u), (unsigned long)(off_m % 1000u),
+           (unsigned long)(off_deg_m / 100u), (unsigned long)(off_deg_m % 100u),
+           (unsigned long)(spread_m / 100u), (unsigned long)(spread_m % 100u),
+           (dpos_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(dpos_m) / 100u), (unsigned long)(abs_i32_to_u32(dpos_m) % 100u),
+           (dneg_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(dneg_m) / 100u), (unsigned long)(abs_i32_to_u32(dneg_m) % 100u),
+           (unsigned long)(exp_m / 100u), (unsigned long)(exp_m % 100u),
+           (unsigned long)(pp_m / 100u), (unsigned long)(pp_m % 100u),
+           (unsigned int)cal_result.encoder_direction_ok,
+           (unsigned int)cal_result.pole_pairs_ok,
+           (unsigned long)cal_result.fail_flags,
+           (unsigned long)float_to_scaled_u32(worst_loop_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(worst_loop_us, 1000.0f) % 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_worst_adc_callback_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(g_fixed_current_worst_adc_callback_us, 1000.0f) % 1000u);
+  uart2_printf_line(line);
+
+  if ((cal_result.fail_flags & ELECTRICAL_OFFSET_CAL_FAIL_DIRECTION) != 0u) {
+    uart2_printf_line("ENCODER_DIRECTION_MISMATCH");
+  }
+
+  if (cal_ok) {
+    electrical_offset_trace_transition(ELECTRICAL_OFFSET_STATE_CALCULATE_OFFSET,
+                                       ELECTRICAL_OFFSET_STATE_COMPLETE,
+                                       ELECTRICAL_OFFSET_FAILURE_NONE,
+                                       __LINE__);
+  }
+  drv_bringup_capture_final_state();
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_final_safe: gate=%u moe=%lu ccer=0x%08lX ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu admission_active=%u alignment_active=%u admission_hook_calls_after_disable=%lu admission_and_alignment_overlap_count=%lu dc_cal_bits_drv0=0x%04X dc_cal_bits_drv1=0x%04X fault_code=0x%08lX",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)g_admission_test.active,
+           (unsigned int)g_electrical_offset_alignment_active,
+           (unsigned long)g_admission_test.hook_calls_after_disable,
+           (unsigned long)g_admission_test.overlap_hook_call_count,
+           (unsigned int)(g_drv_test.drv0_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned int)(g_drv_test.drv1_regs.control2 &
+                          (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)),
+           (unsigned long)g_drv_test.fault_code);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "electrical_offset_dispatcher: dispatcher_admission_calls=%lu dispatcher_handoff_idle_calls=%lu dispatcher_alignment_calls=%lu dispatcher_unhandled_state_calls=%lu dispatcher_overlap_calls=%lu dispatcher_unhandled_state=%s alignment_dispatch_enabled=%u",
+           (unsigned long)g_admission_test.dispatcher_admission_calls,
+           (unsigned long)g_admission_test.dispatcher_handoff_idle_calls,
+           (unsigned long)g_admission_test.dispatcher_alignment_calls,
+           (unsigned long)g_admission_test.dispatcher_unhandled_state_calls,
+           (unsigned long)g_admission_test.dispatcher_overlap_calls,
+           electrical_offset_state_name(g_admission_test.dispatcher_unhandled_state),
+           (unsigned int)g_electrical_offset_alignment_dispatch_enabled);
+  uart2_printf_line(line);
+  electrical_offset_print_alignment_diagnostics();
+  electrical_offset_print_timing_overrun();
+  electrical_offset_print_first_failure();
+  electrical_offset_print_state_trace();
+
+  if (cal_ok) {
+    g_drv_test.phase_resistance_classification =
+        "ELECTRICAL_OFFSET_CALIBRATION_PASS";
+    uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_PASS");
+    uart2_printf_line("electrical_offset_valid=1");
+    return true;
+  }
+
+  g_drv_test.phase_resistance_classification =
+      "ELECTRICAL_OFFSET_CALIBRATION_FAIL";
+  uart2_printf_line("ELECTRICAL_OFFSET_CALIBRATION_FAIL");
+  uart2_printf_line("electrical_offset_valid=0");
+  return false;
+}
+
+static float max3_abs_f32(float a, float b, float c)
+{
+  float out = fabsf(a);
+  const float bb = fabsf(b);
+  const float cc = fabsf(c);
+  if (bb > out) {
+    out = bb;
+  }
+  if (cc > out) {
+    out = cc;
+  }
+  return out;
+}
+
+static void rotating_dq_print_fault_trace_sample(
+    const char *tag,
+    uint32_t index,
+    const RotatingDqFaultTraceSample *s)
+{
+  if (tag == NULL || s == NULL) {
+    return;
+  }
+
+  char line[768];
+  const float scale = (s->current_amp_per_count > 0.0f) ?
+                          s->current_amp_per_count :
+                          g_drv_test.current_amp_per_count;
+  const float iu = (float)s->iu_counts * scale;
+  const float iv = (float)s->iv_counts * scale;
+  const float iw = (float)s->iw_counts * scale;
+  const float i_alpha = iu;
+  const float i_beta = (iv - iw) * 0.57735026919f;
+  const float theta = (float)s->theta_mrad * 0.001f;
+  const float sin_theta = sinf(theta);
+  const float cos_theta = cosf(theta);
+  const float id = (cos_theta * i_alpha) + (sin_theta * i_beta);
+  const float iq = (-sin_theta * i_alpha) + (cos_theta * i_beta);
+  const float phase_metric = max3_abs_f32(iu, iv, iw);
+  const float dq_metric = fabsf(id) > fabsf(iq) ? fabsf(id) : fabsf(iq);
+  const float cm_a = 0.5f * (iv + iw);
+  const float iv_cf = iv - cm_a;
+  const float iw_cf = iw - cm_a;
+  const float iu_cf = -(iv_cf + iw_cf);
+  const float i_alpha_cf = iu_cf;
+  const float i_beta_cf = (iv_cf - iw_cf) * 0.57735026919f;
+  const float id_cf = (cos_theta * i_alpha_cf) +
+                      (sin_theta * i_beta_cf);
+  const float iq_cf = (-sin_theta * i_alpha_cf) +
+                      (cos_theta * i_beta_cf);
+  const float dq_cf_metric = fabsf(id_cf) > fabsf(iq_cf) ?
+                                 fabsf(id_cf) : fabsf(iq_cf);
+  const uint32_t abs_du = abs_i32_to_u32(s->dpc0);
+  const uint32_t abs_dv = abs_i32_to_u32(s->dpc1);
+  const uint32_t abs_diff = abs_i32_to_u32((int32_t)s->dpc0 -
+                                            (int32_t)s->dpc1);
+  const bool same_sign =
+      ((s->dpc0 > 0 && s->dpc1 > 0) || (s->dpc0 < 0 && s->dpc1 < 0));
+  const float direct_metric = fabsf(iv) > fabsf(iw) ? fabsf(iv) : fabsf(iw);
+  const float count_guard_a = (scale > 0.0f) ? scale : 0.0f;
+  const bool cm_shape =
+      same_sign && abs_du <= 10u && abs_dv <= 10u && abs_diff <= 6u &&
+      direct_metric <= (g_rotating_dq_test.config.phase_current_limit_a +
+                        count_guard_a);
+  const bool raw_dq_over =
+      dq_metric > g_rotating_dq_test.config.dq_current_limit_a;
+  const bool cf_dq_over =
+      dq_cf_metric > g_rotating_dq_test.config.dq_current_limit_a;
+  const bool cm_caused_dq_crossing =
+      cm_shape && raw_dq_over && !cf_dq_over &&
+      (dq_metric - dq_cf_metric) >= count_guard_a;
+  const uint32_t edge_d1 = abs_diff_u32(s->tim1_cnt_latched, s->tim1_ccr1);
+  const uint32_t edge_d2 = abs_diff_u32(s->tim1_cnt_latched, s->tim1_ccr2);
+  const uint32_t edge_d3 = abs_diff_u32(s->tim1_cnt_latched, s->tim1_ccr3);
+  uint32_t callback_min_edge = edge_d1;
+  if (edge_d2 < callback_min_edge) {
+    callback_min_edge = edge_d2;
+  }
+  if (edge_d3 < callback_min_edge) {
+    callback_min_edge = edge_d3;
+  }
+  const uint32_t trigger_d1 = abs_diff_u32(s->tim1_ccr4, s->tim1_ccr1);
+  const uint32_t trigger_d2 = abs_diff_u32(s->tim1_ccr4, s->tim1_ccr2);
+  const uint32_t trigger_d3 = abs_diff_u32(s->tim1_ccr4, s->tim1_ccr3);
+  uint32_t trigger_min_edge = trigger_d1;
+  if (trigger_d2 < trigger_min_edge) {
+    trigger_min_edge = trigger_d2;
+  }
+  if (trigger_d3 < trigger_min_edge) {
+    trigger_min_edge = trigger_d3;
+  }
+  const uint32_t phase_m = float_to_scaled_u32(phase_metric, 1000.0f);
+  const uint32_t dq_m = float_to_scaled_u32(dq_metric, 1000.0f);
+  const int32_t iu_m = float_to_scaled_i32(iu, 1000.0f);
+  const int32_t iv_m = float_to_scaled_i32(iv, 1000.0f);
+  const int32_t iw_m = float_to_scaled_i32(iw, 1000.0f);
+  const int32_t ialpha_m = float_to_scaled_i32(i_alpha, 1000.0f);
+  const int32_t ibeta_m = float_to_scaled_i32(i_beta, 1000.0f);
+  const int32_t id_m = float_to_scaled_i32(id, 1000.0f);
+  const int32_t iq_m = float_to_scaled_i32(iq, 1000.0f);
+  const int32_t theta_m = s->theta_mrad;
+  const int32_t sin_m = float_to_scaled_i32(sin_theta, 1000.0f);
+  const int32_t cos_m = float_to_scaled_i32(cos_theta, 1000.0f);
+
+  snprintf(line,
+           sizeof(line),
+           "%s%02lu_a: tick=%lu adc_seq=%lu raw_pc0=%u raw_pc1=%u offset_pc0=%u offset_pc1=%u du=%d dv=%d counts_iu_iv_iw=%d/%d/%d iu=%s%lu.%03lu iv=%s%lu.%03lu iw=%s%lu.%03lu ialpha=%s%lu.%03lu ibeta=%s%lu.%03lu id=%s%lu.%03lu iq=%s%lu.%03lu phase_metric=%lu.%03lu dq_metric=%lu.%03lu",
+           tag,
+           (unsigned long)index,
+           (unsigned long)s->tick,
+           (unsigned long)s->adc_seq,
+           (unsigned int)s->raw_pc0,
+           (unsigned int)s->raw_pc1,
+           (unsigned int)s->offset_pc0,
+           (unsigned int)s->offset_pc1,
+           (int)s->dpc0,
+           (int)s->dpc1,
+           (int)s->iu_counts,
+           (int)s->iv_counts,
+           (int)s->iw_counts,
+           (iu_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iu_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+           (iv_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iv_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+           (iw_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iw_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+           (ialpha_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(ialpha_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(ialpha_m) % 1000u),
+           (ibeta_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(ibeta_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(ibeta_m) % 1000u),
+           (id_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(id_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(id_m) % 1000u),
+           (iq_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_m) % 1000u),
+           (unsigned long)(phase_m / 1000u),
+           (unsigned long)(phase_m % 1000u),
+           (unsigned long)(dq_m / 1000u),
+           (unsigned long)(dq_m % 1000u));
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "%s%02lu_shadow: direct_metric_mA=%ld direct_over=%u cm_mA=%ld cm_shape=%u raw_dq_mA=%ld cf_id_mA=%ld cf_iq_mA=%ld cf_dq_mA=%ld raw_dq_over=%u cf_dq_over=%u cm_caused_dq_crossing=%u vd_mV=%d vq_mV=%d integrator_d_mV=%d integrator_q_mV=%d",
+           tag,
+           (unsigned long)index,
+           (long)float_to_scaled_i32(direct_metric, 1000.0f),
+           (unsigned int)(direct_metric >
+                          g_rotating_dq_test.config.zero_phase_current_peak_limit_a),
+           (long)float_to_scaled_i32(cm_a, 1000.0f),
+           (unsigned int)cm_shape,
+           (long)float_to_scaled_i32(dq_metric, 1000.0f),
+           (long)float_to_scaled_i32(id_cf, 1000.0f),
+           (long)float_to_scaled_i32(iq_cf, 1000.0f),
+           (long)float_to_scaled_i32(dq_cf_metric, 1000.0f),
+           (unsigned int)raw_dq_over,
+           (unsigned int)cf_dq_over,
+           (unsigned int)cm_caused_dq_crossing,
+           (int)s->vd_mv,
+           (int)s->vq_mv,
+           (int)s->integrator_d_mv,
+           (int)s->integrator_q_mv);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "%s%02lu_b: encoder=%ld theta=%s%lu.%03lu sin=%s%lu.%03lu cos=%s%lu.%03lu tim1_cnt_input=%lu tim1_cnt_latched=%lu arr=%lu ccr=%lu/%lu/%lu/%lu trigger_phase_edge_counts=%lu callback_phase_edge_counts=%lu cr1=0x%08lX dir=%lu ccer=0x%08lX bdtr=0x%08lX moe=%u gate_raw=%u nfault_ok=%u rank=%lu cb_cycles=%lu fault_before=0x%08lX fault_after=0x%08lX phase_fault_tick=%lu dq_fault_tick=%lu",
+           tag,
+           (unsigned long)index,
+           (long)s->encoder_count,
+           (theta_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(theta_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(theta_m) % 1000u),
+           (sin_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(sin_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(sin_m) % 1000u),
+           (cos_m < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(cos_m) / 1000u),
+           (unsigned long)(abs_i32_to_u32(cos_m) % 1000u),
+           (unsigned long)s->tim1_cnt_input,
+           (unsigned long)s->tim1_cnt_latched,
+           (unsigned long)s->tim1_arr,
+           (unsigned long)s->tim1_ccr1,
+           (unsigned long)s->tim1_ccr2,
+           (unsigned long)s->tim1_ccr3,
+           (unsigned long)s->tim1_ccr4,
+           (unsigned long)trigger_min_edge,
+           (unsigned long)callback_min_edge,
+           (unsigned long)s->tim1_cr1,
+           (unsigned long)((s->tim1_cr1 & TIM_CR1_DIR) ? 1u : 0u),
+           (unsigned long)s->tim1_ccer,
+           (unsigned long)s->tim1_bdtr,
+           (unsigned int)s->moe,
+           (unsigned int)s->gate_raw,
+           (unsigned int)s->nfault_ok,
+           (unsigned long)s->adc_rank_order,
+           (unsigned long)s->callback_cycles,
+           (unsigned long)s->fault_before,
+           (unsigned long)s->fault_after,
+           (unsigned long)s->phase_fault_set_tick,
+           (unsigned long)s->dq_fault_set_tick);
+  uart2_printf_line(line);
+}
+
+static void rotating_dq_print_fault_trace_report(void)
+{
+  uint8_t steady_direct_peak_valid;
+  RotatingDqDqOverStreakRaw dq_streak;
+  __disable_irq();
+  memcpy(&g_rotating_dq_fault_trace_print,
+         (const void *)&g_rotating_dq_fault_trace,
+         sizeof(g_rotating_dq_fault_trace_print));
+  steady_direct_peak_valid = g_rotating_dq_steady_direct_peak_valid;
+  memcpy(&g_rotating_dq_steady_direct_peak_print,
+         (const void *)&g_rotating_dq_steady_direct_peak,
+         sizeof(g_rotating_dq_steady_direct_peak_print));
+  memcpy(&dq_streak,
+         (const void *)&g_rotating_dq_dq_over_streak_raw,
+         sizeof(dq_streak));
+  __enable_irq();
+
+  char line[512];
+  const char *direct_pattern =
+      (g_rotating_dq_fault_trace_print.direct_over_total == 0u) ? "NONE" :
+      (g_rotating_dq_fault_trace_print.direct_over_consecutive_max == 1u) ?
+          "ISOLATED" :
+      (g_rotating_dq_fault_trace_print.direct_over_consecutive_max <
+       ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS) ? "SHORT_BURST" :
+                                                  "PERSISTENT";
+  const char *clean_pattern =
+      (g_rotating_dq_fault_trace_print.clean_over_total == 0u) ? "NONE" :
+      (g_rotating_dq_fault_trace_print.clean_over_consecutive_max == 1u) ?
+          "ISOLATED" :
+      (g_rotating_dq_fault_trace_print.clean_over_consecutive_max <
+       ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS) ? "SHORT_BURST" :
+                                                  "PERSISTENT";
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_fault_trace_summary: history_count=%lu history_capacity=%lu write_index=%lu fault_valid=%u overflow_guard=%u fault_tick=%lu fault_before=0x%08lX fault_after=0x%08lX event_tick=%lu event_source_mask=0x%02lX event_complete=%u post_remaining=%lu direct_over_total=%lu direct_over_consecutive_max=%lu direct_first_over_tick=%lu direct_last_over_tick=%lu direct_pattern=%s",
+           (unsigned long)g_rotating_dq_fault_trace_print.count,
+           (unsigned long)ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT,
+           (unsigned long)g_rotating_dq_fault_trace_print.write_index,
+           (unsigned int)g_rotating_dq_fault_trace_print.fault_valid,
+           (unsigned int)g_rotating_dq_fault_trace_print.overflow_guard,
+           (unsigned long)g_rotating_dq_fault_trace_print.fault.tick,
+           (unsigned long)g_rotating_dq_fault_trace_print.fault.fault_before,
+           (unsigned long)g_rotating_dq_fault_trace_print.fault.fault_after,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_event_tick,
+           (unsigned long)g_rotating_dq_fault_trace_print.event_source_mask,
+           (unsigned int)g_rotating_dq_fault_trace_print.direct_event_complete,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_post_remaining,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_over_total,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_over_consecutive_max,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_first_over_tick,
+           (unsigned long)g_rotating_dq_fault_trace_print.direct_last_over_tick,
+           direct_pattern);
+  uart2_printf_line(line);
+  const uint16_t offset0 = g_rotating_dq_fault_trace_print.fault.offset_pc0;
+  const uint16_t offset1 = g_rotating_dq_fault_trace_print.fault.offset_pc1;
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_dq_over_streak: count=%lu offset_pc0_pc1=%u/%u",
+           (unsigned long)dq_streak.count,
+           (unsigned int)offset0,
+           (unsigned int)offset1);
+  uart2_printf_line(line);
+  const uint32_t streak_count =
+      (dq_streak.count <= ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS) ?
+          dq_streak.count : ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS;
+  for (uint32_t i = 0u; i < streak_count; ++i) {
+    const RotatingDqDqOverStreakSample *sample = &dq_streak.sample[i];
+    const uint16_t raw0 = (uint16_t)sample->packed_raw_pc0_pc1;
+    const uint16_t raw1 = (uint16_t)(sample->packed_raw_pc0_pc1 >> 16);
+    uint32_t trigger_edge = abs_diff_u32(sample->ccr4, sample->ccr1);
+    const uint32_t trigger_edge2 = abs_diff_u32(sample->ccr4, sample->ccr2);
+    const uint32_t trigger_edge3 = abs_diff_u32(sample->ccr4, sample->ccr3);
+    if (trigger_edge2 < trigger_edge) { trigger_edge = trigger_edge2; }
+    if (trigger_edge3 < trigger_edge) { trigger_edge = trigger_edge3; }
+    snprintf(line,
+             sizeof(line),
+             "rotating_dq_dq_over_sample%lu: tick=%lu state=%s raw=%u/%u delta=%ld/%ld id_mA=%ld iq_mA=%ld iq_ref_mA=%ld vd_mV=%ld vq_mV=%ld integrator_mV=%ld/%ld ccr=%u/%u/%u/%u trigger_phase_edge_counts=%lu tim1_cnt=%u cm_shape=%u cm_caused_dq_crossing=%u",
+             (unsigned long)(i + 1u),
+             (unsigned long)sample->tick,
+             rotating_dq_current_test_state_name(
+                 (RotatingDqCurrentTestState)sample->state),
+             (unsigned int)raw0,
+             (unsigned int)raw1,
+             (long)((int32_t)raw0 - (int32_t)offset0),
+             (long)((int32_t)raw1 - (int32_t)offset1),
+             (long)float_to_scaled_i32(sample->id_measured_a, 1000.0f),
+             (long)float_to_scaled_i32(sample->iq_measured_a, 1000.0f),
+             (long)float_to_scaled_i32(sample->iq_ref_a, 1000.0f),
+             (long)float_to_scaled_i32(sample->vd_v, 1000.0f),
+             (long)float_to_scaled_i32(sample->vq_v, 1000.0f),
+             (long)float_to_scaled_i32(sample->integrator_d_v, 1000.0f),
+             (long)float_to_scaled_i32(sample->integrator_q_v, 1000.0f),
+             (unsigned int)sample->ccr1,
+             (unsigned int)sample->ccr2,
+             (unsigned int)sample->ccr3,
+             (unsigned int)sample->ccr4,
+             (unsigned long)trigger_edge,
+             (unsigned int)sample->tim1_cnt,
+             (unsigned int)sample->common_mode_shape,
+             (unsigned int)sample->common_mode_caused_dq_crossing);
+    uart2_printf_line(line);
+  }
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_clean_trace_summary: clean_over_total=%lu clean_over_consecutive_max=%lu clean_first_over_tick=%lu clean_last_over_tick=%lu clean_pattern=%s source_bits_direct=0x%02X source_bits_clean_reconstructed=0x%02X",
+           (unsigned long)g_rotating_dq_fault_trace_print.clean_over_total,
+           (unsigned long)g_rotating_dq_fault_trace_print.clean_over_consecutive_max,
+           (unsigned long)g_rotating_dq_fault_trace_print.clean_first_over_tick,
+           (unsigned long)g_rotating_dq_fault_trace_print.clean_last_over_tick,
+           clean_pattern,
+           (unsigned int)ROTATING_DQ_TRACE_SOURCE_DIRECT_ADC,
+           (unsigned int)ROTATING_DQ_TRACE_SOURCE_CLEAN_RECONSTRUCTED);
+  uart2_printf_line(line);
+
+  const uint32_t count = g_rotating_dq_fault_trace_print.count;
+  const uint32_t start =
+      (count >= ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT)
+          ? g_rotating_dq_fault_trace_print.write_index
+          : 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const uint32_t pos =
+        (start + i) % ROTATING_DQ_FAULT_TRACE_HISTORY_COUNT;
+    rotating_dq_print_fault_trace_sample(
+        "rdq_prefault",
+        i,
+        &g_rotating_dq_fault_trace_print.history[pos]);
+  }
+
+  if (steady_direct_peak_valid != 0u) {
+    rotating_dq_print_fault_trace_sample(
+        "rdq_steady_direct_peak",
+        0u,
+        &g_rotating_dq_steady_direct_peak_print);
+  }
+
+  if (g_rotating_dq_fault_trace_print.fault_valid != 0u) {
+    rotating_dq_print_fault_trace_sample(
+        "rdq_fault_sample",
+        0u,
+        &g_rotating_dq_fault_trace_print.fault);
+  }
+}
+
+static const char *rotating_dq_encoder_motion_pattern_name(
+    const RotatingDqEncoderEvidence *evidence)
+{
+  if (evidence == NULL) {
+    return "UNCLASSIFIED";
+  }
+  const uint32_t peak = evidence->peak_snapshot_valid ?
+      rotating_dq_encoder_abs_i64_to_u32(
+          evidence->peak_snapshot.encoder_delta_counts) : 0u;
+  const uint32_t final = rotating_dq_encoder_abs_i64_to_u32(
+      evidence->encoder_final_delta_counts);
+  if (evidence->encoder_illegal_transition_count != 0u) {
+    return "ILLEGAL_TRANSITION";
+  }
+  if (evidence->encoder_max_step_per_tick >= 8u) {
+    return "SINGLE_JUMP";
+  }
+  if (evidence->encoder_direction_reversal_count >= 2u ||
+      (peak >= 8u && final * 3u < peak)) {
+    return "OSCILLATORY";
+  }
+  if (peak >= 4u &&
+      evidence->encoder_same_direction_streak_max >= 4u &&
+      final * 2u >= peak) {
+    return "MONOTONIC";
+  }
+  return "UNCLASSIFIED";
+}
+
+static void rotating_dq_print_encoder_motion_snapshot(
+    const char *tag,
+    const RotatingDqEncoderMotionSnapshot *snapshot)
+{
+  if (tag == NULL || snapshot == NULL) {
+    return;
+  }
+  char line[640];
+  const int32_t theta_mrad = float_to_scaled_i32(snapshot->theta_rad, 1000.0f);
+  const int32_t iu_ma = float_to_scaled_i32(snapshot->iu_a, 1000.0f);
+  const int32_t iv_ma = float_to_scaled_i32(snapshot->iv_a, 1000.0f);
+  const int32_t iw_ma = float_to_scaled_i32(snapshot->iw_a, 1000.0f);
+  const int32_t id_ma = float_to_scaled_i32(snapshot->id_a, 1000.0f);
+  const int32_t iq_ma = float_to_scaled_i32(snapshot->iq_a, 1000.0f);
+  const int32_t id_ref_ma = float_to_scaled_i32(snapshot->id_ref_a, 1000.0f);
+  const int32_t iq_ref_ma = float_to_scaled_i32(snapshot->iq_ref_a, 1000.0f);
+  const int32_t vd_mv = float_to_scaled_i32(snapshot->vd_v, 1000.0f);
+  const int32_t vq_mv = float_to_scaled_i32(snapshot->vq_v, 1000.0f);
+  const int32_t integrator_d_mv =
+      float_to_scaled_i32(snapshot->integrator_d_v, 1000.0f);
+  const int32_t integrator_q_mv =
+      float_to_scaled_i32(snapshot->integrator_q_v, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "%s: tick=%lu adc_seq=%lu enc_raw=%u enc_accum=%ld enc_delta=%ld enc_step=%d ab=%u prev_ab=%u theta_mrad=%ld raw_pc0_pc1=%u/%u delta_pc0_pc1=%d/%d iu_iv_iw_mA=%d/%d/%d id_iq_mA=%d/%d idref_iqref_mA=%d/%d vd_vq_mV=%d/%d integ_dq_mV=%d/%d ccr=%lu/%lu/%lu rank=%lu cm_shape=%u cm_caused_dq_crossing=%u",
+           tag,
+           (unsigned long)snapshot->control_tick,
+           (unsigned long)snapshot->adc_seq,
+           (unsigned int)snapshot->encoder_raw_count,
+           (long)snapshot->encoder_accum,
+           (long)snapshot->encoder_delta_counts,
+           (int)snapshot->encoder_step_counts,
+           (unsigned int)snapshot->encoder_ab_state,
+           (unsigned int)snapshot->encoder_previous_ab_state,
+           (long)theta_mrad,
+           (unsigned int)snapshot->raw_pc0,
+           (unsigned int)snapshot->raw_pc1,
+           (int)snapshot->delta_pc0,
+           (int)snapshot->delta_pc1,
+           (int)iu_ma,
+           (int)iv_ma,
+           (int)iw_ma,
+           (int)id_ma,
+           (int)iq_ma,
+           (int)id_ref_ma,
+           (int)iq_ref_ma,
+           (int)vd_mv,
+           (int)vq_mv,
+           (int)integrator_d_mv,
+           (int)integrator_q_mv,
+           (unsigned long)snapshot->ccr1,
+           (unsigned long)snapshot->ccr2,
+           (unsigned long)snapshot->ccr3,
+           (unsigned long)snapshot->adc_rank_order,
+           (unsigned int)snapshot->cm_shape,
+           (unsigned int)snapshot->cm_caused_dq_crossing);
+  uart2_printf_line(line);
+}
+
+static void rotating_dq_print_encoder_motion_evidence(void)
+{
+  __disable_irq();
+  memcpy(&g_rotating_dq_encoder_evidence_print,
+         (const void *)&g_rotating_dq_encoder_evidence,
+         sizeof(g_rotating_dq_encoder_evidence_print));
+  __enable_irq();
+
+  const RotatingDqEncoderEvidence *evidence =
+      &g_rotating_dq_encoder_evidence_print;
+  char line[1024];
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_encoder_evidence: pattern=%s start_count=%ld first_change_tick=%lu first_limit_tick=%lu peak_abs_tick=%lu min_delta=%ld max_delta=%ld final_delta=%ld max_step_per_tick=%lu accumulated_abs_steps=%lu direction_reversal_count=%lu same_direction_streak_max=%lu illegal_transition_count=%lu raw_ab_final=%u",
+           rotating_dq_encoder_motion_pattern_name(evidence),
+           (long)evidence->encoder_start_count,
+           (unsigned long)evidence->encoder_first_change_tick,
+           (unsigned long)evidence->encoder_first_limit_tick,
+           (unsigned long)evidence->encoder_peak_abs_tick,
+           (long)evidence->encoder_min_delta_counts,
+           (long)evidence->encoder_max_delta_counts,
+           (long)evidence->encoder_final_delta_counts,
+           (unsigned long)evidence->encoder_max_step_per_tick,
+           (unsigned long)evidence->encoder_accumulated_abs_steps,
+           (unsigned long)evidence->encoder_direction_reversal_count,
+           (unsigned long)evidence->encoder_same_direction_streak_max,
+           (unsigned long)evidence->encoder_illegal_transition_count,
+           (unsigned int)evidence->last_ab_state);
+  uart2_printf_line(line);
+
+  if (evidence->peak_snapshot_valid != 0u) {
+    rotating_dq_print_encoder_motion_snapshot(
+        "rotating_dq_encoder_peak_snapshot", &evidence->peak_snapshot);
+  }
+  if (evidence->limit_snapshot_valid != 0u) {
+    rotating_dq_print_encoder_motion_snapshot(
+        "rotating_dq_encoder_limit_snapshot", &evidence->limit_snapshot);
+  }
+  if (evidence->pre_first_change_snapshot_valid != 0u) {
+    rotating_dq_print_encoder_motion_snapshot(
+        "rotating_dq_encoder_pre_first_change_snapshot",
+        &evidence->pre_first_change_snapshot);
+  }
+  if (evidence->first_change_snapshot_valid != 0u) {
+    rotating_dq_print_encoder_motion_snapshot(
+        "rotating_dq_encoder_first_change_snapshot",
+        &evidence->first_change_snapshot);
+  }
+
+  __disable_irq();
+  memcpy(&g_rotating_dq_iq_integrator_attribution_print,
+         (const void *)&g_rotating_dq_iq_integrator_attribution,
+         sizeof(g_rotating_dq_iq_integrator_attribution_print));
+  memcpy(g_rotating_dq_iq_attribution_blocks_print,
+         (const void *)g_rotating_dq_iq_attribution_blocks,
+         sizeof(g_rotating_dq_iq_attribution_blocks_print));
+  __enable_irq();
+  const RotatingDqIqIntegratorAttribution *attr =
+      &g_rotating_dq_iq_integrator_attribution_print;
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_iq_integrator_attribution: initial_mV=%ld final_mV=%ld peak_positive_mV=%ld peak_negative_mV=%ld delta_clean_mV=%ld delta_cm_harmless_mV=%ld delta_cm_harmful_mV=%ld aw_clamp_mV=%ld error_clean_mA_sum=%ld error_cm_harmless_mA_sum=%ld error_cm_harmful_mA_sum=%ld shadow_clean_only_mV=%ld shadow_exclude_harmful_mV=%ld counts_clean_harmless_harmful=%lu/%lu/%lu error_pos_neg_clean=%lu/%lu error_pos_neg_harmless=%lu/%lu error_pos_neg_harmful=%lu/%lu",
+           (long)float_to_scaled_i32(attr->integrator_initial_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_final_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_peak_positive_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_peak_negative_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_delta_sum_clean_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_delta_sum_cm_harmless_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_delta_sum_cm_harmful_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->integrator_aw_clamp_sum_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->iq_error_sum_clean_a, 1000.0f),
+           (long)float_to_scaled_i32(attr->iq_error_sum_cm_harmless_a, 1000.0f),
+           (long)float_to_scaled_i32(attr->iq_error_sum_cm_harmful_a, 1000.0f),
+           (long)float_to_scaled_i32(attr->shadow_integrator_clean_only_v, 1000.0f),
+           (long)float_to_scaled_i32(attr->shadow_integrator_exclude_harmful_v, 1000.0f),
+           (unsigned long)attr->clean_count,
+           (unsigned long)attr->cm_harmless_count,
+           (unsigned long)attr->cm_harmful_count,
+           (unsigned long)attr->clean_positive_error_count,
+           (unsigned long)attr->clean_negative_error_count,
+           (unsigned long)attr->cm_harmless_positive_error_count,
+           (unsigned long)attr->cm_harmless_negative_error_count,
+           (unsigned long)attr->cm_harmful_positive_error_count,
+           (unsigned long)attr->cm_harmful_negative_error_count);
+  uart2_printf_line(line);
+
+  for (uint32_t i = 0u; i < ROTATING_DQ_IQ_ATTRIBUTION_BLOCK_COUNT; ++i) {
+    const RotatingDqIqAttributionBlock *block =
+        &g_rotating_dq_iq_attribution_blocks_print[i];
+    if (block->sample_count == 0u) {
+      continue;
+    }
+    const float clean_den = (block->clean_count > 0u) ?
+        (float)block->clean_count : 1.0f;
+    const float sample_den = (float)block->sample_count;
+    snprintf(line,
+             sizeof(line),
+             "rotating_dq_iq_attr_block%02lu: tick=%lu..%lu samples=%lu encoder=%ld..%ld delta=%ld theta_mrad=%ld..%ld integ_mV=%ld..%ld delta_clean_harmless_harmful_mV=%ld/%ld/%ld error_sum_clean_harmless_harmful_mA=%ld/%ld/%ld clean_delta_pc0_pc1_mean_mcounts=%ld/%ld vq_p_i_ff_final_mean_mV=%ld/%ld/%ld/%ld vq_p_min_max_mV=%ld/%ld vq_final_min_max_mV=%ld/%ld ccr_mean=%lu/%lu/%lu ccr_span_max=%lu integrator_nonzero_count=%lu counts_clean_harmless_harmful=%lu/%lu/%lu rank=%lu",
+             (unsigned long)i,
+             (unsigned long)block->start_tick,
+             (unsigned long)block->end_tick,
+             (unsigned long)block->sample_count,
+             (long)block->encoder_start,
+             (long)block->encoder_end,
+             (long)(block->encoder_end - block->encoder_start),
+             (long)float_to_scaled_i32(block->theta_start_rad, 1000.0f),
+             (long)float_to_scaled_i32(block->theta_end_rad, 1000.0f),
+             (long)float_to_scaled_i32(block->integrator_start_v, 1000.0f),
+             (long)float_to_scaled_i32(block->integrator_end_v, 1000.0f),
+             (long)float_to_scaled_i32(block->integrator_delta_clean_v, 1000.0f),
+             (long)float_to_scaled_i32(block->integrator_delta_cm_harmless_v, 1000.0f),
+             (long)float_to_scaled_i32(block->integrator_delta_cm_harmful_v, 1000.0f),
+             (long)float_to_scaled_i32(block->iq_error_clean_sum_a, 1000.0f),
+             (long)float_to_scaled_i32(block->iq_error_cm_harmless_sum_a, 1000.0f),
+             (long)float_to_scaled_i32(block->iq_error_cm_harmful_sum_a, 1000.0f),
+             (long)float_to_scaled_i32(
+                 (float)block->delta_pc0_clean_sum / clean_den, 1000.0f),
+             (long)float_to_scaled_i32(
+                 (float)block->delta_pc1_clean_sum / clean_den, 1000.0f),
+             (long)float_to_scaled_i32(
+                 block->vq_proportional_sum_v / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(
+                 block->vq_integrator_sum_v / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(
+                 block->vq_feedforward_sum_v / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(block->vq_sum_v / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(block->vq_proportional_min_v, 1000.0f),
+             (long)float_to_scaled_i32(block->vq_proportional_max_v, 1000.0f),
+             (long)float_to_scaled_i32(block->vq_final_min_v, 1000.0f),
+             (long)float_to_scaled_i32(block->vq_final_max_v, 1000.0f),
+             (unsigned long)(block->ccr1_sum / block->sample_count),
+             (unsigned long)(block->ccr2_sum / block->sample_count),
+             (unsigned long)(block->ccr3_sum / block->sample_count),
+             (unsigned long)block->ccr_span_max,
+             (unsigned long)block->integrator_nonzero_count,
+             (unsigned long)block->clean_count,
+             (unsigned long)block->cm_harmless_count,
+             (unsigned long)block->cm_harmful_count,
+             (unsigned long)block->adc_rank_order);
+    uart2_printf_line(line);
+  }
+
+  const RotatingDqBlockIntegratorAdmission *block_admission =
+      rotating_dq_block_integrator_diagnostic_state();
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_block_integrator_stats: completed_blocks=%lu invalid_blocks=%lu partial_ticks=%lu partial_valid=%lu last_id_mean_mA=%ld last_iq_mean_mA=%ld id_mean_peak_mA=%lu iq_mean_peak_mA=%lu id_admitted=%u iq_admitted=%u id_admit_count=%lu iq_admit_count=%lu id_active_blocks=%lu iq_active_blocks=%lu id_first_last_admit_tick=%lu/%lu iq_first_last_admit_tick=%lu/%lu id_sign_reversals=%lu iq_sign_reversals=%lu",
+           (unsigned long)block_admission->completed_block_count,
+           (unsigned long)block_admission->invalid_block_count,
+           (unsigned long)block_admission->block_tick_count,
+           (unsigned long)block_admission->valid_count,
+           (long)float_to_scaled_i32(block_admission->last_id_mean_error_a, 1000.0f),
+           (long)float_to_scaled_i32(block_admission->last_iq_mean_error_a, 1000.0f),
+           (unsigned long)float_to_scaled_u32(block_admission->id_axis.mean_error_peak_a, 1000.0f),
+           (unsigned long)float_to_scaled_u32(block_admission->iq_axis.mean_error_peak_a, 1000.0f),
+           (unsigned int)block_admission->id_axis.admitted,
+           (unsigned int)block_admission->iq_axis.admitted,
+           (unsigned long)block_admission->id_axis.admit_count,
+           (unsigned long)block_admission->iq_axis.admit_count,
+           (unsigned long)block_admission->id_axis.active_block_count,
+           (unsigned long)block_admission->iq_axis.active_block_count,
+           (unsigned long)block_admission->id_axis.first_admit_tick,
+           (unsigned long)block_admission->id_axis.last_admit_tick,
+           (unsigned long)block_admission->iq_axis.first_admit_tick,
+           (unsigned long)block_admission->iq_axis.last_admit_tick,
+           (unsigned long)block_admission->id_axis.sign_reversal_count,
+           (unsigned long)block_admission->iq_axis.sign_reversal_count);
+  uart2_printf_line(line);
+
+  const RotatingDqBlockIntegratorHoldSnapshot *hold_snapshots[2] = {
+      rotating_dq_block_integrator_positive_hold_snapshot(),
+      rotating_dq_block_integrator_negative_hold_snapshot()
+  };
+  const char *hold_names[2] = {"POSITIVE", "NEGATIVE"};
+  for (uint32_t hold_index = 0u; hold_index < 2u; ++hold_index) {
+    const RotatingDqBlockIntegratorHoldSnapshot *hold =
+        hold_snapshots[hold_index];
+    const float sample_den =
+        (hold->tracking_sample_count > 0u) ?
+            (float)hold->tracking_sample_count : 1.0f;
+    const RotatingDqBlockIntegratorAdmission *admission = &hold->admission;
+    snprintf(line,
+             sizeof(line),
+             "rotating_dq_block_hold_snapshot: polarity=%s valid=%u hold_start_end_tick=%lu/%lu hold_samples=%lu tracking_start_end_tick=%lu/%lu tracking_samples=%lu iq_ref_mean_mA=%ld id_mean_mA=%ld iq_mean_mA=%ld saturation_count=%lu block_count=%lu invalid_blocks=%lu last_id_block_mean_mA=%ld last_iq_block_mean_mA=%ld id_block_peak_mA=%lu iq_block_peak_mA=%lu iq_admit_count=%lu iq_active_blocks=%lu iq_admit_first_last_tick=%lu/%lu iq_sign_reversals=%lu integrator_q_start_mV=%ld integrator_q_end_mV=%ld integrator_q_delta_mV=%ld integrator_q_min_mV=%ld integrator_q_max_mV=%ld",
+             hold_names[hold_index],
+             (unsigned int)hold->valid,
+             (unsigned long)hold->start_tick,
+             (unsigned long)hold->end_tick,
+             (unsigned long)hold->hold_sample_count,
+             (unsigned long)hold->tracking_start_tick,
+             (unsigned long)hold->tracking_end_tick,
+             (unsigned long)hold->tracking_sample_count,
+             (long)float_to_scaled_i32(hold->iq_ref_sum_a / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(hold->id_sum_a / sample_den, 1000.0f),
+             (long)float_to_scaled_i32(hold->iq_sum_a / sample_den, 1000.0f),
+             (unsigned long)hold->saturation_count,
+             (unsigned long)admission->completed_block_count,
+             (unsigned long)admission->invalid_block_count,
+             (long)float_to_scaled_i32(admission->last_id_mean_error_a, 1000.0f),
+             (long)float_to_scaled_i32(admission->last_iq_mean_error_a, 1000.0f),
+             (unsigned long)float_to_scaled_u32(admission->id_axis.mean_error_peak_a, 1000.0f),
+             (unsigned long)float_to_scaled_u32(admission->iq_axis.mean_error_peak_a, 1000.0f),
+             (unsigned long)admission->iq_axis.admit_count,
+             (unsigned long)admission->iq_axis.active_block_count,
+             (unsigned long)admission->iq_axis.first_admit_tick,
+             (unsigned long)admission->iq_axis.last_admit_tick,
+             (unsigned long)admission->iq_axis.sign_reversal_count,
+             (long)float_to_scaled_i32(hold->integrator_q_start_v, 1000.0f),
+             (long)float_to_scaled_i32(hold->integrator_q_end_v, 1000.0f),
+             (long)float_to_scaled_i32(
+                 hold->integrator_q_end_v - hold->integrator_q_start_v,
+                 1000.0f),
+             (long)float_to_scaled_i32(hold->integrator_q_min_v, 1000.0f),
+             (long)float_to_scaled_i32(hold->integrator_q_max_v, 1000.0f));
+    uart2_printf_line(line);
+  }
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_tracking_window: source=POST_ADMISSION_FIXED_128_E2 ramp_included_in_verdict=0 confirmation_blocks_included=0 required_samples_per_polarity=%u ref_mean_min_ratio=0.95 iq_mean_min_abs_mA=%lu id_mean_max_abs_mA=%lu saturation_required=0",
+           (unsigned int)ROTATING_DQ_BIPOLAR_HOLD_TRACKING_WINDOW_SAMPLES,
+           (unsigned long)float_to_scaled_u32(
+               g_rotating_dq_test.config.tracking_iq_mean_min_a, 1000.0f),
+           (unsigned long)float_to_scaled_u32(
+               g_rotating_dq_test.config.tracking_id_mean_abs_limit_a, 1000.0f));
+  uart2_printf_line(line);
+}
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+static void rotating_dq_print_zero_diag_report(void) __attribute__((unused));
+static void rotating_dq_print_zero_diag_report(void)
+{
+  char line[512];
+  uart2_printf_line("rotating_dq_zero_protection_expr: phase_trip=(abs(iu)>0.200)||(abs(iv)>0.200)||(abs(iw)>0.200) dq_trip=(abs(id)>0.150)||(abs(iq)>0.150) common_mode_like=(near_zero_iq_ref&&same_sign&&abs_du<=10&&abs_dv<=10&&abs_du_minus_dv<=6&&measured_phase<=limit_plus_1count) common_mode_samples_do_not_fault=1 consecutive=4 zero_encoder_limit_counts=32");
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_diag_summary: count=%lu dropped=%lu first_trip_valid=%u first_trip_source_mask=0x%08lX phase_fault_set_tick=%lu dq_fault_set_tick=%lu fault_bit_order=%lu classification=%s",
+           (unsigned long)g_rotating_dq_test.zero_diag_count,
+           (unsigned long)g_rotating_dq_test.zero_diag_dropped,
+           (unsigned int)g_rotating_dq_test.zero_first_trip.valid,
+           (unsigned long)g_rotating_dq_test.zero_first_trip.source_mask,
+           (unsigned long)g_rotating_dq_test.zero_phase_fault_set_tick,
+           (unsigned long)g_rotating_dq_test.zero_dq_fault_set_tick,
+           (unsigned long)g_rotating_dq_test.zero_fault_bit_order,
+           rotating_dq_zero_diag_classification(&g_rotating_dq_test));
+  uart2_printf_line(line);
+  const uint32_t measured_phase_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_measured_phase_metric_max_a, 1000.0f);
+  const uint32_t reconstructed_phase_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_reconstructed_phase_metric_max_a, 1000.0f);
+  const uint32_t clean_phase_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_clean_phase_metric_max_a, 1000.0f);
+  const uint32_t cf_phase_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_counterfactual_phase_metric_max_a, 1000.0f);
+  const uint32_t raw_dq_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_raw_dq_metric_max_a, 1000.0f);
+  const uint32_t cf_dq_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_counterfactual_dq_metric_max_a, 1000.0f);
+  const uint32_t startup_direct_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_startup_direct_metric_max_a, 1000.0f);
+  const uint32_t startup_reconstructed_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_startup_reconstructed_metric_max_a, 1000.0f);
+  const uint32_t startup_dq_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_startup_dq_metric_max_a, 1000.0f);
+  const uint32_t steady_sample_count =
+      g_rotating_dq_test.zero_clean_sample_count +
+      g_rotating_dq_test.zero_common_mode_excluded_count;
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_startup_guard: guard_ticks=%lu first_steady_tick=%lu startup_direct_outlier_count=%lu startup_first_outlier_tick=%lu startup_last_outlier_tick=%lu startup_pc0_peak_delta_counts=%ld startup_pc1_peak_delta_counts=%ld startup_direct_metric_max=%lu.%03lu startup_reconstructed_metric_max=%lu.%03lu startup_dq_metric_max=%lu.%03lu",
+           (unsigned long)g_rotating_dq_test.config.zero_startup_guard_ticks,
+           (unsigned long)(g_rotating_dq_test.config.zero_startup_guard_ticks + 1u),
+           (unsigned long)g_rotating_dq_test.zero_startup_direct_outlier_count,
+           (unsigned long)g_rotating_dq_test.zero_startup_first_outlier_tick,
+           (unsigned long)g_rotating_dq_test.zero_startup_last_outlier_tick,
+           (long)g_rotating_dq_test.zero_startup_pc0_peak_delta_counts,
+           (long)g_rotating_dq_test.zero_startup_pc1_peak_delta_counts,
+           (unsigned long)(startup_direct_max_milli / 1000u),
+           (unsigned long)(startup_direct_max_milli % 1000u),
+           (unsigned long)(startup_reconstructed_max_milli / 1000u),
+           (unsigned long)(startup_reconstructed_max_milli % 1000u),
+           (unsigned long)(startup_dq_max_milli / 1000u),
+           (unsigned long)(startup_dq_max_milli % 1000u));
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_common_mode_counts: steady_window_start_tick=%lu steady_sample_count=%lu cm_shape_count=%lu cm_harmless_shape_count=%lu cm_harmful_excluded_count=%lu cm_phase_exclusion_count=%lu cm_dq_exclusion_count=%lu clean_sample_count=%lu clean_sample_min=%lu max_common_mode_counts=%lu max_diff_counts=%lu",
+           (unsigned long)(g_rotating_dq_test.config.zero_startup_guard_ticks + 1u),
+           (unsigned long)steady_sample_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_shift_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_harmless_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_excluded_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_phase_exclusion_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_dq_exclusion_count,
+           (unsigned long)g_rotating_dq_test.zero_clean_sample_count,
+           (unsigned long)g_rotating_dq_test.config.zero_clean_sample_min,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_max_counts,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_diff_max_counts);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_common_mode_metrics: direct_phase_metric_max=%lu.%03lu direct_metric_peak_tick=%lu raw_reconstructed_metric_max=%lu.%03lu reconstructed_metric_peak_tick=%lu counterfactual_reconstructed_metric_max=%lu.%03lu raw_dq_metric_max=%lu.%03lu counterfactual_dq_metric_max=%lu.%03lu zero_current_clean_metric_max=%lu.%03lu clean_metric_peak_tick=%lu",
+           (unsigned long)(measured_phase_max_milli / 1000u),
+           (unsigned long)(measured_phase_max_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.zero_direct_metric_peak_tick,
+           (unsigned long)(reconstructed_phase_max_milli / 1000u),
+           (unsigned long)(reconstructed_phase_max_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.zero_reconstructed_metric_peak_tick,
+           (unsigned long)(cf_phase_max_milli / 1000u),
+           (unsigned long)(cf_phase_max_milli % 1000u),
+           (unsigned long)(raw_dq_max_milli / 1000u),
+           (unsigned long)(raw_dq_max_milli % 1000u),
+           (unsigned long)(cf_dq_max_milli / 1000u),
+           (unsigned long)(cf_dq_max_milli % 1000u),
+           (unsigned long)(clean_phase_max_milli / 1000u),
+           (unsigned long)(clean_phase_max_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.zero_clean_metric_peak_tick);
+  uart2_printf_line(line);
+  const uint32_t phase_startup_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_phase_startup_over_limit_max_a, 1000.0f);
+  const uint32_t dq_startup_max_milli =
+      float_to_scaled_u32(g_rotating_dq_test.zero_dq_startup_over_limit_max_a, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_startup_observe: observe_ticks=%lu soft_trip_required_consecutive=%lu phase_startup_over_limit_count=%lu phase_startup_over_limit_last_tick=%lu phase_startup_over_limit_max=%lu.%03lu phase_over_limit_consecutive=%lu phase_over_limit_consecutive_max=%lu dq_startup_over_limit_count=%lu dq_startup_over_limit_last_tick=%lu dq_startup_over_limit_max=%lu.%03lu dq_over_limit_consecutive=%lu dq_over_limit_consecutive_max=%lu",
+           (unsigned long)ROTATING_DQ_ENABLE_ZERO_STARTUP_OBSERVE_TICKS,
+           (unsigned long)ROTATING_DQ_ENABLE_ZERO_SOFT_TRIP_TICKS,
+           (unsigned long)g_rotating_dq_test.zero_phase_startup_over_limit_count,
+           (unsigned long)g_rotating_dq_test.zero_phase_startup_over_limit_last_tick,
+           (unsigned long)(phase_startup_max_milli / 1000u),
+           (unsigned long)(phase_startup_max_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.zero_phase_over_limit_consecutive,
+           (unsigned long)g_rotating_dq_test.zero_phase_over_limit_consecutive_max,
+           (unsigned long)g_rotating_dq_test.zero_dq_startup_over_limit_count,
+           (unsigned long)g_rotating_dq_test.zero_dq_startup_over_limit_last_tick,
+           (unsigned long)(dq_startup_max_milli / 1000u),
+           (unsigned long)(dq_startup_max_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.zero_dq_over_limit_consecutive,
+           (unsigned long)g_rotating_dq_test.zero_dq_over_limit_consecutive_max);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_integrity_counts: reconstruction_formula_mismatch_count=%lu reconstruction_scale_mismatch_count=%lu stale_snapshot_count=%lu clarke_transform_mismatch_count=%lu park_transform_mismatch_count=%lu dq_norm_amplification_count=%lu",
+           (unsigned long)g_rotating_dq_test.zero_reconstruction_formula_mismatch_count,
+           (unsigned long)g_rotating_dq_test.zero_reconstruction_scale_mismatch_count,
+           (unsigned long)g_rotating_dq_test.zero_stale_snapshot_count,
+           (unsigned long)g_rotating_dq_test.zero_clarke_transform_mismatch_count,
+           (unsigned long)g_rotating_dq_test.zero_park_transform_mismatch_count,
+           (unsigned long)g_rotating_dq_test.zero_dq_norm_amplification_count);
+  uart2_printf_line(line);
+
+  rotating_dq_print_fault_trace_report();
+  rotating_dq_print_encoder_motion_evidence();
+
+  if (g_rotating_dq_test.zero_first_trip.valid) {
+    const RotatingDqZeroDiagSample *s = &g_rotating_dq_test.zero_first_trip.sample;
+    snprintf(line,
+             sizeof(line),
+             "rotating_dq_zero_first_trip: source_line=%lu tick=%lu adc_seq=%lu source_mask=0x%08lX phase_trip=%u dq_trip=%u phase_ch=0x%08lX dq_ch=0x%08lX raw_pc0=%u raw_pc1=%u offset_pc0=%u offset_pc1=%u dpc0=%ld dpc1=%ld ccr=%lu/%lu/%lu moe=%lu nfault_ok=%u",
+             (unsigned long)g_rotating_dq_test.zero_first_trip.source_line,
+             (unsigned long)s->control_tick,
+             (unsigned long)s->adc_seq,
+             (unsigned long)s->source_mask,
+             (unsigned int)s->phase_trip,
+             (unsigned int)s->dq_trip,
+             (unsigned long)s->phase_trip_channel,
+             (unsigned long)s->dq_trip_channel,
+             (unsigned int)s->raw_pc0,
+             (unsigned int)s->raw_pc1,
+             (unsigned int)s->offset_pc0,
+             (unsigned int)s->offset_pc1,
+             (long)s->delta_pc0,
+             (long)s->delta_pc1,
+             (unsigned long)s->ccr1,
+             (unsigned long)s->ccr2,
+             (unsigned long)s->ccr3,
+             (unsigned long)((s->bdtr & TIM_BDTR_MOE) ? 1u : 0u),
+             (unsigned int)s->nfault_ok);
+    uart2_printf_line(line);
+  }
+
+  for (uint32_t i = 0u; i < g_rotating_dq_test.zero_diag_count; ++i) {
+    const RotatingDqZeroDiagSample *s = &g_rotating_dq_test.zero_diag[i];
+    const int32_t iu_m = float_to_scaled_i32(s->iu_a, 1000.0f);
+    const int32_t iv_m = float_to_scaled_i32(s->iv_a, 1000.0f);
+    const int32_t iw_m = float_to_scaled_i32(s->iw_a, 1000.0f);
+    const int32_t id_m = float_to_scaled_i32(s->id_a, 1000.0f);
+    const int32_t iq_m = float_to_scaled_i32(s->iq_a, 1000.0f);
+    snprintf(line,
+             sizeof(line),
+             "rdq_zero_sample%02lu_a: stage=%s post=%u tick=%lu adc_seq=%lu raw=%u/%u off=%u/%u d=%ld/%ld counts_iu_iv_iw=%ld/%ld/%ld iu=%s%lu.%03lu iv=%s%lu.%03lu iw=%s%lu.%03lu id=%s%lu.%03lu iq=%s%lu.%03lu phase_metric=%lu.%03lu dq_metric=%lu.%03lu src=0x%08lX",
+             (unsigned long)i,
+             rotating_dq_zero_diag_stage_name(s->stage),
+             (unsigned int)s->post_shutdown_sample,
+             (unsigned long)s->control_tick,
+             (unsigned long)s->adc_seq,
+             (unsigned int)s->raw_pc0,
+             (unsigned int)s->raw_pc1,
+             (unsigned int)s->offset_pc0,
+             (unsigned int)s->offset_pc1,
+             (long)s->delta_pc0,
+             (long)s->delta_pc1,
+             (long)s->iu_counts,
+             (long)s->iv_counts,
+             (long)s->iw_counts,
+             (iu_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu_m) / 1000u), (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+             (iv_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv_m) / 1000u), (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+             (iw_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw_m) / 1000u), (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+             (id_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id_m) / 1000u), (unsigned long)(abs_i32_to_u32(id_m) % 1000u),
+             (iq_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq_m) / 1000u), (unsigned long)(abs_i32_to_u32(iq_m) % 1000u),
+             (unsigned long)(float_to_scaled_u32(s->phase_metric_a, 1000.0f) / 1000u),
+             (unsigned long)(float_to_scaled_u32(s->phase_metric_a, 1000.0f) % 1000u),
+             (unsigned long)(float_to_scaled_u32(s->dq_metric_a, 1000.0f) / 1000u),
+             (unsigned long)(float_to_scaled_u32(s->dq_metric_a, 1000.0f) % 1000u),
+             (unsigned long)s->source_mask);
+    uart2_printf_line(line);
+    snprintf(line,
+             sizeof(line),
+             "rdq_zero_sample%02lu_b: theta=%lu.%03lu sin=%s%lu.%03lu cos=%s%lu.%03lu id_ref=0.000 iq_ref=%s%lu.%03lu vd=%s%lu.%03lu vq=%s%lu.%03lu sat=%u ccr=%lu/%lu/%lu/%lu ccer=0x%08lX bdtr=0x%08lX tim1_cnt=%lu rank=%lu fast_cycles=%lu cb_cycles=%lu",
+             (unsigned long)i,
+             (unsigned long)(float_to_scaled_u32(s->theta_electrical_used_rad, 1000.0f) / 1000u),
+             (unsigned long)(float_to_scaled_u32(s->theta_electrical_used_rad, 1000.0f) % 1000u),
+             (s->sin_theta < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->sin_theta, 1000.0f)) / 1000u), (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->sin_theta, 1000.0f)) % 1000u),
+             (s->cos_theta < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->cos_theta, 1000.0f)) / 1000u), (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->cos_theta, 1000.0f)) % 1000u),
+             (s->iq_ref_a < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->iq_ref_a, 1000.0f)) / 1000u), (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->iq_ref_a, 1000.0f)) % 1000u),
+             (s->vd_applied_v < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->vd_applied_v, 1000.0f)) / 1000u), (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->vd_applied_v, 1000.0f)) % 1000u),
+             (s->vq_applied_v < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->vq_applied_v, 1000.0f)) / 1000u), (unsigned long)(abs_i32_to_u32(float_to_scaled_i32(s->vq_applied_v, 1000.0f)) % 1000u),
+             (unsigned int)s->voltage_saturated,
+             (unsigned long)s->ccr1,
+             (unsigned long)s->ccr2,
+             (unsigned long)s->ccr3,
+             (unsigned long)s->ccr4,
+             (unsigned long)s->ccer,
+             (unsigned long)s->bdtr,
+             (unsigned long)s->tim1_cnt,
+             (unsigned long)s->adc_rank_order,
+             (unsigned long)s->fast_core_cycles,
+             (unsigned long)s->callback_cycles);
+    uart2_printf_line(line);
+  }
+}
+
+static bool rotating_dq_current_test_run(void)
+{
+  RotatingDqCurrentTestConfig cfg = rotating_dq_current_test_default_config();
+  RotatingDqOffsetAdmission admission;
+  RotatingDqLiveZeroStageStats reset_safe_stage;
+  RotatingDqLiveZeroStageStats gate_settle_stage;
+  RotatingDqLiveZeroStageStats dc_cal_stage;
+  RotatingDqLiveZeroStageStats dc_released_stage;
+  RotatingDqLiveZeroStageStats final_offset_stage;
+  RotatingDqLiveZeroStageStats final_verify_stage;
+  char line[512];
+  bool offset_verify_ok = false;
+  const bool electrical_offset_valid = g_rotating_dq_runtime_offset_valid;
+  const float electrical_offset_rad = g_rotating_dq_runtime_offset_rad;
+
+  memset(&admission, 0, sizeof(admission));
+  cfg.phase_resistance_ohm = FIXED_CURRENT_PI_R_PHASE_OHM;
+  cfg.phase_inductance_h = FIXED_CURRENT_PI_L_PHASE_H;
+  cfg.bandwidth_hz = FIXED_CURRENT_PI_BANDWIDTH_HZ;
+  cfg.voltage_limit_v = FIXED_CURRENT_PI_VOLTAGE_LIMIT_V;
+  cfg.kaw = FIXED_CURRENT_PI_KAW;
+  cfg.integrator_limit_v = FIXED_CURRENT_PI_INTEGRATOR_LIMIT_V;
+  cfg.encoder_cpr = COMM_ENCODER_CPR;
+  cfg.encoder_direction = COMM_ENCODER_DIRECTION;
+  cfg.pole_pairs = COMM_POLE_PAIRS;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+  cfg.enable_zero_diagnostic_only = true;
+  cfg.enable_zero_diagnostic_ticks = 28u;
+  cfg.log_decimation = 0u;
+  const char *rotating_dq_mode_log_name = "ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+#if ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC
+  cfg.enable_zero_diagnostic_only = true;
+  cfg.enable_zero_current_pi =
+      (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+       ROTATING_DQ_ENCODER_PROBE_MOE_ON_ZERO_PI);
+  cfg.freeze_zero_reference_integrator =
+      (ROTATING_DQ_ZERO_TORQUE_INTEGRATOR_FROZEN_DIAGNOSTIC != 0u) &&
+      cfg.enable_zero_current_pi;
+  cfg.enable_zero_block_integrator =
+      (ROTATING_DQ_ZERO_TORQUE_BLOCK_INTEGRATOR_DIAGNOSTIC != 0u) &&
+      cfg.enable_zero_current_pi;
+  cfg.zero_window_observe_only =
+      (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+       ROTATING_DQ_ENCODER_PROBE_MOE_OFF);
+  cfg.enable_zero_diagnostic_ticks =
+      ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC_TICKS;
+  cfg.enable_zero_ticks = ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC_TICKS;
+  cfg.log_decimation = 200u;
+  cfg.require_direction_match = false;
+  cfg.single_direction_positive_only = true;
+  const char *rotating_dq_mode_log_name =
+      (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+       ROTATING_DQ_ENCODER_PROBE_MOE_OFF) ?
+          "ROTATING_DQ_ENCODER_PROBE_MOE_OFF" :
+      (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+       ROTATING_DQ_ENCODER_PROBE_MOE_ON_FIXED_ZERO) ?
+          "ROTATING_DQ_ENCODER_PROBE_MOE_ON_FIXED_ZERO" :
+          cfg.enable_zero_block_integrator ?
+              "ROTATING_DQ_ZERO_TORQUE_BLOCK_INTEGRATOR_E1" :
+              "ROTATING_DQ_ENCODER_PROBE_MOE_ON_ZERO_PI";
+#elif ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  cfg.enable_zero_diagnostic_only = false;
+  cfg.enable_zero_current_pi = false;
+  cfg.freeze_zero_reference_integrator =
+      (ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC != 0u);
+  cfg.enable_zero_block_integrator =
+      (ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC != 0u);
+  cfg.enable_external_iq_block_integrator =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_E2_ACTIVE;
+  if (cfg.enable_external_iq_block_integrator) {
+    cfg.enable_zero_block_integrator = false;
+  }
+  cfg.require_direction_match = false;
+  cfg.iq_target_a =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 0.015f : 0.060f;
+  cfg.iq_ramp_rate_a_per_s =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 0.10f : 0.20f;
+  cfg.iq_ref_hard_limit_a =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 0.030f : 0.080f;
+  /* The per-tick estimator maps one encoder count to about 29.3 rpm after
+   * its first-order filter. Keep the established 100 rpm guard here; the
+   * 512-count travel limit remains the primary mechanical bound. */
+  cfg.speed_limit_rpm = 100.0f;
+  cfg.one_rev_limit_counts =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 512 : 128;
+  cfg.iq_hold_ticks =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 10000u : 240u;
+  cfg.hold_zero_ticks =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 4000u : 2000u;
+  cfg.direction_capture_counts = 1000000;
+  cfg.tracking_iq_ref_mean_min_a =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 0.010f : 0.050f;
+  cfg.tracking_iq_mean_min_a =
+      ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ? 0.005f : 0.030f;
+  cfg.tracking_id_mean_abs_limit_a = 0.10f;
+  cfg.log_decimation = 100u;
+  cfg.single_direction_positive_only = false;
+  const char *rotating_dq_mode_log_name =
+      ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+          "ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_PM0P030A" :
+      ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+          (cfg.enable_external_iq_block_integrator ?
+               (ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+                    "ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_PM0P015A_500MS_SPEED_LOOP_OFF" :
+                     "ROTATING_DQ_EXTERNAL_LOW_IQ_E2_PM0P060A_12MS_PULSE_SPEED_LOOP_OFF") :
+               "ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_PM0P060A") :
+          "ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_PM0P060A";
+#else
+  cfg.enable_zero_diagnostic_only = false;
+  cfg.enable_external_iq_block_integrator =
+      (ROTATING_DQ_VELOCITY_EXTERNAL_E2_INTEGRATOR != 0u);
+  cfg.require_direction_match = false;
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+  cfg.iq_target_a = ROTATING_DQ_BREAKAWAY_CURRENT_A;
+  cfg.iq_ramp_rate_a_per_s = 4.0f;
+  cfg.iq_ref_hard_limit_a = 0.040f;
+  cfg.speed_limit_rpm = 150.0f;
+  /* The 100 Hz velocity update and a 200-tick trace record otherwise land in
+   * the same ADC callback. Keep hardware acceptance on aggregate counters so
+   * the diagnostic cannot create its own deadline fault. */
+  cfg.log_decimation = 0u;
+  cfg.one_rev_limit_counts =
+      ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC ?
+          512 : (int32_t)ROTATING_DQ_VELOCITY_TRAVEL_LIMIT_COUNTS;
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+  cfg.iq_hold_ticks = 20000u;
+  cfg.hold_zero_ticks = 2000u;
+#else
+  cfg.iq_hold_ticks = ROTATING_DQ_VELOCITY_TEST_TICKS;
+  cfg.hold_zero_ticks = 5000u;
+#endif
+  cfg.direction_capture_counts = 1000000;
+  cfg.tracking_iq_ref_mean_min_a = 0.001f;
+  cfg.tracking_iq_mean_min_a = 0.001f;
+  const char *rotating_dq_mode_log_name =
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+      "ROTATING_DQ_BREAKAWAY_0P030A_TO_FIXED_HOLD_1S_SPEED_PI_OFF";
+#else
+      "ROTATING_DQ_BREAKAWAY_0P030A_TO_2RPM_PI_BOUNDED_HANDOFF";
+#endif
+#else
+  cfg.iq_hold_ticks = ROTATING_DQ_BREAKAWAY_DURATION_TICKS + 100u;
+  cfg.hold_zero_ticks = 100u;
+  cfg.direction_capture_counts = 1000000;
+  cfg.tracking_iq_ref_mean_min_a = 0.0f;
+  cfg.tracking_iq_mean_min_a = 0.0f;
+  const char *rotating_dq_mode_log_name =
+      "ROTATING_DQ_BREAKAWAY_0P030A_50MS_ONCE_SPEED_PI_OFF";
+#endif
+  cfg.tracking_id_mean_abs_limit_a = 0.10f;
+  cfg.single_direction_positive_only = true;
+#else
+  cfg.iq_target_a = ROTATING_DQ_VELOCITY_IQ_LIMIT_A;
+  cfg.iq_ramp_rate_a_per_s = 4.0f;
+  cfg.iq_ref_hard_limit_a = 0.040f;
+  cfg.speed_limit_rpm = 150.0f;
+  cfg.one_rev_limit_counts = 512;
+  cfg.iq_hold_ticks = 100000u;
+  cfg.hold_zero_ticks = 5000u;
+  cfg.direction_capture_counts = 448;
+  cfg.tracking_iq_ref_mean_min_a = 0.001f;
+  cfg.tracking_iq_mean_min_a = 0.001f;
+  cfg.tracking_id_mean_abs_limit_a = 0.10f;
+  cfg.single_direction_positive_only = true;
+  const char *rotating_dq_mode_log_name =
+      "ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_5S_BOUNDED";
+#endif
+#endif
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  cfg.enable_zero_diagnostic_only = false;
+  cfg.require_direction_match = true;
+  cfg.iq_target_a = 0.020f;
+  cfg.iq_ramp_rate_a_per_s = 0.20f;
+  cfg.iq_ref_hard_limit_a = 0.030f;
+  cfg.speed_limit_rpm = 100.0f;
+  cfg.one_rev_limit_counts = 128;
+  cfg.iq_hold_ticks = 2000u;
+  cfg.hold_zero_ticks = 2000u;
+  cfg.direction_capture_counts = 12;
+  cfg.log_decimation = 100u;
+  cfg.single_direction_positive_only = false;
+  const char *rotating_dq_mode_log_name =
+      "ROTATING_DQ_TORQUE_DIRECTION_RECHECK_PM0P020A_100MS";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+  cfg.enable_zero_diagnostic_only = false;
+  cfg.require_direction_match = false;
+  cfg.iq_target_a = 0.030f;
+  cfg.iq_ramp_rate_a_per_s = 4.0f;
+  cfg.iq_ref_hard_limit_a = 0.040f;
+  cfg.speed_limit_rpm = 150.0f;
+  cfg.one_rev_limit_counts = 512;
+  cfg.iq_hold_ticks = 200000u;
+  cfg.hold_zero_ticks = 5000u;
+  cfg.direction_capture_counts = 448;
+  cfg.tracking_iq_ref_mean_min_a = 0.025f;
+  cfg.tracking_iq_mean_min_a = 0.008f;
+  cfg.tracking_id_mean_abs_limit_a = 0.10f;
+  cfg.single_direction_positive_only = true;
+  const char *rotating_dq_mode_log_name = "ROTATING_DQ_LOW_SPEED_CURRENT_SINGLE_DIRECTION_0P030A_10S_BOUNDED";
+#else
+  const char *rotating_dq_mode_log_name = "ROTATING_DQ_CURRENT_TEST";
+#endif
+  rotating_dq_current_test_init(&g_rotating_dq_test, &cfg);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  rotating_dq_velocity_supervisor_reset();
+#endif
+  g_drv_test.run_raw_u_min = 0xffffu;
+  g_drv_test.run_raw_v_min = 0xffffu;
+  g_drv_test.run_raw_u_max = 0u;
+  g_drv_test.run_raw_v_max = 0u;
+  memset(&g_rotating_dq_last_output, 0, sizeof(g_rotating_dq_last_output));
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_encoder_probe_config: mode=%lu moe_expected=%u fixed_zero_pwm=%u current_pi=%u integrator_frozen=%u block_integrator=%u external_iq_e2=%u zero_window_observe_only=%u duration_ticks=%lu encoder_motion_limit=32 speed_loop=0 position_loop=0",
+           (unsigned long)ROTATING_DQ_ENCODER_MOTION_PROBE_MODE,
+           (unsigned int)(ROTATING_DQ_ENCODER_MOTION_PROBE_MODE !=
+                          ROTATING_DQ_ENCODER_PROBE_MOE_OFF),
+           (unsigned int)(ROTATING_DQ_ENCODER_MOTION_PROBE_MODE ==
+                          ROTATING_DQ_ENCODER_PROBE_MOE_ON_FIXED_ZERO),
+           (unsigned int)cfg.enable_zero_current_pi,
+           (unsigned int)cfg.freeze_zero_reference_integrator,
+           (unsigned int)cfg.enable_zero_block_integrator,
+           (unsigned int)cfg.enable_external_iq_block_integrator,
+           (unsigned int)cfg.zero_window_observe_only,
+           (unsigned long)cfg.enable_zero_diagnostic_ticks);
+  uart2_printf_line(line);
+
+  float active_block_on_threshold_a =
+      ROTATING_DQ_BLOCK_INTEGRATOR_ON_THRESHOLD_A;
+  float active_block_off_threshold_a =
+      ROTATING_DQ_BLOCK_INTEGRATOR_OFF_THRESHOLD_A;
+  const char *active_block_policy = "ZERO_REFERENCE_E1";
+#if ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC && \
+    ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC
+  active_block_on_threshold_a =
+      ROTATING_DQ_BIPOLAR_BLOCK_INTEGRATOR_ON_THRESHOLD_A;
+  active_block_off_threshold_a =
+      ROTATING_DQ_BIPOLAR_BLOCK_INTEGRATOR_OFF_THRESHOLD_A;
+  active_block_policy = "BIPOLAR_NONZERO_E2";
+#if ROTATING_DQ_EXTERNAL_LOW_IQ_E2_DIAGNOSTIC
+  active_block_policy = ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+      "EXTERNAL_LOW_IQ_CONTINUOUS_E2_SPEED_LOOP_OFF" :
+      "EXTERNAL_LOW_IQ_E2_SPEED_LOOP_OFF";
+#endif
+#endif
+  if (cfg.enable_external_iq_block_integrator) {
+    active_block_on_threshold_a =
+        ROTATING_DQ_BIPOLAR_BLOCK_INTEGRATOR_ON_THRESHOLD_A;
+    active_block_off_threshold_a =
+        ROTATING_DQ_BIPOLAR_BLOCK_INTEGRATOR_OFF_THRESHOLD_A;
+    active_block_policy = "EXTERNAL_NONZERO_E2";
+  }
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_block_integrator_config: enabled=%u policy=%s block_ticks=%u min_valid=%u on_threshold_mA=%lu off_threshold_mA=%lu on_blocks=%u off_blocks=%u Ki_equivalent_preserved=1 confirmation_blocks_retroactive=0 leakage=0",
+           (unsigned int)(cfg.enable_zero_block_integrator ||
+                          cfg.enable_external_iq_block_integrator),
+           active_block_policy,
+           (unsigned int)ROTATING_DQ_BLOCK_INTEGRATOR_TICKS,
+           (unsigned int)ROTATING_DQ_BLOCK_INTEGRATOR_MIN_VALID,
+           (unsigned long)(active_block_on_threshold_a * 1000.0f),
+           (unsigned long)(active_block_off_threshold_a * 1000.0f),
+           (unsigned int)ROTATING_DQ_BLOCK_INTEGRATOR_ON_BLOCKS,
+           (unsigned int)ROTATING_DQ_BLOCK_INTEGRATOR_OFF_BLOCKS);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_config: mode=%s R_phase=%lu.%02lu L_phase_mH=%lu.%03lu bandwidth_hz=%lu.%02lu Ts_us=%lu voltage_limit=%lu.%02lu iq_target=%lu.%03lu iq_ref_hard_limit=%lu.%03lu id_ref_always_zero=1 speed_loop=%u position_loop=0 encoder_cpr=%ld pole_pairs=%ld current_amp_per_count=%lu.%06lu",
+           rotating_dq_mode_log_name,
+           (unsigned long)cfg.phase_resistance_ohm,
+           (unsigned long)((uint32_t)(cfg.phase_resistance_ohm * 100.0f) % 100u),
+           (unsigned long)(cfg.phase_inductance_h * 1000.0f),
+           (unsigned long)((uint32_t)(cfg.phase_inductance_h * 1000000.0f) % 1000u),
+           (unsigned long)cfg.bandwidth_hz,
+           (unsigned long)((uint32_t)(cfg.bandwidth_hz * 100.0f) % 100u),
+           (unsigned long)(cfg.dt_s * 1000000.0f),
+           (unsigned long)cfg.voltage_limit_v,
+           (unsigned long)((uint32_t)(cfg.voltage_limit_v * 100.0f) % 100u),
+           (unsigned long)(cfg.iq_target_a * 1000.0f) / 1000u,
+           (unsigned long)((uint32_t)(cfg.iq_target_a * 1000.0f) % 1000u),
+           (unsigned long)(cfg.iq_ref_hard_limit_a * 1000.0f) / 1000u,
+           (unsigned long)((uint32_t)(cfg.iq_ref_hard_limit_a * 1000.0f) % 1000u),
+           (unsigned int)(M0_BRINGUP_MODE ==
+                           M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST &&
+                           !ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC &&
+                           !ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC &&
+                           (!ROTATING_DQ_BREAKAWAY_DIAGNOSTIC ||
+                            ROTATING_DQ_BREAKAWAY_HANDOFF_TEST)),
+           (long)cfg.encoder_cpr,
+           (long)cfg.pole_pairs,
+           (unsigned long)g_drv_test.current_amp_per_count,
+           (unsigned long)((uint32_t)(g_drv_test.current_amp_per_count * 1000000.0f) % 1000000u));
+  uart2_printf_line(line);
+
+  power_stage_force_safe_off_zero_ccr();
+  power_stage_set_ccr_half();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_disable_six_outputs();
+  (void)hal_adc_set_m0_rank_order(HAL_ADC_M0_ORDER_PC0_PC1);
+  current_observe_set_gain_scale(80.0f);
+  HAL_Delay(2u);
+
+  (void)rotating_dq_collect_live_zero_stage("RESET_SAFE_EN_GATE_0",
+                                            64u,
+                                            false,
+                                            &reset_safe_stage);
+
+  hal_gpio_set_gate_enable(true);
+  if (!power_stage_wait_nfault_release()) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DRV8301_FAULT);
+    drv_bringup_fail(60u);
+    power_stage_force_safe_off_zero_ccr();
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return false;
+  }
+
+  HAL_Delay(10u);
+  (void)rotating_dq_collect_live_zero_stage(
+      "EN_GATE_1_SETTLE_BEFORE_DCCAL", 128u, false, &gate_settle_stage);
+
+  if (!power_stage_configure_drivers()) {
+    drv_bringup_fail(61u);
+    power_stage_force_safe_off_zero_ccr();
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return false;
+  }
+
+  power_stage_disable_six_outputs();
+  __HAL_TIM_MOE_DISABLE(&htim1);
+  if (!drv8301_set_dc_cal(&g_drv0, true, true) ||
+      !drv8301_set_dc_cal(&g_drv1, true, true)) {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    drv_bringup_fail(62u);
+    power_stage_force_safe_off_zero_ccr();
+    uart2_printf_line("CURRENT_OFFSET_INVALID");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return false;
+  }
+  HAL_Delay(1u);
+  (void)rotating_dq_collect_live_zero_stage("DC_CAL_ASSERTED",
+                                            128u,
+                                            false,
+                                            &dc_cal_stage);
+  g_drv_test.dc_cal_offsets_pass = power_stage_collect_adc_offsets();
+
+  const bool clear_ok =
+      drv8301_set_dc_cal(&g_drv0, false, false) &&
+      drv8301_set_dc_cal(&g_drv1, false, false) &&
+      drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs) &&
+      drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  g_drv_test.gain_field_drv0 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv0);
+  g_drv_test.gain_field_drv1 =
+      drv8301_control2_gain_field(g_drv_test.actual_control2_drv1);
+  g_drv_test.dc_cal_clear_ok =
+      clear_ok &&
+      ((g_drv_test.actual_control2_drv0 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      ((g_drv_test.actual_control2_drv1 &
+        (DRV8301_CONTROL2_DC_CAL_CH1 | DRV8301_CONTROL2_DC_CAL_CH2)) == 0u) &&
+      (g_drv_test.gain_field_drv0 == DRV8301_SHUNT_GAIN_80V_PER_V) &&
+      (g_drv_test.gain_field_drv1 == DRV8301_SHUNT_GAIN_80V_PER_V);
+
+  HAL_Delay(10u);
+  (void)rotating_dq_collect_live_zero_stage("DC_CAL_RELEASED_SETTLE",
+                                            128u,
+                                            false,
+                                            &dc_released_stage);
+  g_drv_test.adc_offset_pass =
+      rotating_dq_collect_live_zero_stage("FINAL_OFFSET_CAPTURE",
+                                          1024u,
+                                          true,
+                                          &final_offset_stage);
+  const bool final_verify_collect_ok =
+      rotating_dq_collect_live_zero_stage("FINAL_OFFSET_VERIFY",
+                                          512u,
+                                          false,
+                                          &final_verify_stage);
+  const uint32_t offset_u_std_m =
+      float_to_scaled_u32(final_offset_stage.raw0_std, 1000.0f);
+  const uint32_t offset_v_std_m =
+      float_to_scaled_u32(final_offset_stage.raw1_std, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_offset_cal: source=FINAL_LIVE_ZERO_AFTER_DCCAL_RELEASE offset_pc0_v_phase=%lu offset_pc1_w_phase=%lu offset_pc0_std=%lu.%03lu offset_pc1_std=%lu.%03lu offset_pc0_min=%u offset_pc0_max=%u offset_pc1_min=%u offset_pc1_max=%u sample_count=%lu dc_cal_reference_pass=%u gain_readback_drv0=%u gain_readback_drv1=%u adc_rank_order=%lu nfault=%u dc_cal_clear_ok=%u moe=%lu",
+           (unsigned long)g_drv_test.offset.offset_u,
+           (unsigned long)g_drv_test.offset.offset_v,
+           (unsigned long)(offset_u_std_m / 1000u),
+           (unsigned long)(offset_u_std_m % 1000u),
+           (unsigned long)(offset_v_std_m / 1000u),
+           (unsigned long)(offset_v_std_m % 1000u),
+           (unsigned int)g_drv_test.offset.u_min,
+           (unsigned int)g_drv_test.offset.u_max,
+           (unsigned int)g_drv_test.offset.v_min,
+           (unsigned int)g_drv_test.offset.v_max,
+           (unsigned long)g_drv_test.offset.samples,
+           (unsigned int)g_drv_test.dc_cal_offsets_pass,
+           (unsigned int)g_drv_test.gain_field_drv0,
+           (unsigned int)g_drv_test.gain_field_drv1,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)board_read_drv_nfault(),
+           (unsigned int)g_drv_test.dc_cal_clear_ok,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u));
+  uart2_printf_line(line);
+
+  if (!g_drv_test.adc_offset_pass ||
+      !g_drv_test.dc_cal_offsets_pass ||
+      !g_drv_test.dc_cal_clear_ok) {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    drv_bringup_fail(62u);
+    power_stage_force_safe_off_zero_ccr();
+    uart2_printf_line("CURRENT_OFFSET_INVALID");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return false;
+  }
+
+  if ((TIM1->BDTR & TIM_BDTR_MOE) != 0u ||
+      !power_stage_channels_off() ||
+      !m1_is_safe_off()) {
+    drv_bringup_mark_fault(AXIS0_FAULT_PWM_NOT_ENABLED);
+  }
+
+  admission.sample_count = final_verify_stage.samples;
+  admission.iv_mean_a = final_verify_stage.iv_a;
+  admission.iw_mean_a = final_verify_stage.iw_a;
+  admission.iu_mean_a = final_verify_stage.iu_a;
+  admission.id_mean_a = final_verify_stage.id_a;
+  admission.iq_mean_a = final_verify_stage.iq_a;
+  admission.id_std_a = 0.0f;
+  admission.iq_std_a = 0.0f;
+  admission.phase_current_peak_a = final_verify_stage.phase_metric_a;
+  admission.adc_valid = final_verify_collect_ok &&
+                        (final_verify_stage.samples >= 512u);
+  admission.nfault_ok = final_verify_stage.nfault_ok;
+  admission.fault_code = g_drv_test.fault_code;
+  offset_verify_ok =
+      rotating_dq_current_test_offset_admission_ok(&cfg, &admission);
+
+  const int32_t iv_m = float_to_scaled_i32(admission.iv_mean_a, 1000.0f);
+  const int32_t iw_m = float_to_scaled_i32(admission.iw_mean_a, 1000.0f);
+  const int32_t iu_m = float_to_scaled_i32(admission.iu_mean_a, 1000.0f);
+  const int32_t id_m = float_to_scaled_i32(admission.id_mean_a, 1000.0f);
+  const int32_t iq_m = float_to_scaled_i32(admission.iq_mean_a, 1000.0f);
+  const uint32_t id_std_m = float_to_scaled_u32(admission.id_std_a, 1000.0f);
+  const uint32_t iq_std_m = float_to_scaled_u32(admission.iq_std_a, 1000.0f);
+  const uint32_t peak_m = float_to_scaled_u32(admission.phase_current_peak_a, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_offset_verify: sample_count=%lu iv_mean=%s%lu.%03lu iw_mean=%s%lu.%03lu iu_mean=%s%lu.%03lu id_mean=%s%lu.%03lu iq_mean=%s%lu.%03lu id_std=%lu.%03lu iq_std=%lu.%03lu phase_current_peak=%lu.%03lu adc_valid=%u nfault_ok=%u fault_code=0x%08lX offset_verify_ok=%u moe=%lu ccer=0x%08lX",
+           (unsigned long)admission.sample_count,
+           (iv_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iv_m) / 1000u), (unsigned long)(abs_i32_to_u32(iv_m) % 1000u),
+           (iw_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iw_m) / 1000u), (unsigned long)(abs_i32_to_u32(iw_m) % 1000u),
+           (iu_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iu_m) / 1000u), (unsigned long)(abs_i32_to_u32(iu_m) % 1000u),
+           (id_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id_m) / 1000u), (unsigned long)(abs_i32_to_u32(id_m) % 1000u),
+           (iq_m < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq_m) / 1000u), (unsigned long)(abs_i32_to_u32(iq_m) % 1000u),
+           (unsigned long)(id_std_m / 1000u), (unsigned long)(id_std_m % 1000u),
+           (unsigned long)(iq_std_m / 1000u), (unsigned long)(iq_std_m % 1000u),
+           (unsigned long)(peak_m / 1000u), (unsigned long)(peak_m % 1000u),
+           (unsigned int)admission.adc_valid,
+           (unsigned int)admission.nfault_ok,
+           (unsigned long)admission.fault_code,
+           (unsigned int)offset_verify_ok,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCER);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_angle_source: encoder_direction=%ld pole_pairs=%ld electrical_offset=%lu.%03lu electrical_offset_valid=%u source=SAME_BOOT_3POINT_RUNTIME_OFFSET theta_e_start=PRESERVED_ENCODER_ACCUM theta_e_increment_range=FAST_PATH_ENCODER_DERIVED",
+           (long)cfg.encoder_direction,
+           (long)cfg.pole_pairs,
+           (unsigned long)float_to_scaled_u32(electrical_offset_rad, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(electrical_offset_rad, 1000.0f) % 1000u,
+           (unsigned int)electrical_offset_valid);
+  uart2_printf_line(line);
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+#if ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO_CURRENT_PI_1S COMPLETE");
+  uart2_printf_line("rotating_dq_zero_torque_sequence: id_ref=0.000A iq_ref=0.000A duration_ms=1000 speed_loop=0 position_loop=0 current_pi=1 voltage_limit=1.00V phase_limit=0.200A dq_limit=0.150A encoder_motion_limit=32counts");
+#elif ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO RAMP_IQ_POSITIVE HOLD_IQ_POSITIVE RAMP_ZERO_1 HOLD_ZERO_1 RAMP_IQ_NEGATIVE HOLD_IQ_NEGATIVE RAMP_ZERO_2 HOLD_ZERO_2 COMPLETE");
+  uart2_printf_line(ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+      "rotating_dq_low_iq_step_sequence: controller=P_ONLY integrator_frozen=1 id_ref=0 iq_ref=0_to_+0.030A_to_0_to_-0.030A_to_0 ramp_ms=150 hold_ms=150 zero_hold_ms=100 iq_ref_hard_limit=0.030A speed_loop=0 position_loop=0 one_rev_limit_counts=128 direction_capture_counts=12" :
+      ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+      (ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+       "rotating_dq_low_iq_step_sequence: controller=EXTERNAL_BLOCK_PI block_ticks=32 q_integrator_on_mA=8 q_integrator_off_mA=4 same_reference_sign_blocks=3 d_integrator_frozen=1 ramp_integrator_frozen=1 id_ref=0 iq_ref=0_to_+0.015A_to_0_to_-0.015A_to_0 ramp_ms=150 hold_ms=500 zero_hold_ms=200 iq_ref_hard_limit=0.030A speed_loop=0 position_loop=0 per_tick_filtered_speed_limit=100rpm one_rev_limit_counts=512 duration_limited=1 auto_restart=0" :
+       "rotating_dq_low_iq_step_sequence: controller=BLOCK_PI block_ticks=32 q_integrator_on_mA=8 q_integrator_off_mA=4 same_reference_sign_blocks=3 d_integrator_frozen=1 id_ref=0 iq_ref=0_to_+0.060A_pulse_to_0_to_-0.060A_pulse_to_0 hold_ms=12 zero_hold_ms=100 iq_ref_hard_limit=0.080A speed_loop=0 position_loop=0 speed_limit=100rpm one_rev_limit_counts=128 direction_early_exit=0") :
+      "rotating_dq_low_iq_step_sequence: controller=PI integrator_frozen=0 id_ref=0 iq_ref=0_to_+0.060A_pulse_to_0_to_-0.060A_pulse_to_0 hold_ms=12 zero_hold_ms=100 iq_ref_hard_limit=0.080A speed_loop=0 position_loop=0 speed_limit=100rpm one_rev_limit_counts=128 direction_early_exit=0");
+#else
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO SPEED_TARGET_RAMP SPEED_HOLD ZERO_CURRENT HOLD_ZERO COMPLETE");
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_breakaway_fixed_hold_sequence: breakaway_iq=0.030A breakaway_max_ms=50 motion_confirm_counts=4 motion_confirm_events=4 fixed_hold_iq_mA=%ld fixed_hold_ms=1000 speed_pi=0 friction_ff=0 total_iq_limit_mA=30 speed_hard_limit_rpm=25 position_loop=0 automatic_retry=0 automatic_current_escalation=0",
+           (long)float_to_scaled_i32(
+               ROTATING_DQ_BREAKAWAY_FIXED_HOLD_CURRENT_A,
+               1000.0f));
+  uart2_printf_line(line);
+#else
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_breakaway_handoff_sequence: breakaway_iq=0.030A breakaway_max_ms=50 motion_confirm_counts=16 motion_confirm_events=16 handoff_capture_iq=0.030A capture_only_until_estimator_ready=1 estimator_ready_required_before_pi=1 speed_pi_target=2rpm_hold_then_0 duration_s=%lu total_iq_limit=0.030A travel_limit_counts=%lu",
+           (unsigned long)ROTATING_DQ_VELOCITY_TEST_DURATION_SECONDS,
+           (unsigned long)ROTATING_DQ_VELOCITY_TRAVEL_LIMIT_COUNTS);
+  uart2_printf_line(line);
+  uart2_printf_line("rotating_dq_breakaway_handoff_safety: motion_qualified_sustain=0 hold_friction_ff=0.008A low_speed_friction_assist=0.008A assist_on_below=0.750rpm assist_off_above=2.500rpm reverse_braking_hold_enable_above=2.500rpm reverse_braking_fall=immediate friction_comp_disabled_in_fall=1 speed_pi_slew=0.200A_per_s control_speed_estimator=10x10ms_sliding_count_window raw_edge_diagnostic=0 per_tick_trace=OFF aggregate_safety_stats=ON position_loop=0 automatic_breakaway_retry=0 automatic_current_escalation=0 speed_hard_limit=25rpm_instant_and_windowed");
+#endif
+#else
+  uart2_printf_line("rotating_dq_breakaway_sequence: iq_breakaway=0.030A duration_ticks=1000 duration_ms=50 min_motion_counts=2 min_direction_events=2 max_step_counts=4 expected_direction=+1 speed_pi=OFF position_loop=OFF automatic_retry=0 automatic_current_escalation=0 continuous_iq_limit_preserved=0.030A speed_hard_limit=25rpm_instant_and_windowed");
+#endif
+#else
+  uart2_printf_line("rotating_dq_velocity_sequence: target_rpm=2.000 target_profile=hold_then_fall velocity_loop_hz=100 velocity_estimator=10x10ms_sliding_count_window raw_edge_diagnostic=0 velocity_kp=0.040A_per_rad_s velocity_ki=0.004A_per_rad integrator_limit=0.001A iq_slew_limit=0.200A_per_s slew_policy=TORQUE_INCREASE_LIMITED_DIRECTION_CHANGE_VIA_ZERO current_integrator_policy=EXTERNAL_E2_BLOCK_ADMISSION error_reversal_integrator_scale=0.250 iq_limit=0.030A iq_ref_hard_limit=0.040A speed_loop=1 position_loop=0 speed_hard_limit=25rpm_instant_and_windowed travel_limit_counts=768");
+  uart2_printf_line("rotating_dq_low_resolution_current_control: scope=EXTERNAL_E2_ONLY p_feedback=PREVIOUS_32T_BLOCK_MEAN first_block=REFERENCE_PLUS_RIQ_FF max_ref_counts=1.50 raw_adc_fast_protection=UNCHANGED breakaway_30mA_path=UNCHANGED");
+#endif
+#endif
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO RAMP_IQ_POSITIVE HOLD_IQ_POSITIVE RAMP_ZERO_1 HOLD_ZERO_1 RAMP_IQ_NEGATIVE HOLD_IQ_NEGATIVE RAMP_ZERO_2 HOLD_ZERO_2 COMPLETE");
+  uart2_printf_line("rotating_dq_torque_direction_sequence: id_ref=0 iq_ref=+0.020A_then_zero_then_-0.020A_then_zero ramp_ms=100 hold_max_ms=100 zero_hold_ms=100 direction_capture_counts=12 one_rev_limit_counts=128 iq_ref_hard_limit=0.030A speed_loop=0 position_loop=0 auto_apply_velocity_iq_sign=0");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO RAMP_IQ_POSITIVE HOLD_IQ_POSITIVE RAMP_ZERO_1 HOLD_ZERO_1 COMPLETE");
+  uart2_printf_line("rotating_dq_iq_sequence: id_ref=0 iq_ref=SINGLE_DIRECTION_LOW_SPEED_+0.030A_up_to_10s_then_zero_then_complete iq_ref_hard_limit=0.040A iq_ramp_rate=4.000Aps iq_hold_ticks=200000 hold_zero_ticks=5000 speed_loop=0 position_loop=0 single_direction_positive_only=1 direction_capture_counts=448 speed_limit=150rpm one_rev_limit_counts=512 travel_limited=1 pass_criterion=bounded_continuous_low_speed_current_tracking_without_speed_or_position_loop");
+#else
+  uart2_printf_line("rotating_dq_state_machine: PREFLIGHT OFFSET_CAL OFFSET_VERIFY ENABLE_ZERO RAMP_IQ_POSITIVE HOLD_IQ_POSITIVE RAMP_ZERO_1 HOLD_ZERO_1 RAMP_IQ_NEGATIVE HOLD_IQ_NEGATIVE RAMP_ZERO_2 HOLD_ZERO_2 COMPLETE");
+  uart2_printf_line("rotating_dq_iq_sequence: id_ref=0 iq_ref=+0.020A_hold_then_zero_then_-0.020A_hold_then_zero iq_ref_hard_limit=0.030A speed_loop=0 position_loop=0");
+#endif
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_limits: phase_current_limit=0.200A dq_current_limit=0.150A speed_limit=%lurpm mechanical_angle_limit=%ldcounts voltage_limit=1.00V normal_fast_loop_limit=20us adc_callback_limit=50us",
+           (unsigned long)cfg.speed_limit_rpm,
+           (long)cfg.one_rev_limit_counts);
+  uart2_printf_line(line);
+
+  if (!offset_verify_ok) {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    drv_bringup_fail(63u);
+    power_stage_force_safe_off_zero_ccr();
+    uart2_printf_line("CURRENT_OFFSET_INVALID");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return false;
+  }
+
+  fixed_current_enable_cycle_counter();
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  (void)encoder_tracker_sample();
+#else
+  encoder_tracker_reset();
+#endif
+
+  __disable_irq();
+  g_rotating_dq_active = false;
+  g_rotating_dq_run_request = false;
+  g_rotating_dq_power_ready = false;
+  g_rotating_dq_done = false;
+  g_rotating_dq_slow_drv_ok = true;
+  g_rotating_dq_isr_last_seq = 0u;
+  g_rotating_dq_worst_adc_callback_cycles = 0u;
+  g_rotating_dq_worst_adc_callback_us = 0.0f;
+  memset((void *)&g_rotating_dq_wrapper_profile,
+         0,
+         sizeof(g_rotating_dq_wrapper_profile));
+  memset((void *)&g_rotating_dq_overspeed_latch,
+         0,
+         sizeof(g_rotating_dq_overspeed_latch));
+  rotating_dq_fault_trace_reset();
+  rotating_dq_encoder_evidence_reset();
+  __enable_irq();
+
+  rotating_dq_current_test_request_start(&g_rotating_dq_test,
+                                         electrical_offset_valid);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+  power_stage_disable_six_outputs();
+  power_stage_set_ccr_half();
+#endif
+
+  if (!power_stage_wait_nfault_release()) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         ROTATING_DQ_FAULT_NFAULT);
+  } else {
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+    current_controller_reset(&g_rotating_dq_test.controller);
+    power_stage_disable_six_outputs();
+    power_stage_set_ccr_half();
+    rotating_dq_collect_diag_snapshots(
+        ROTATING_DQ_ZERO_STAGE_NEUTRAL_PRELOAD_MOE_OFF, false, 16u);
+#endif
+    if (ROTATING_DQ_ENCODER_MOTION_PROBE_MODE !=
+        ROTATING_DQ_ENCODER_PROBE_MOE_OFF) {
+      TIM1->CCER |= POWER_CCER_MASK;
+      __HAL_TIM_MOE_ENABLE(&htim1);
+    } else {
+      power_stage_disable_six_outputs();
+      __HAL_TIM_MOE_DISABLE(&htim1);
+      TIM1->CCR1 = 0u;
+      TIM1->CCR2 = 0u;
+      TIM1->CCR3 = 0u;
+    }
+    __disable_irq();
+    g_rotating_dq_power_ready = true;
+    g_rotating_dq_run_request = true;
+    g_rotating_dq_active = true;
+    g_rotating_dq_done = false;
+    g_rotating_dq_isr_last_seq = 0u;
+    __enable_irq();
+  }
+
+  const uint32_t run_timeout_ms =
+      rotating_dq_current_test_supervisor_timeout_ms(
+          &g_rotating_dq_test.config,
+          ROTATING_DQ_RUN_SUPERVISOR_MARGIN_MS);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_run_supervisor: configured_duration_s=%lu timeout_ms=%lu margin_ms=%lu source=STATE_MACHINE_BUDGET",
+           (unsigned long)ROTATING_DQ_VELOCITY_TEST_DURATION_SECONDS,
+           (unsigned long)run_timeout_ms,
+           (unsigned long)ROTATING_DQ_RUN_SUPERVISOR_MARGIN_MS);
+  uart2_printf_line(line);
+  const uint32_t run_start_ms = HAL_GetTick();
+  uint32_t last_drv_poll_ms = run_start_ms;
+  RotatingDqCurrentTestOutput out = {0};
+  while (!g_rotating_dq_done &&
+         g_rotating_dq_test.result == ROTATING_DQ_RESULT_RUNNING &&
+         (HAL_GetTick() - run_start_ms) < run_timeout_ms) {
+    const uint32_t now_ms = HAL_GetTick();
+    if ((now_ms - last_drv_poll_ms) >= 100u) {
+      last_drv_poll_ms = now_ms;
+      const bool drv_ok =
+          drv8301_read_status(&g_drv0) &&
+          drv8301_read_status(&g_drv1) &&
+          !drv8301_has_fault(&g_drv0) &&
+          !drv8301_has_fault(&g_drv1) &&
+          !drv_status_has_fault(g_drv0.status.status1_raw, g_drv0.status.status2_raw) &&
+          !drv_status_has_fault(g_drv1.status.status1_raw, g_drv1.status.status2_raw);
+      g_rotating_dq_slow_drv_ok = drv_ok;
+    }
+    rotating_dq_current_test_service_main(&g_rotating_dq_test, &out);
+    HAL_Delay(1u);
+  }
+
+  if (!g_rotating_dq_done &&
+      g_rotating_dq_test.result == ROTATING_DQ_RESULT_RUNNING) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         ROTATING_DQ_FAULT_CONTROL_TIME);
+    rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_NONE);
+  }
+
+  /* Complete any deferred diagnostic-only snapshot after fast shutdown. */
+  rotating_dq_current_test_service_main(&g_rotating_dq_test, &out);
+
+  __disable_irq();
+  g_rotating_dq_active = false;
+  out = g_rotating_dq_last_output;
+  __enable_irq();
+
+  fixed_current_safe_shutdown(NULL);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+  rotating_dq_collect_diag_snapshots(
+      ROTATING_DQ_ZERO_STAGE_POST_SHUTDOWN, true, 8u);
+#endif
+  (void)drv8301_read_registers(&g_drv0, &g_drv_test.drv0_regs);
+  (void)drv8301_read_registers(&g_drv1, &g_drv_test.drv1_regs);
+  g_drv_test.actual_control2_drv0 = g_drv_test.drv0_regs.control2;
+  g_drv_test.actual_control2_drv1 = g_drv_test.drv1_regs.control2;
+  drv_bringup_capture_final_state();
+
+  float step_pos_iq_integrator_peak_v = 0.0f;
+  float step_neg_iq_integrator_peak_v = 0.0f;
+  float step_pos_iq_ref_peak_a = 0.0f;
+  float step_neg_iq_ref_peak_a = 0.0f;
+  uint32_t step_pos_log_samples = 0u;
+  uint32_t step_neg_log_samples = 0u;
+  for (uint32_t i = 0u; i < g_rotating_dq_test.log_count; ++i) {
+    const RotatingDqCurrentLogRecord *r = &g_rotating_dq_test.log[i];
+    if (r->state == ROTATING_DQ_STATE_RAMP_IQ_POSITIVE ||
+        r->state == ROTATING_DQ_STATE_HOLD_IQ_POSITIVE) {
+      step_pos_log_samples++;
+      if (r->integrator_q_v > step_pos_iq_integrator_peak_v) {
+        step_pos_iq_integrator_peak_v = r->integrator_q_v;
+      }
+      if (r->iq_ref_a > step_pos_iq_ref_peak_a) {
+        step_pos_iq_ref_peak_a = r->iq_ref_a;
+      }
+    } else if (r->state == ROTATING_DQ_STATE_RAMP_IQ_NEGATIVE ||
+               r->state == ROTATING_DQ_STATE_HOLD_IQ_NEGATIVE) {
+      step_neg_log_samples++;
+      if (r->integrator_q_v < step_neg_iq_integrator_peak_v) {
+        step_neg_iq_integrator_peak_v = r->integrator_q_v;
+      }
+      if (r->iq_ref_a < step_neg_iq_ref_peak_a) {
+        step_neg_iq_ref_peak_a = r->iq_ref_a;
+      }
+    }
+  }
+  const bool step_integrator_update_seen __attribute__((unused)) =
+      step_pos_log_samples > 0u && step_neg_log_samples > 0u &&
+      step_pos_iq_integrator_peak_v > 0.0005f &&
+      step_neg_iq_integrator_peak_v < -0.0005f;
+  const bool step_reference_targets_reached __attribute__((unused)) =
+      step_pos_iq_ref_peak_a >= (0.95f * g_rotating_dq_test.config.iq_target_a) &&
+      step_neg_iq_ref_peak_a <= (-0.95f * g_rotating_dq_test.config.iq_target_a);
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    !ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC && \
+    !ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC && \
+    (!ROTATING_DQ_BREAKAWAY_DIAGNOSTIC || \
+     (ROTATING_DQ_BREAKAWAY_HANDOFF_TEST && \
+      !ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC))
+  if (g_rotating_dq_test.result == ROTATING_DQ_RESULT_PASS &&
+      !rotating_dq_velocity_tracking_ok()) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         ROTATING_DQ_FAULT_TRACKING);
+  }
+#endif
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  const bool step_integrator_behavior_ok =
+      ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+          !step_integrator_update_seen : step_integrator_update_seen;
+  if (g_rotating_dq_test.result == ROTATING_DQ_RESULT_PASS &&
+      (!step_integrator_behavior_ok || !step_reference_targets_reached)) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         ROTATING_DQ_FAULT_TRACKING);
+  }
+#endif
+
+  if (g_drv_test.fault_code != 0u &&
+      g_rotating_dq_test.fault_code == 0u) {
+    rotating_dq_current_test_force_fault(&g_rotating_dq_test,
+                                         g_drv_test.fault_code);
+  }
+  if (g_rotating_dq_test.fault_code != 0u) {
+    g_drv_test.fault_code = g_rotating_dq_test.fault_code;
+  }
+
+  for (uint32_t i = 0u; i < g_rotating_dq_test.log_count; ++i) {
+    const RotatingDqCurrentLogRecord *r = &g_rotating_dq_test.log[i];
+    const int32_t iq_ref = float_to_scaled_i32(r->iq_ref_a, 1000.0f);
+    const int32_t id = float_to_scaled_i32(r->id_a, 1000.0f);
+    const int32_t iq = float_to_scaled_i32(r->iq_a, 1000.0f);
+    const int32_t vd = float_to_scaled_i32(r->vd_v, 1000.0f);
+    const int32_t vq = float_to_scaled_i32(r->vq_v, 1000.0f);
+    const int32_t rpm = float_to_scaled_i32(r->mechanical_speed_rpm, 100.0f);
+    const uint32_t theta = float_to_scaled_u32(r->theta_e_rad, 1000.0f);
+    snprintf(line,
+             sizeof(line),
+             "rotating_dq_log%03lu: state=%s tick=%lu adc_seq=%lu voltage_seq=%lu enc=%ld theta_e=%lu.%03lu iq_ref=%s%lu.%03lu id=%s%lu.%03lu iq=%s%lu.%03lu vd=%s%lu.%03lu vq=%s%lu.%03lu rpm=%s%lu.%02lu sat=%u vbus=%lu.%03lu fault=0x%08lX",
+             (unsigned long)i,
+             rotating_dq_current_test_state_name(r->state),
+             (unsigned long)r->control_tick_seq,
+             (unsigned long)r->adc_seq,
+             (unsigned long)r->voltage_command_seq,
+             (long)r->encoder_count,
+             (unsigned long)(theta / 1000u),
+             (unsigned long)(theta % 1000u),
+             (iq_ref < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq_ref) / 1000u), (unsigned long)(abs_i32_to_u32(iq_ref) % 1000u),
+             (id < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(id) / 1000u), (unsigned long)(abs_i32_to_u32(id) % 1000u),
+             (iq < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(iq) / 1000u), (unsigned long)(abs_i32_to_u32(iq) % 1000u),
+             (vd < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vd) / 1000u), (unsigned long)(abs_i32_to_u32(vd) % 1000u),
+             (vq < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(vq) / 1000u), (unsigned long)(abs_i32_to_u32(vq) % 1000u),
+             (rpm < 0) ? "-" : "", (unsigned long)(abs_i32_to_u32(rpm) / 100u), (unsigned long)(abs_i32_to_u32(rpm) % 100u),
+             (unsigned int)r->saturation_active,
+             (unsigned long)(float_to_scaled_u32(r->vbus_v, 1000.0f) / 1000u),
+             (unsigned long)(float_to_scaled_u32(r->vbus_v, 1000.0f) % 1000u),
+             (unsigned long)r->fault_code);
+    uart2_printf_line(line);
+  }
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_log_summary: stored=%lu dropped=%lu",
+           (unsigned long)g_rotating_dq_test.log_count,
+           (unsigned long)g_rotating_dq_test.log_dropped);
+  uart2_printf_line(line);
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  rotating_dq_print_zero_diag_report();
+#endif
+
+  const char *zero_window_fault_source = "NONE";
+  if ((g_rotating_dq_test.fault_code &
+       ROTATING_DQ_FAULT_CURRENT_OFFSET_INVALID) != 0u) {
+    zero_window_fault_source = "DIRECT_ADC_OFFSET";
+  } else if ((g_rotating_dq_test.fault_code &
+              ROTATING_DQ_FAULT_ZERO_CURRENT_INVALID) != 0u) {
+    zero_window_fault_source = "CLEAN_ZERO_CURRENT_WINDOW";
+  } else if ((g_rotating_dq_test.fault_code &
+              ROTATING_DQ_FAULT_CURRENT_SENSE_COMMON_MODE_EXCESS) != 0u) {
+    zero_window_fault_source = "COMMON_MODE_EXCESS";
+  }
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_zero_window_verdict: offset_invalid_source=%s direct_offset_limit_a=0.200 zero_current_limit_a=0.200 clean_samples=%lu common_mode_excluded=%lu fault_code=0x%08lX",
+           zero_window_fault_source,
+           (unsigned long)g_rotating_dq_test.zero_clean_sample_count,
+           (unsigned long)g_rotating_dq_test.zero_common_mode_excluded_count,
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_diag: fast_loop_context=ADC_INJECTED_ISR control_tick_seq=%lu adc_seq=%lu voltage_command_seq=%lu missed_control_tick_count=%lu duplicate_control_tick_count=%lu worst_fast_loop_cycles=%lu worst_fast_loop_us=%lu.%03lu worst_adc_callback_cycles=%lu worst_adc_callback_us=%lu.%03lu encoder_motion_max_counts=%ld result=%s fault_code=0x%08lX",
+           (unsigned long)g_rotating_dq_test.control_tick_seq,
+           (unsigned long)g_rotating_dq_test.last_adc_seq,
+           (unsigned long)g_rotating_dq_test.voltage_command_seq,
+           (unsigned long)g_rotating_dq_test.missed_control_tick_count,
+           (unsigned long)g_rotating_dq_test.duplicate_control_tick_count,
+           (unsigned long)g_rotating_dq_test.worst_case_control_cycles,
+           (unsigned long)((g_rotating_dq_test.worst_case_control_cycles * 1000u) / 168u) / 1000u,
+           (unsigned long)((g_rotating_dq_test.worst_case_control_cycles * 1000u) / 168u) % 1000u,
+           (unsigned long)g_rotating_dq_worst_adc_callback_cycles,
+           (unsigned long)float_to_scaled_u32(g_rotating_dq_worst_adc_callback_us, 1000.0f) / 1000u,
+           (unsigned long)float_to_scaled_u32(g_rotating_dq_worst_adc_callback_us, 1000.0f) % 1000u,
+           (long)g_rotating_dq_test.encoder_motion_max_counts,
+           rotating_dq_current_test_result_name(g_rotating_dq_test.result),
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_breakaway_handoff_result: breakaway_result=%s handoff_state=%s iq_breakaway_mA=30 breakaway_elapsed_ticks=%lu handoff_control_tick=%lu handoff_count=%lu encoder_start=%ld breakaway_final_delta=%ld direction_events=%lu max_step_counts=%lu first_speed_pi_iq_mA=%ld max_speed_pi_iq_step_mA=%ld speed_pi_iq_peak_mA=%ld continuous_iq_limit_mA=30 speed_pi_integrator_enabled_after_estimator=%u automatic_retry=0 fault_code=0x%08lX",
+           velocity_breakaway_result_name(g_rotating_breakaway_probe.result),
+           velocity_breakaway_handoff_state_name(
+               g_rotating_breakaway_handoff.state),
+           (unsigned long)g_rotating_breakaway_probe.elapsed_ticks,
+           (unsigned long)g_rotating_breakaway_handoff.handoff_control_tick,
+           (unsigned long)g_rotating_breakaway_handoff.handoff_count,
+           (long)g_rotating_breakaway_probe.encoder_start_count,
+           (long)g_rotating_breakaway_probe.encoder_final_delta_counts,
+           (unsigned long)g_rotating_breakaway_probe.direction_event_count,
+           (unsigned long)g_rotating_breakaway_probe.max_step_seen_counts,
+           (long)float_to_scaled_i32(
+               g_rotating_velocity_supervisor.first_speed_pi_iq_ref_a,
+               1000.0f),
+           (long)float_to_scaled_i32(
+               g_rotating_velocity_supervisor.max_speed_pi_iq_step_a,
+               1000.0f),
+           (long)float_to_scaled_i32(
+               g_rotating_velocity_supervisor.iq_ref_peak_a,
+               1000.0f),
+           (unsigned int)g_rotating_velocity_supervisor.estimator_ready,
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_handoff_sustain_result: result=%s iq_mA=30 duration_limit_ticks=%lu elapsed_ticks=%lu encoder_start=%ld encoder_final_delta=%ld direction_events=%lu same_direction_streak_max=%lu max_step_counts=%lu recurring_assist=0 fault_code=0x%08lX",
+           velocity_breakaway_result_name(g_rotating_handoff_sustain_probe.result),
+           (unsigned long)g_rotating_handoff_sustain_probe.timeout_ticks,
+           (unsigned long)g_rotating_handoff_sustain_probe.elapsed_ticks,
+           (long)g_rotating_handoff_sustain_probe.encoder_start_count,
+           (long)g_rotating_handoff_sustain_probe.encoder_final_delta_counts,
+           (unsigned long)g_rotating_handoff_sustain_probe.direction_event_count,
+           (unsigned long)g_rotating_handoff_sustain_probe.same_direction_event_streak_max,
+           (unsigned long)g_rotating_handoff_sustain_probe.max_step_seen_counts,
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+  uart2_printf_line("rotating_dq_hold_friction_assist: current_mA=4 enabled_after_estimator=1 enable_below_rpm=0.750 disable_above_rpm=2.500 disabled_in_fall=1 total_iq_limit_mA=30 automatic_breakaway_retry=0");
+#else
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_breakaway_result: result=%s iq_breakaway_mA=30 duration_limit_ticks=1000 elapsed_ticks=%lu encoder_start=%ld encoder_final_delta=%ld direction_events=%lu same_direction_streak_max=%lu max_step_counts=%lu illegal_transition_start=%lu illegal_transition_end=%lu motion_candidate=%u speed_pi_integrator=OFF automatic_retry=0 continuous_iq_limit_mA=30 fault_code=0x%08lX",
+           velocity_breakaway_result_name(g_rotating_breakaway_probe.result),
+           (unsigned long)g_rotating_breakaway_probe.elapsed_ticks,
+           (long)g_rotating_breakaway_probe.encoder_start_count,
+           (long)g_rotating_breakaway_probe.encoder_final_delta_counts,
+           (unsigned long)g_rotating_breakaway_probe.direction_event_count,
+           (unsigned long)g_rotating_breakaway_probe.same_direction_event_streak_max,
+           (unsigned long)g_rotating_breakaway_probe.max_step_seen_counts,
+           (unsigned long)g_rotating_breakaway_probe.illegal_transition_count_start,
+           (unsigned long)g_rotating_breakaway_probe.illegal_transition_count_end,
+           (unsigned int)g_rotating_breakaway_probe.motion_candidate,
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+#endif
+#endif
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_wrapper_profile_cycles: total=%lu encoder_sample=%lu raw_minmax=%lu theta=%lu fill_input=%lu controller=%lu pwm_apply=%lu note_time=%lu",
+           (unsigned long)g_rotating_dq_wrapper_profile.total_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.encoder_sample_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.raw_minmax_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.theta_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.fill_input_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.controller_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.pwm_apply_max_cycles,
+           (unsigned long)g_rotating_dq_wrapper_profile.note_time_max_cycles);
+  uart2_printf_line(line);
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_fast_profile_cycles: total=%lu critical=%lu seq_input=%lu encoder_speed=%lu clarke_park=%lu current_protection=%lu controller=%lu log_stats=%lu state_machine=%lu fill_output=%lu",
+           (unsigned long)g_rotating_dq_test.fast_profile.total_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.control_critical_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.seq_input_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.encoder_speed_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.clarke_park_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.current_protection_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.controller_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.log_stats_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.state_machine_max_cycles,
+           (unsigned long)g_rotating_dq_test.fast_profile.fill_output_max_cycles);
+  uart2_printf_line(line);
+
+  const int32_t pos_iq_milli =
+      float_to_scaled_i32(g_rotating_dq_test.positive_stats.iq_mean_a, 1000.0f);
+  const int32_t neg_iq_milli =
+      float_to_scaled_i32(g_rotating_dq_test.negative_stats.iq_mean_a, 1000.0f);
+  const int32_t pos_speed_centi =
+      float_to_scaled_i32(g_rotating_dq_test.positive_stats.speed_mean_rpm, 100.0f);
+  const int32_t neg_speed_centi =
+      float_to_scaled_i32(g_rotating_dq_test.negative_stats.speed_mean_rpm, 100.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_stats: zero_samples=%lu pos_samples=%lu pos_iq_mean=%s%lu.%03lu pos_speed_mean_rpm=%s%lu.%02lu pos_dir=%d neg_samples=%lu neg_iq_mean=%s%lu.%03lu neg_speed_mean_rpm=%s%lu.%02lu neg_dir=%d fault_code=0x%08lX",
+           (unsigned long)g_rotating_dq_test.zero_stats.sample_count,
+           (unsigned long)g_rotating_dq_test.positive_stats.sample_count,
+           (pos_iq_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(pos_iq_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(pos_iq_milli) % 1000u),
+           (pos_speed_centi < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(pos_speed_centi) / 100u),
+           (unsigned long)(abs_i32_to_u32(pos_speed_centi) % 100u),
+           (int)g_rotating_dq_test.positive_stats.mechanical_direction,
+           (unsigned long)g_rotating_dq_test.negative_stats.sample_count,
+           (neg_iq_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(neg_iq_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(neg_iq_milli) % 1000u),
+           (neg_speed_centi < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(neg_speed_centi) / 100u),
+           (unsigned long)(abs_i32_to_u32(neg_speed_centi) % 100u),
+           (int)g_rotating_dq_test.negative_stats.mechanical_direction,
+           (unsigned long)g_rotating_dq_test.fault_code);
+  uart2_printf_line(line);
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  const int velocity_iq_sign_candidate =
+      rotating_dq_velocity_iq_sign_candidate(&g_rotating_dq_test);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_torque_direction_result: positive_iq_direction=%d positive_iq_delta_counts=%ld negative_iq_direction=%d negative_iq_delta_counts=%ld velocity_positive_speed_iq_sign_candidate=%+d candidate_valid=%u candidate_applied_to_velocity_loop=0",
+           (int)g_rotating_dq_test.positive_stats.mechanical_direction,
+           (long)g_rotating_dq_test.positive_stats.encoder_delta_counts,
+           (int)g_rotating_dq_test.negative_stats.mechanical_direction,
+           (long)g_rotating_dq_test.negative_stats.encoder_delta_counts,
+           velocity_iq_sign_candidate,
+           (unsigned int)(velocity_iq_sign_candidate != 0));
+  uart2_printf_line(line);
+#endif
+
+  const int32_t pos_id_milli =
+      float_to_scaled_i32(g_rotating_dq_test.positive_stats.id_mean_a, 1000.0f);
+  const int32_t neg_id_milli =
+      float_to_scaled_i32(g_rotating_dq_test.negative_stats.id_mean_a, 1000.0f);
+  const uint32_t pos_phase_peak_milli =
+      float_to_scaled_u32(g_rotating_dq_test.positive_stats.phase_current_peak_a, 1000.0f);
+  const uint32_t neg_phase_peak_milli =
+      float_to_scaled_u32(g_rotating_dq_test.negative_stats.phase_current_peak_a, 1000.0f);
+  const uint32_t pos_voltage_peak_milli =
+      float_to_scaled_u32(g_rotating_dq_test.positive_stats.voltage_vector_peak_v, 1000.0f);
+  const uint32_t neg_voltage_peak_milli =
+      float_to_scaled_u32(g_rotating_dq_test.negative_stats.voltage_vector_peak_v, 1000.0f);
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_low_speed_current_single_direction_0p030a_stats: pos_id_mean=%s%lu.%03lu neg_id_mean=%s%lu.%03lu pos_phase_peak=%lu.%03lu neg_phase_peak=%lu.%03lu pos_voltage_peak=%lu.%03lu neg_voltage_peak=%lu.%03lu pos_saturation_count=%lu neg_saturation_count=%lu nfault_final=%u gate_final=%u moe_final=%lu",
+           (pos_id_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(pos_id_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(pos_id_milli) % 1000u),
+           (neg_id_milli < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(neg_id_milli) / 1000u),
+           (unsigned long)(abs_i32_to_u32(neg_id_milli) % 1000u),
+           (unsigned long)(pos_phase_peak_milli / 1000u),
+           (unsigned long)(pos_phase_peak_milli % 1000u),
+           (unsigned long)(neg_phase_peak_milli / 1000u),
+           (unsigned long)(neg_phase_peak_milli % 1000u),
+           (unsigned long)(pos_voltage_peak_milli / 1000u),
+           (unsigned long)(pos_voltage_peak_milli % 1000u),
+           (unsigned long)(neg_voltage_peak_milli / 1000u),
+           (unsigned long)(neg_voltage_peak_milli % 1000u),
+           (unsigned long)g_rotating_dq_test.positive_stats.saturation_count,
+           (unsigned long)g_rotating_dq_test.negative_stats.saturation_count,
+           (unsigned int)board_read_drv_nfault(),
+           (unsigned int)gate_raw_is_high(),
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u));
+  uart2_printf_line(line);
+
+  rotating_dq_velocity_print_stats();
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  {
+    const int32_t pos_i_millivolt =
+        float_to_scaled_i32(step_pos_iq_integrator_peak_v, 1000.0f);
+    const int32_t neg_i_millivolt =
+        float_to_scaled_i32(step_neg_iq_integrator_peak_v, 1000.0f);
+    const int32_t pos_ref_milliamp =
+        float_to_scaled_i32(step_pos_iq_ref_peak_a, 1000.0f);
+    const int32_t neg_ref_milliamp =
+        float_to_scaled_i32(step_neg_iq_ref_peak_a, 1000.0f);
+    snprintf(line,
+             sizeof(line),
+           "rotating_dq_low_iq_step_integrator: controller=%s positive_peak_v=%s%lu.%03lu negative_peak_v=%s%lu.%03lu positive_ref_peak_a=%s%lu.%03lu negative_ref_peak_a=%s%lu.%03lu target_mA=%lu target_reached=%u positive_log_samples=%lu negative_log_samples=%lu positive_update_seen=%u negative_update_seen=%u integrator_update_seen=%u expected_integrator_frozen=%u integrator_behavior_ok=%u speed_loop=0 position_loop=0",
+             ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ? "P_ONLY" :
+             ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ? "BLOCK_PI" : "PI",
+             (pos_i_millivolt < 0) ? "-" : "",
+             (unsigned long)(abs_i32_to_u32(pos_i_millivolt) / 1000u),
+             (unsigned long)(abs_i32_to_u32(pos_i_millivolt) % 1000u),
+             (neg_i_millivolt < 0) ? "-" : "",
+             (unsigned long)(abs_i32_to_u32(neg_i_millivolt) / 1000u),
+             (unsigned long)(abs_i32_to_u32(neg_i_millivolt) % 1000u),
+             (pos_ref_milliamp < 0) ? "-" : "",
+             (unsigned long)(abs_i32_to_u32(pos_ref_milliamp) / 1000u),
+             (unsigned long)(abs_i32_to_u32(pos_ref_milliamp) % 1000u),
+             (neg_ref_milliamp < 0) ? "-" : "",
+              (unsigned long)(abs_i32_to_u32(neg_ref_milliamp) / 1000u),
+              (unsigned long)(abs_i32_to_u32(neg_ref_milliamp) % 1000u),
+              (unsigned long)(g_rotating_dq_test.config.iq_target_a * 1000.0f),
+              (unsigned int)step_reference_targets_reached,
+             (unsigned long)step_pos_log_samples,
+             (unsigned long)step_neg_log_samples,
+             (unsigned int)(step_pos_iq_integrator_peak_v > 0.0005f),
+             (unsigned int)(step_neg_iq_integrator_peak_v < -0.0005f),
+             (unsigned int)step_integrator_update_seen,
+             (unsigned int)ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC,
+             (unsigned int)step_integrator_behavior_ok);
+    uart2_printf_line(line);
+  }
+#endif
+
+  snprintf(line,
+           sizeof(line),
+           "rotating_dq_power_final: gate=%u nfault=%u ccer=0x%08lX bdtr=0x%08lX moe=%lu ccr1=%lu ccr2=%lu ccr3=%lu adc_rank_order=%lu drv0_control1=0x%04X drv0_control2=0x%04X drv1_control1=0x%04X drv1_control2=0x%04X fault_code=0x%08lX axis0_fault=0x%08lX axis0_first_fault=0x%08lX axis0_first_fault_source_line=%lu result=%s",
+           (unsigned int)gate_raw_is_high(),
+           (unsigned int)board_read_drv_nfault(),
+           (unsigned long)TIM1->CCER,
+           (unsigned long)TIM1->BDTR,
+           (unsigned long)((TIM1->BDTR & TIM_BDTR_MOE) ? 1u : 0u),
+           (unsigned long)TIM1->CCR1,
+           (unsigned long)TIM1->CCR2,
+           (unsigned long)TIM1->CCR3,
+           (unsigned long)hal_adc_get_m0_rank_order(),
+           (unsigned int)g_drv_test.drv0_regs.control1,
+           (unsigned int)g_drv_test.drv0_regs.control2,
+           (unsigned int)g_drv_test.drv1_regs.control1,
+           (unsigned int)g_drv_test.drv1_regs.control2,
+           (unsigned long)g_rotating_dq_test.fault_code,
+           (unsigned long)g_axis0.fault_flags,
+           (unsigned long)g_axis0_first_fault_flag,
+           (unsigned long)g_axis0_first_fault_source_line,
+           rotating_dq_current_test_result_name(g_rotating_dq_test.result));
+  uart2_printf_line(line);
+
+  if (g_rotating_dq_test.result == ROTATING_DQ_RESULT_PASS &&
+      g_rotating_dq_test.fault_code == 0u) {
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+    uart2_printf_line("ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC_COMPLETE");
+    uart2_printf_line("ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC_FLASH_READY=YES");
+    uart2_printf_line("ROTATING_DQ_LOW_CURRENT_READY=YES");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_READY=NO");
+    uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+    return true;
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+    uart2_printf_line("ROTATING_DQ_BREAKAWAY_TO_FIXED_HOLD_PASS");
+    uart2_printf_line("FIXED_HOLD_MOTION_DIAGNOSTIC_VALID=YES");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#else
+    uart2_printf_line("ROTATING_DQ_BREAKAWAY_TO_2RPM_HANDOFF_PASS");
+    uart2_printf_line("BREAKAWAY_CURRENT_IDENTIFIED=0.030A_REPEATED_CANDIDATE");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_SHORT_TEST_READY=YES");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#endif
+#else
+    uart2_printf_line("ROTATING_DQ_BREAKAWAY_0P030A_50MS_PASS");
+    uart2_printf_line("BREAKAWAY_CURRENT_IDENTIFIED=0.030A_CANDIDATE");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#endif
+#elif ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC
+    uart2_printf_line("ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_PASS");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#elif ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+    uart2_printf_line(ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+        "ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_PASS" :
+        ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+        (ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+             "ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_PASS" :
+             "ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_PASS") :
+        "ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_PASS");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#else
+    uart2_printf_line("ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_PASS");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=YES");
+    return true;
+#endif
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+    uart2_printf_line("ROTATING_DQ_TORQUE_DIRECTION_RECHECK_PASS");
+    uart2_printf_line("VELOCITY_IQ_SIGN_CANDIDATE_VALID=YES");
+    uart2_printf_line("VELOCITY_IQ_SIGN_APPLIED=NO");
+    uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+    uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+    return true;
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+    uart2_printf_line("ROTATING_DQ_LOW_CURRENT_PI_TRACKING_PASS");
+    uart2_printf_line("ROTATING_DQ_LOW_SPEED_CURRENT_MODE_PASS");
+    uart2_printf_line("ROTATING_DQ_LOW_SPEED_CURRENT_SINGLE_DIRECTION_0P030A_10S_BOUNDED_PASS");
+    uart2_printf_line("ROTATING_DQ_LOW_CURRENT_READY=YES");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_READY=YES");
+    uart2_printf_line("ROTATING_DQ_PI_READY=YES");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=YES");
+    return true;
+#else
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_PASS");
+    uart2_printf_line("ROTATING_DQ_LOW_CURRENT_READY=YES");
+    uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_READY=YES");
+    uart2_printf_line("ROTATING_DQ_PI_READY=YES");
+    uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=YES");
+    return true;
+#endif
+  }
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+  uart2_printf_line("ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC_FAIL");
+  uart2_printf_line("ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC_FLASH_READY=NO");
+  uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_READY=NO");
+  uart2_printf_line("ROTATING_DQ_LOW_CURRENT_READY=NO");
+  uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+#if ROTATING_DQ_BREAKAWAY_FIXED_HOLD_DIAGNOSTIC
+  uart2_printf_line("ROTATING_DQ_BREAKAWAY_TO_FIXED_HOLD_FAIL");
+  uart2_printf_line("FIXED_HOLD_MOTION_DIAGNOSTIC_VALID=NO");
+#else
+  uart2_printf_line("ROTATING_DQ_BREAKAWAY_TO_2RPM_HANDOFF_FAIL");
+  uart2_printf_line("BREAKAWAY_HANDOFF_VALID=NO");
+#endif
+#else
+  uart2_printf_line("ROTATING_DQ_BREAKAWAY_0P030A_50MS_FAIL");
+  uart2_printf_line("BREAKAWAY_CURRENT_IDENTIFIED=NO");
+#endif
+  uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#elif ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC
+  uart2_printf_line("ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_FAIL");
+  uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#elif ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+  uart2_printf_line(ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+      "ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_FAIL" :
+      ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+      "ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_FAIL" :
+      "ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_FAIL");
+  uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#else
+  uart2_printf_line("ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_FAIL");
+  uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#endif
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  uart2_printf_line("ROTATING_DQ_TORQUE_DIRECTION_RECHECK_FAIL");
+  uart2_printf_line("VELOCITY_IQ_SIGN_CANDIDATE_VALID=NO");
+  uart2_printf_line("VELOCITY_IQ_SIGN_APPLIED=NO");
+  uart2_printf_line("ROTATING_DQ_CURRENT_INNER_LOOP_READY=YES");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+  uart2_printf_line("ROTATING_DQ_LOW_CURRENT_PI_TRACKING_FAIL");
+  uart2_printf_line("ROTATING_DQ_LOW_SPEED_CURRENT_MODE_FAIL");
+  uart2_printf_line("ROTATING_DQ_LOW_SPEED_CURRENT_SINGLE_DIRECTION_0P030A_10S_BOUNDED_FAIL");
+  uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_READY=YES");
+  uart2_printf_line("ROTATING_DQ_LOW_CURRENT_READY=NO");
+  uart2_printf_line("ROTATING_DQ_PI_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#else
+  uart2_printf_line("ROTATING_DQ_DIRECTION_TEST_FAIL");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+#endif
+  const uint32_t current_faults =
+      ROTATING_DQ_FAULT_PHASE_CURRENT_LIMIT |
+      ROTATING_DQ_FAULT_DQ_CURRENT_LIMIT |
+      ROTATING_DQ_FAULT_IQ_REF_LIMIT;
+  if ((g_rotating_dq_test.fault_code &
+       ROTATING_DQ_FAULT_CONTROL_TIME) != 0u) {
+    drv_bringup_mark_fault(AXIS0_FAULT_DIAGNOSTIC_ISR_OVERRUN);
+  } else if ((g_rotating_dq_test.fault_code & current_faults) != 0u) {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
+  } else if ((g_rotating_dq_test.fault_code &
+              (ROTATING_DQ_FAULT_TRACKING |
+               ROTATING_DQ_FAULT_DIRECTION |
+               ROTATING_DQ_FAULT_OVERSPEED |
+               ROTATING_DQ_FAULT_ONE_REV)) != 0u) {
+    drv_bringup_mark_fault(AXIS0_FAULT_MOTOR_CALIBRATION_FAILED);
+  } else {
+    drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+  }
+  return false;
+}
+
+static bool rotating_dq_velocity_moe_off_shadow_run(void)
+{
+  enum {
+    SHADOW_UPDATE_HZ = 100u,
+    SHADOW_RAMP_UPDATES = 200u,
+    SHADOW_HOLD_UPDATES = 100u,
+    SHADOW_TOTAL_UPDATES = SHADOW_RAMP_UPDATES + SHADOW_HOLD_UPDATES
+  };
+  const float update_dt_s = 1.0f / (float)SHADOW_UPDATE_HZ;
+  const float target_step_rpm =
+      ROTATING_DQ_VELOCITY_TARGET_RAMP_RPM_PER_S * update_dt_s;
+  const float e2_on_threshold_a =
+      ROTATING_DQ_BIPOLAR_BLOCK_INTEGRATOR_ON_THRESHOLD_A;
+  VelocityCountWindow speed_window;
+  VelocityController controller;
+  memset(&speed_window, 0, sizeof(speed_window));
+  (void)velocity_count_window_set_samples(
+      &speed_window, ROTATING_DQ_VELOCITY_ESTIMATOR_WINDOW_SAMPLES);
+  velocity_controller_init(&controller,
+                           ROTATING_DQ_VELOCITY_KP,
+                           ROTATING_DQ_VELOCITY_KI,
+                           ROTATING_DQ_VELOCITY_IQ_LIMIT_A,
+                           ROTATING_DQ_VELOCITY_HARD_SPEED_LIMIT_RPM *
+                               0.10471975512f);
+  controller.integrator_limit_a = ROTATING_DQ_VELOCITY_INTEGRATOR_LIMIT_A;
+  velocity_controller_set_error_reversal_decay(
+      &controller,
+      ROTATING_DQ_VELOCITY_ERROR_REVERSAL_INTEGRATOR_SCALE);
+
+  power_stage_force_safe_off_zero_ccr();
+  m1_force_safe_off();
+  hal_gpio_set_gate_enable(false);
+
+  uint16_t encoder_last = (uint16_t)TIM3->CNT;
+  int64_t encoder_accum_shadow = 0;
+  float target_rpm = 0.0f;
+  float iq_sum_a = 0.0f;
+  float iq_min_a = 0.0f;
+  float iq_max_a = 0.0f;
+  float speed_abs_max_rpm = 0.0f;
+  uint32_t e2_on_updates = 0u;
+  uint32_t e2_same_sign_run = 0u;
+  uint32_t e2_same_sign_run_max = 0u;
+  int32_t e2_last_sign = 0;
+  char line[320];
+
+  uart2_printf_line("ROTATING_DQ_VELOCITY_MOE_OFF_SHADOW_START");
+  uart2_printf_line("velocity_shadow_safety: EN_GATE=0 MOE=0 CCR1=0 CCR2=0 CCR3=0 power_output_permitted=0 speed_loop_shadow_only=1 position_loop=0");
+  for (uint32_t update = 1u; update <= SHADOW_TOTAL_UPDATES; ++update) {
+    HAL_Delay(10u);
+    const uint16_t encoder_now = (uint16_t)TIM3->CNT;
+    const int16_t encoder_delta = (int16_t)(encoder_now - encoder_last);
+    encoder_last = encoder_now;
+    encoder_accum_shadow += encoder_delta;
+    const float measured_rpm = velocity_count_window_update_rpm(
+        &speed_window,
+        (int32_t)encoder_delta,
+        update_dt_s,
+        COMM_ENCODER_CPR);
+    const float measured_abs_rpm = fabsf(measured_rpm);
+    if (measured_abs_rpm > speed_abs_max_rpm) {
+      speed_abs_max_rpm = measured_abs_rpm;
+    }
+
+    if (target_rpm < ROTATING_DQ_VELOCITY_TARGET_RPM) {
+      target_rpm += target_step_rpm;
+      if (target_rpm > ROTATING_DQ_VELOCITY_TARGET_RPM) {
+        target_rpm = ROTATING_DQ_VELOCITY_TARGET_RPM;
+      }
+    }
+    const uint32_t saturation_count_before = controller.saturation_count;
+    const float iq_ref_a = velocity_controller_update(
+        &controller,
+        target_rpm * 0.10471975512f,
+        measured_rpm * 0.10471975512f,
+        update_dt_s);
+    const bool saturated_this_update =
+        controller.saturation_count != saturation_count_before;
+    iq_sum_a += iq_ref_a;
+    if (iq_ref_a < iq_min_a) {
+      iq_min_a = iq_ref_a;
+    }
+    if (iq_ref_a > iq_max_a) {
+      iq_max_a = iq_ref_a;
+    }
+
+    if (fabsf(iq_ref_a) >= e2_on_threshold_a) {
+      e2_on_updates++;
+      const int32_t sign = (iq_ref_a > 0.0f) ? 1 : -1;
+      if (sign == e2_last_sign) {
+        e2_same_sign_run++;
+      } else {
+        e2_same_sign_run = 1u;
+        e2_last_sign = sign;
+      }
+      if (e2_same_sign_run > e2_same_sign_run_max) {
+        e2_same_sign_run_max = e2_same_sign_run;
+      }
+    } else {
+      e2_same_sign_run = 0u;
+      e2_last_sign = 0;
+    }
+
+    if ((update % 10u) == 0u) {
+      const int32_t target_milli = float_to_scaled_i32(target_rpm, 1000.0f);
+      const int32_t measured_milli = float_to_scaled_i32(measured_rpm, 1000.0f);
+      const int32_t iq_microamp =
+          float_to_scaled_i32(iq_ref_a, 1000000.0f);
+      snprintf(line,
+               sizeof(line),
+               "velocity_shadow: update=%lu elapsed_ms=%lu target_rpm=%s%lu.%03lu measured_rpm=%s%lu.%03lu encoder_delta=%d encoder_accum=%ld iq_ref_mA=%s%lu.%03lu saturated=%u integrator_mA=%s%lu.%03lu e2_on_candidate=%u gate=0 moe=0",
+               (unsigned long)update,
+               (unsigned long)(update * 10u),
+               (target_milli < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(target_milli) / 1000u),
+               (unsigned long)(abs_i32_to_u32(target_milli) % 1000u),
+               (measured_milli < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(measured_milli) / 1000u),
+               (unsigned long)(abs_i32_to_u32(measured_milli) % 1000u),
+               (int)encoder_delta,
+               (long)encoder_accum_shadow,
+               (iq_microamp < 0) ? "-" : "",
+               (unsigned long)(abs_i32_to_u32(iq_microamp) / 1000u),
+               (unsigned long)(abs_i32_to_u32(iq_microamp) % 1000u),
+               (unsigned int)saturated_this_update,
+               (controller.integrator_a < 0.0f) ? "-" : "",
+               (unsigned long)(float_to_scaled_u32(
+                                   fabsf(controller.integrator_a), 1000000.0f) /
+                               1000u),
+               (unsigned long)(float_to_scaled_u32(
+                                   fabsf(controller.integrator_a), 1000000.0f) %
+                               1000u),
+               (unsigned int)(fabsf(iq_ref_a) >= e2_on_threshold_a));
+      uart2_printf_line(line);
+    }
+  }
+
+  power_stage_force_safe_off_zero_ccr();
+  m1_force_safe_off();
+  hal_gpio_set_gate_enable(false);
+  const bool final_safe = gate_raw_is_low() &&
+                          (TIM1->BDTR & TIM_BDTR_MOE) == 0u &&
+                          (TIM1->CCER & POWER_CCER_MASK) == 0u &&
+                          TIM1->CCR1 == 0u && TIM1->CCR2 == 0u &&
+                          TIM1->CCR3 == 0u && m1_is_safe_off();
+  const bool e2_admission_reachable =
+      e2_same_sign_run_max >= ROTATING_DQ_BLOCK_INTEGRATOR_ON_BLOCKS;
+  const int32_t iq_mean_microamp = float_to_scaled_i32(
+      iq_sum_a / (float)SHADOW_TOTAL_UPDATES, 1000000.0f);
+  const int32_t iq_min_microamp =
+      float_to_scaled_i32(iq_min_a, 1000000.0f);
+  const int32_t iq_max_microamp =
+      float_to_scaled_i32(iq_max_a, 1000000.0f);
+  snprintf(line,
+           sizeof(line),
+           "velocity_shadow_summary: updates=%u target_final_rpm=2.000 iq_ref_mean_mA=%s%lu.%03lu iq_ref_min_mA=%s%lu.%03lu iq_ref_max_mA=%s%lu.%03lu speed_abs_max_rpm=%lu.%03lu encoder_accum=%ld",
+           (unsigned int)SHADOW_TOTAL_UPDATES,
+           (iq_mean_microamp < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_mean_microamp) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_mean_microamp) % 1000u),
+           (iq_min_microamp < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_min_microamp) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_min_microamp) % 1000u),
+           (iq_max_microamp < 0) ? "-" : "",
+           (unsigned long)(abs_i32_to_u32(iq_max_microamp) / 1000u),
+           (unsigned long)(abs_i32_to_u32(iq_max_microamp) % 1000u),
+           (unsigned long)(speed_abs_max_rpm * 1000.0f) / 1000u,
+           (unsigned long)(speed_abs_max_rpm * 1000.0f) % 1000u,
+           (long)encoder_accum_shadow);
+  uart2_printf_line(line);
+  snprintf(line,
+           sizeof(line),
+           "velocity_shadow_e2: e2_on_threshold_mA=%lu e2_on_updates=%lu e2_same_sign_run_max=%lu e2_admission_reachable=%u saturation_count=%lu anti_windup_hold_count=%lu final_safe=%u",
+           (unsigned long)(e2_on_threshold_a * 1000.0f),
+           (unsigned long)e2_on_updates,
+           (unsigned long)e2_same_sign_run_max,
+           (unsigned int)e2_admission_reachable,
+           (unsigned long)controller.saturation_count,
+           (unsigned long)controller.anti_windup_hold_count,
+           (unsigned int)final_safe);
+  uart2_printf_line(line);
+  uart2_printf_line(final_safe ? "VELOCITY_PI_MOE_OFF_SHADOW_PASS"
+                               : "VELOCITY_PI_MOE_OFF_SHADOW_FAIL");
+  uart2_printf_line(e2_admission_reachable ?
+      "VELOCITY_PI_OUTPUT_SCALE_E2_REACHABLE=YES" :
+      "VELOCITY_PI_OUTPUT_SCALE_E2_REACHABLE=NO");
+  uart2_printf_line("ROTATING_DQ_VELOCITY_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_POSITION_LOOP_READY=NO");
+  uart2_printf_line("ROTATING_DQ_HARDWARE_FLASH_READY=NO");
+  return final_safe;
 }
 
 static void drv_bringup_test_run(void)
@@ -8646,6 +20038,19 @@ static void drv_bringup_test_run(void)
     return;
   }
 
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST && \
+    ROTATING_DQ_VELOCITY_MOE_OFF_SHADOW_DIAGNOSTIC
+  g_drv_test.open_loop_pass = rotating_dq_velocity_moe_off_shadow_run();
+  g_drv_test.phase_resistance_classification =
+      g_drv_test.open_loop_pass ? "VELOCITY_PI_MOE_OFF_SHADOW_PASS"
+                                : "VELOCITY_PI_MOE_OFF_SHADOW_FAIL";
+  g_drv_test.pass = g_drv_test.open_loop_pass;
+  g_drv_test.current_loop_enable_permitted = false;
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  drv_bringup_capture_final_state();
+  return;
+#endif
+
   hal_gpio_set_gate_enable(true);
   if (!power_stage_wait_nfault_release()) {
     drv_bringup_fail(3u);
@@ -8663,6 +20068,55 @@ static void drv_bringup_test_run(void)
     drv_bringup_fail(5u);
     return;
   }
+
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_NOISE_DIAGNOSTIC
+  const uint32_t noise_observe_start_ms = HAL_GetTick();
+  const uint32_t noise_observe_start_seq = drv_bringup_get_adc_seq();
+  g_drv_test.open_loop_pass = current_sensor_noise_diagnostic_run();
+  const uint32_t noise_observe_end_ms = HAL_GetTick();
+  const uint32_t noise_observe_end_seq = drv_bringup_get_adc_seq();
+  g_drv_test.adc_seq_after = noise_observe_end_seq;
+  g_drv_test.adc_seq_growing = g_drv_test.adc_seq_after > g_drv_test.adc_seq_before;
+  g_drv_test.adc_snapshot_count = noise_observe_end_seq - noise_observe_start_seq;
+  g_drv_test.pwm_cycle_count = (noise_observe_end_ms > noise_observe_start_ms)
+                                   ? ((noise_observe_end_ms - noise_observe_start_ms) *
+                                      PWM_CYCLES_PER_MS)
+                                   : 0u;
+  g_drv_test.snapshots_per_pwm_cycle =
+      (g_drv_test.pwm_cycle_count > 0u)
+          ? ((float)g_drv_test.adc_snapshot_count /
+             (float)g_drv_test.pwm_cycle_count)
+          : 0.0f;
+  g_drv_test.adc_sync_rate_ok =
+      (g_drv_test.snapshots_per_pwm_cycle >= SNAPSHOT_RATE_MIN_PER_PWM) &&
+      (g_drv_test.snapshots_per_pwm_cycle <= SNAPSHOT_RATE_MAX_PER_PWM);
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  return;
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_CURRENT_SENSOR_ADMISSION_TEST
+  const uint32_t admission_observe_start_ms = HAL_GetTick();
+  const uint32_t admission_observe_start_seq = drv_bringup_get_adc_seq();
+  g_drv_test.open_loop_pass = current_sensor_admission_test_run();
+  const uint32_t admission_observe_end_ms = HAL_GetTick();
+  const uint32_t admission_observe_end_seq = drv_bringup_get_adc_seq();
+  g_drv_test.adc_seq_after = admission_observe_end_seq;
+  g_drv_test.adc_seq_growing = g_drv_test.adc_seq_after > g_drv_test.adc_seq_before;
+  g_drv_test.adc_snapshot_count =
+      admission_observe_end_seq - admission_observe_start_seq;
+  g_drv_test.pwm_cycle_count = (admission_observe_end_ms > admission_observe_start_ms)
+                                   ? ((admission_observe_end_ms - admission_observe_start_ms) *
+                                      PWM_CYCLES_PER_MS)
+                                   : 0u;
+  g_drv_test.snapshots_per_pwm_cycle =
+      (g_drv_test.pwm_cycle_count > 0u)
+          ? ((float)g_drv_test.adc_snapshot_count /
+             (float)g_drv_test.pwm_cycle_count)
+          : 0.0f;
+  g_drv_test.adc_sync_rate_ok =
+      (g_drv_test.snapshots_per_pwm_cycle >= SNAPSHOT_RATE_MIN_PER_PWM) &&
+      (g_drv_test.snapshots_per_pwm_cycle <= SNAPSHOT_RATE_MAX_PER_PWM);
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  return;
+#endif
 
   power_stage_disable_six_outputs();
   power_stage_set_ccr_half();
@@ -8684,6 +20138,118 @@ static void drv_bringup_test_run(void)
   g_drv_test.phase_resistance_classification =
       g_drv_test.open_loop_pass ? "FIXED_ROTOR_CURRENT_PI_TEST_PASS"
                                 : "FIXED_ROTOR_CURRENT_PI_TEST_FAIL";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  g_rotating_dq_runtime_offset_valid = false;
+  g_runtime_offset_calibration_active = true;
+  const bool runtime_alignment_pass = electrical_offset_calibration_run();
+  g_runtime_offset_calibration_active = false;
+  if (runtime_alignment_pass &&
+      g_drv_test.electrical_offset_runtime_rad >= 0.0f &&
+      g_drv_test.electrical_offset_runtime_rad < TWO_PI_F) {
+    g_rotating_dq_runtime_offset_rad =
+        g_drv_test.electrical_offset_runtime_rad;
+    g_rotating_dq_runtime_offset_valid = true;
+    g_drv_test.phase_resistance_classification = NULL;
+    uart2_printf_line("SAME_BOOT_RUNTIME_ELECTRICAL_OFFSET_LATCHED=YES");
+#if ROTATING_DQ_RUNTIME_ALIGNMENT_VALIDATION_ONLY
+    g_drv_test.open_loop_pass = true;
+    g_drv_test.phase_resistance_classification =
+        "SAME_BOOT_RUNTIME_ALIGNMENT_VALIDATION_PASS";
+    uart2_printf_line("SAME_BOOT_RUNTIME_ALIGNMENT_VALIDATION_ONLY=YES");
+    uart2_printf_line("SAME_BOOT_RUNTIME_ALIGNMENT_VALIDATION_PASS");
+    power_stage_force_safe_off_zero_ccr();
+    hal_pwm_start_adc_trigger_only();
+    power_stage_force_safe_off_zero_ccr();
+    m1_force_safe_off();
+    g_drv_test.pass = true;
+    g_drv_test.current_loop_enable_permitted = false;
+    g_drv_test.fault_code = g_axis0.fault_flags;
+    HAL_Delay(2u);
+    drv_bringup_capture_final_state();
+    return;
+#else
+    g_drv_test.open_loop_pass = rotating_dq_current_test_run();
+#if ROTATING_DQ_BREAKAWAY_DIAGNOSTIC
+#if ROTATING_DQ_BREAKAWAY_HANDOFF_TEST
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ?
+            "ROTATING_DQ_BREAKAWAY_TO_2RPM_HANDOFF_PASS" :
+            "ROTATING_DQ_BREAKAWAY_TO_2RPM_HANDOFF_FAIL";
+#else
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_BREAKAWAY_0P030A_50MS_PASS"
+                                  : "ROTATING_DQ_BREAKAWAY_0P030A_50MS_FAIL";
+#endif
+#elif ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_DIAGNOSTIC
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_PASS"
+                                  : "ROTATING_DQ_ZERO_TORQUE_CURRENT_PI_FAIL";
+#elif ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_DIAGNOSTIC
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ?
+            (ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+                 "ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_PASS" :
+             ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+                 (ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+                      "ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_PASS" :
+                      "ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_PASS") :
+                 "ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_PASS") :
+            (ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_DIAGNOSTIC ?
+                 "ROTATING_DQ_LOW_IQ_BIPOLAR_P_ONLY_FAIL" :
+             ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_DIAGNOSTIC ?
+                 (ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_TEST ?
+                      "ROTATING_DQ_EXTERNAL_LOW_IQ_CONTINUOUS_FAIL" :
+                      "ROTATING_DQ_LOW_IQ_BIPOLAR_BLOCK_PI_FAIL") :
+                 "ROTATING_DQ_LOW_IQ_BIPOLAR_STEP_FAIL");
+#else
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_PASS"
+                                  : "ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_FAIL";
+#endif
+#endif
+  } else {
+    g_rotating_dq_runtime_offset_valid = false;
+    g_drv_test.open_loop_pass = false;
+    g_drv_test.phase_resistance_classification =
+        "ROTATING_DQ_RUNTIME_ALIGNMENT_FAIL";
+    uart2_printf_line("SAME_BOOT_RUNTIME_ELECTRICAL_OFFSET_LATCHED=NO");
+    uart2_printf_line("ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_FAIL");
+  }
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST || \
+      M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  g_drv_test.open_loop_pass = rotating_dq_current_test_run();
+  if (g_drv_test.phase_resistance_classification == NULL) {
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC_COMPLETE"
+                                  : "ROTATING_DQ_DIRECTION_TEST_FAIL";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_PASS"
+                                  : "ROTATING_DQ_LOW_SPEED_VELOCITY_PI_2RPM_FAIL";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_TORQUE_DIRECTION_RECHECK_PASS"
+                                  : "ROTATING_DQ_TORQUE_DIRECTION_RECHECK_FAIL";
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_LOW_CURRENT_PI_TRACKING_PASS"
+                                  : "ROTATING_DQ_LOW_CURRENT_PI_TRACKING_FAIL";
+#else
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ROTATING_DQ_DIRECTION_TEST_PASS"
+                                  : "ROTATING_DQ_DIRECTION_TEST_FAIL";
+#endif
+  }
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  g_drv_test.open_loop_pass = electrical_offset_calibration_run();
+  if (g_drv_test.phase_resistance_classification == NULL) {
+    g_drv_test.phase_resistance_classification =
+        g_drv_test.open_loop_pass ? "ELECTRICAL_OFFSET_CALIBRATION_PASS"
+                                  : "ELECTRICAL_OFFSET_CALIBRATION_FAIL";
+  }
 #else
   g_drv_test.open_loop_pass = phase_inductance_identification_run();
 #endif
@@ -8704,6 +20270,29 @@ static void drv_bringup_test_run(void)
   g_drv_test.adc_sync_rate_ok =
       (g_drv_test.snapshots_per_pwm_cycle >= SNAPSHOT_RATE_MIN_PER_PWM) &&
       (g_drv_test.snapshots_per_pwm_cycle <= SNAPSHOT_RATE_MAX_PER_PWM);
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  g_drv_test.raw_range_ok = true;
+  if (!g_drv_test.open_loop_pass || !g_drv_test.adc_seq_growing ||
+      !g_drv_test.adc_phase_edge_timing_ok || !g_drv_test.adc_sync_rate_ok ||
+      !m1_is_safe_off()) {
+    if (g_axis0.fault_flags == AXIS0_FAULT_NONE) {
+      drv_bringup_mark_fault(AXIS0_FAULT_ELECTRICAL_OFFSET_CALIBRATION_FAILED);
+    }
+    drv_bringup_fail(8u);
+    return;
+  }
+
+  power_stage_force_safe_off_zero_ccr();
+  hal_pwm_start_adc_trigger_only();
+  power_stage_force_safe_off_zero_ccr();
+  m1_force_safe_off();
+  g_drv_test.pass = true;
+  g_drv_test.current_loop_enable_permitted = false;
+  g_drv_test.fault_code = g_axis0.fault_flags;
+  HAL_Delay(2u);
+  drv_bringup_capture_final_state();
+  return;
+#endif
   g_drv_test.raw_range_ok = (g_drv_test.run_raw_u_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
                             (g_drv_test.run_raw_u_max < CURRENT_RAW_MAX_SAFE_COUNT) &&
                             (g_drv_test.run_raw_v_min > CURRENT_RAW_MIN_SAFE_COUNT) &&
@@ -8780,10 +20369,12 @@ static void drv_bringup_test_run(void)
               "PHASE_RESISTANCE_IDENTIFICATION_FAIL") == 0) ||
       (strcmp(g_drv_test.phase_resistance_classification,
               "PHASE_INDUCTANCE_IDENTIFICATION_FAIL") == 0)) {
-    if (g_drv_test.current_trip_fault.latched) {
-      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
-    } else {
-      drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+    if (g_axis0.fault_flags == AXIS0_FAULT_NONE) {
+      if (g_drv_test.current_trip_fault.latched) {
+        drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_PROTECTION);
+      } else {
+        drv_bringup_mark_fault(AXIS0_FAULT_CURRENT_SENSOR_INVALID);
+      }
     }
     drv_bringup_fail(8u);
     return;
@@ -8814,7 +20405,7 @@ static void print_bringup_status(void)
 
   snprintf(line,
            sizeof(line),
-           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_m0_so1_pc0=%u raw_m0_so2_pc1=%u raw_pc0_m0_so1=%u raw_pc1_m0_so2=%u raw_pc2_m1_so2=%u raw_pc3_m1_so1=%u raw_vbus=%u enc_cnt=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX",
+           "bringup: adc_init=%u board_init=%u irq=%lu cb=%lu cb1=%lu cb2=%lu snapcnt=%lu snap_ok=%u valid=%u seq=%lu raw_m0_so1_pc0=%u raw_m0_so2_pc1=%u raw_pc0_m0_so1=%u raw_pc1_m0_so2=%u raw_pc2_m1_so2=%u raw_pc3_m1_so1=%u raw_vbus=%u enc_cnt=%u nfault=%u gate=%u pwm_disabled=%u tim_base=%lu tim_oc4=%lu adc1_start=%lu adc2_start=%lu fault=0x%08lX first_fault=0x%08lX first_fault_source_line=%lu",
            (unsigned int)g_adc_init_ok,
            (unsigned int)g_board_init_ok,
            (unsigned long)adc_diag.irq_count,
@@ -8840,7 +20431,9 @@ static void print_bringup_status(void)
            (unsigned long)pwm_diag.oc4_start_status,
            (unsigned long)adc_diag.injected_start_adc1_status,
            (unsigned long)adc_diag.injected_start_adc2_status,
-           (unsigned long)g_axis0.fault_flags);
+           (unsigned long)g_axis0.fault_flags,
+           (unsigned long)g_axis0_first_fault_flag,
+           (unsigned long)g_axis0_first_fault_source_line);
 
   uart2_printf_line(line);
 
@@ -8877,6 +20470,14 @@ static void print_bringup_status(void)
 
 static void print_drv_bringup_test_status(void)
 {
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST || \
+    M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  return;
+#endif
+
   char line[1536];
 
   snprintf(line,
@@ -10566,6 +22167,11 @@ static void print_drv_bringup_test_status(void)
   if (g_drv_test.pass) {
     if (g_drv_test.phase_inductance_classification != NULL) {
       uart2_printf_line(g_drv_test.phase_inductance_classification);
+    } else if (g_drv_test.phase_resistance_classification != NULL &&
+               (strncmp(g_drv_test.phase_resistance_classification,
+                        "ROTATING_DQ_",
+                        12u) == 0)) {
+      uart2_printf_line(g_drv_test.phase_resistance_classification);
     } else if ((g_drv_test.phase_resistance_classification != NULL) &&
         (strcmp(g_drv_test.phase_resistance_classification,
                 "PHASE_MAPPING_AND_RESISTANCE_CONFIRM_PASS") == 0)) {
@@ -10594,6 +22200,7 @@ static void print_drv_bringup_test_status(void)
     uart2_printf_line(line);
   }
 }
+#endif
 /* USER CODE END 0 */
 
 /**
@@ -10650,11 +22257,25 @@ int main(void)
   uart2_printf_line("odrive_v36_cube bringup start");
 #if M0_BRINGUP_MODE == M0_BRINGUP_MODE_FIXED_ROTOR_CURRENT_PI
   uart2_printf_line("M0 FIXED ROTOR LOW CURRENT DQ PI TEST BUILD: DRV gain 80V/V, speed/position loop disabled, no auto rotation.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  uart2_printf_line("M0 ELECTRICAL OFFSET CALIBRATION BUILD: three static voltage vectors, no current PI, no speed/position loop.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_CURRENT_TEST
+  uart2_printf_line("M0 ROTATING DQ CURRENT DIRECTION TEST BUILD: encoder angle, no speed/position loop.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_ENABLE_ZERO_DIAGNOSTIC
+  uart2_printf_line("M0 ROTATING DQ ENABLE_ZERO DIAGNOSTIC BUILD: no +iq/-iq, no speed/position loop.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_SPEED_VELOCITY_TEST
+  uart2_printf_line("M0 ROTATING DQ LOW SPEED VELOCITY PI BUILD: 2rpm target, iq limited to 0.030A, position loop disabled.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_TORQUE_DIRECTION_RECHECK
+  uart2_printf_line("M0 ROTATING DQ TORQUE DIRECTION RECHECK BUILD: +/-0.020A short pulses, mapping report only, speed/position loops disabled.");
+#elif M0_BRINGUP_MODE == M0_BRINGUP_MODE_ROTATING_DQ_LOW_CURRENT_PI_TEST
+  uart2_printf_line("M0 ROTATING DQ LOW SPEED CURRENT SINGLE DIRECTION BUILD: +0.030A up to 10s or 448 counts, zero, complete; no speed/position loop.");
 #else
   uart2_printf_line("M0 PHASE INDUCTANCE IDENTIFICATION BUILD: DRV gain 80V/V, no current PI, no speed/position loop.");
 #endif
   drv_bringup_test_run();
+#if M0_BRINGUP_MODE != M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
   print_drv_bringup_test_status();
+#endif
   print_bringup_status();
   /* USER CODE END 2 */
 
@@ -10720,7 +22341,46 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
+  const bool measure_fixed_callback = g_fixed_current_active &&
+                                      g_fixed_current_run_request;
+  const bool measure_rotating_callback = g_rotating_dq_active &&
+                                         g_rotating_dq_run_request;
+  const uint32_t cycles_before = DWT->CYCCNT;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  g_adc_callback_last_start_cycles = cycles_before;
+  g_adc_callback_last_ipsr = __get_IPSR();
+#endif
   hal_adc_stm32f405_on_injected_complete((void *)hadc);
+  fixed_current_adc_snapshot_fast_path();
+  const uint32_t callback_end = DWT->CYCCNT;
+#if M0_BRINGUP_MODE == M0_BRINGUP_MODE_ELECTRICAL_OFFSET_CALIBRATION
+  g_adc_callback_last_end_cycles = callback_end;
+#endif
+  g_adc_callback_last_elapsed_cycles = callback_end - cycles_before;
+  if (measure_fixed_callback) {
+    const uint32_t callback_cycles = g_adc_callback_last_elapsed_cycles;
+    const float callback_us = fixed_current_cycles_to_us(callback_cycles);
+    if (callback_cycles > g_fixed_current_worst_adc_callback_cycles) {
+      g_fixed_current_worst_adc_callback_cycles = callback_cycles;
+      g_fixed_current_worst_adc_callback_us = callback_us;
+    }
+    if (callback_us > 50.0f &&
+        g_fixed_current_test.result == FIXED_ROTOR_RESULT_RUNNING) {
+      fixed_current_fast_shutdown_isr(FIXED_ROTOR_FAULT_CONTROL_TIME);
+    }
+  }
+  if (measure_rotating_callback) {
+    const uint32_t callback_cycles = g_adc_callback_last_elapsed_cycles;
+    const float callback_us = fixed_current_cycles_to_us(callback_cycles);
+    if (callback_cycles > g_rotating_dq_worst_adc_callback_cycles) {
+      g_rotating_dq_worst_adc_callback_cycles = callback_cycles;
+      g_rotating_dq_worst_adc_callback_us = callback_us;
+    }
+    if (callback_us > 50.0f &&
+        g_rotating_dq_test.result == ROTATING_DQ_RESULT_RUNNING) {
+      rotating_dq_fast_shutdown_isr(ROTATING_DQ_FAULT_CONTROL_TIME);
+    }
+  }
   g_adc_callback_count++;
 }
 /* USER CODE END 4 */

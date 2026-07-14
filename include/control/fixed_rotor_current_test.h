@@ -202,6 +202,14 @@ FixedRotorCurrentTestConfig fixed_rotor_current_test_default_config(void);
 void fixed_rotor_current_test_init(FixedRotorCurrentTest *test,
                                    const FixedRotorCurrentTestConfig *config);
 void fixed_rotor_current_test_reset(FixedRotorCurrentTest *test);
+void fixed_rotor_current_test_request_start(FixedRotorCurrentTest *test);
+void fixed_rotor_current_test_fast_isr(FixedRotorCurrentTest *test,
+                                       const FixedRotorCurrentTestInput *input,
+                                       FixedRotorCurrentTestOutput *output);
+void fixed_rotor_current_test_service_main(const FixedRotorCurrentTest *test,
+                                           FixedRotorCurrentTestOutput *output);
+void fixed_rotor_current_test_force_fault(FixedRotorCurrentTest *test,
+                                          uint32_t fault_code);
 void fixed_rotor_current_test_step(FixedRotorCurrentTest *test,
                                    const FixedRotorCurrentTestInput *input,
                                    FixedRotorCurrentTestOutput *output);

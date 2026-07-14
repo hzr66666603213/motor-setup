@@ -24,6 +24,8 @@ extern TIM_HandleTypeDef htim1;
 static bool s_pwm_enabled = false;
 static HalPwmDiagnostics s_pwm_diagnostics;
 
+#define TIM1_ADC_TRIGGER_CCR4_COUNT 3149u
+
 static float clamp01(float x)
 {
     if (x < 0.0f) {
@@ -107,7 +109,7 @@ void hal_pwm_start_adc_trigger_only(void)
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0u);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0u);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0u);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, duty_to_ccr(0.5f));
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, TIM1_ADC_TRIGGER_CCR4_COUNT);
 
     s_pwm_diagnostics.oc4_start_status = (uint32_t)HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_4);
     s_pwm_diagnostics.base_start_status = (uint32_t)HAL_TIM_Base_Start(&htim1);
